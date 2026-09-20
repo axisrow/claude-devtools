@@ -1,5 +1,5 @@
 > [!NOTE]
-> **Actively maintained fork** of [matt1398/claude-devtools](https://github.com/matt1398/claude-devtools) (upstream dormant since 2026-05). This fork carries new development: session-audit CLI, Claude Code plugin, fixes. See the [Upstream sync policy](#upstream-sync-policy).
+> **Actively maintained fork** of [matt1398/claude-devtools](https://github.com/matt1398/claude-devtools) (upstream dormant since 2026-05). This fork carries new development: session-audit CLI and fixes. See the [Upstream sync policy](#upstream-sync-policy).
 
 <p align="center">
   <img src="resources/claude.png" alt="Your Claude is coding blind" width="600" />
