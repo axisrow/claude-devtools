@@ -26,6 +26,7 @@ import {
 } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 import type { ParsedMessage, Process } from '@main/types';
 
@@ -273,9 +274,14 @@ export function normalizeCallKey(name: string, input: Record<string, unknown>): 
     case 'Agent':
       return `Task|${asText(input.description) || asText(input.prompt)}`;
     default:
+      // own top-level keys, sorted — a replacer array would recurse and flatten
+      // nested objects to {}, colliding keys of calls differing only in nesting
       return `${name}|${JSON.stringify(
-        input,
-        Object.keys(input).sort((a, b) => a.localeCompare(b))
+        Object.fromEntries(
+          Object.keys(input)
+            .sort((a, b) => a.localeCompare(b))
+            .map((k) => [k, input[k]])
+        )
       )}`;
   }
 }
@@ -411,6 +417,14 @@ interface CliOpts {
   json: boolean;
 }
 
+// the next token is a flag's value unless missing or itself a flag
+// (--rounds --json must not swallow --json)
+export function takeFlagValue(argv: string[], i: number): { value: string; next: number } {
+  const v = argv[i + 1];
+  const isValue = v !== undefined && !v.startsWith('--');
+  return isValue ? { value: v, next: i + 2 } : { value: '', next: i + 1 };
+}
+
 export function parseArgs(argv: string[]): CliOpts {
   const opts: CliOpts = {
     useLast: false,
@@ -422,25 +436,25 @@ export function parseArgs(argv: string[]): CliOpts {
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
-    const value = argv[i + 1] ?? '';
+    const { value, next } = takeFlagValue(argv, i);
     if (a === '--project') {
       opts.projectArg = value;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--rounds') {
       opts.rounds = parseInt(value, 10) || 20;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--subagent-min-minutes') {
       opts.subagentMinMinutes = parseInt(value, 10) || 5;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--min-severity') {
       opts.minSeverity = value === 'medium' || value === 'high' ? value : 'low';
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--last') {
@@ -662,8 +676,9 @@ async function main(): Promise<void> {
   printReport(sessionFile, ledger, findings, subagents, opts);
 }
 
-// vitest imports this file for the exported pure functions — run only as a CLI
-if (!process.env.VITEST) {
+// run only when executed directly: sessionInventory imports this module for
+// helpers, vitest imports it for the pure functions — neither may trigger main
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main().catch((err) => {
     console.error(err);
     process.exitCode = 1;

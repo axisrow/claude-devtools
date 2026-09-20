@@ -6,11 +6,13 @@
  *   pnpm analyze:sessions [--project <dir|encoded>] [--min-minutes N] [--sort duration|tokens|date] [--limit N] [--json]
  */
 
-import { extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
+import { decodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
+import { pathToFileURL } from 'url';
 
 import {
   billingFromFlags,
@@ -20,6 +22,7 @@ import {
   padL,
   resolveProjectDir,
   short,
+  takeFlagValue,
 } from './analyzeSession';
 
 interface RawUsage {
@@ -151,15 +154,21 @@ async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (x: T) => Promise<R>
-): Promise<R[]> {
+): Promise<(R | null)[]> {
   // ponytail: result order is nondeterministic — rows are sorted downstream anyway
-  const results: R[] = [];
+  const results: (R | null)[] = [];
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length) {
       const item = items[next];
       next += 1;
-      results.push(await fn(item));
+      try {
+        results.push(await fn(item));
+      } catch (err) {
+        // one unreadable file must not abort a 1200+-file scan
+        console.error(`(skipped ${item}: ${String(err)})`);
+        results.push(null);
+      }
     }
   });
   await Promise.all(workers);
@@ -175,11 +184,16 @@ async function collect(projectsRoot: string, projectArg?: string): Promise<Inven
     dirs = es.filter((e) => e.isDirectory()).map((e) => path.join(projectsRoot, e.name));
   }
   const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
-  const files = fileGroups.flat();
+  const files = fileGroups.filter((g): g is string[] => g !== null).flat();
   // ponytail: no mtime cache yet — first full scan is IO-bound seconds, add one if it hurts
   const scanned = await mapWithConcurrency(files, 8, scanSessionFile);
   return scanned.filter((e): e is InventoryEntry => e !== null);
 }
+
+const shortenHome = (p: string): string => {
+  const home = os.homedir();
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+};
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -197,26 +211,26 @@ async function main(): Promise<void> {
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
-    const value = argv[i + 1] ?? '';
+    const { value, next } = takeFlagValue(argv, i);
     if (a === '--project') {
       projectArg = value;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--min-minutes') {
       minMinutes = parseInt(value, 10) || 0;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--sort') {
       sort = value === 'tokens' || value === 'date' ? value : 'duration';
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--limit') {
       const n = parseInt(value, 10);
       limit = n > 0 ? n : Number.POSITIVE_INFINITY;
-      i += 2;
+      i = next;
       continue;
     }
     if (a === '--json') {
@@ -257,7 +271,7 @@ async function main(): Promise<void> {
     `${padL('duration', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad('models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
   );
   for (const e of shown) {
-    const project = e.projectId.replace('-Users-axisrow-Projects-', '~/');
+    const project = shortenHome(decodePath(e.projectId));
     const models = e.models.join(', ');
     console.log(
       `${padL(dur(e.durationMs), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
@@ -265,8 +279,8 @@ async function main(): Promise<void> {
   }
 }
 
-// vitest imports this file for scanSessionFile — run only as a CLI
-if (!process.env.VITEST) {
+// run only when executed directly — vitest imports this file for scanSessionFile
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main().catch((err) => {
     console.error(err);
     process.exitCode = 1;

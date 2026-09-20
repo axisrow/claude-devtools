@@ -14,6 +14,7 @@ import {
   computeFindings,
   detectBillingScheme,
   normalizeCallKey,
+  parseArgs,
   priceFamily,
 } from '../../../src/cli/analyzeSession';
 import { scanSessionFile } from '../../../src/cli/sessionInventory';
@@ -121,6 +122,19 @@ describe('normalizeCallKey', () => {
     expect(normalizeCallKey('Read', { file_path: '/a' })).not.toBe(
       normalizeCallKey('Read', { file_path: '/b' })
     );
+  });
+
+  it('keeps nested object inputs distinct in the default branch', () => {
+    expect(normalizeCallKey('TodoWrite', { todos: [{ content: 'a' }] })).not.toBe(
+      normalizeCallKey('TodoWrite', { todos: [{ content: 'b' }] })
+    );
+  });
+
+  it('does not swallow a following flag as a value', () => {
+    const opts = parseArgs(['--rounds', '--json', 'x.jsonl']);
+    expect(opts.rounds).toBe(20);
+    expect(opts.json).toBe(true);
+    expect(opts.sessionPath).toBe('x.jsonl');
   });
 });
 
