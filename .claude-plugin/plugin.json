@@ -1,0 +1,7 @@
+{
+  "name": "session-audit",
+  "description": "Audit Claude Code session JSONLs for token waste: per-session ledger with findings (pnpm analyze:session) and a cross-session inventory (pnpm analyze:sessions).",
+  "author": {
+    "name": "axisrow"
+  }
+}
