@@ -3,7 +3,16 @@
  * Answers "which sessions ran 2h+, on which model" without opening the app.
  *
  * Usage:
- *   pnpm analyze:sessions [--project <dir|encoded>] [--min-minutes N] [--sort duration|tokens|date] [--limit N] [--json]
+ *   pnpm analyze:sessions [--project <dir|encoded>] [flags]
+ * Flags:
+ *   --min-minutes N           only sessions running at least N minutes
+ *   --sort FIELD              duration | tokens | date (default duration)
+ *   --limit N                 show first N rows
+ *   --breakdown               per-session model token split (models column + JSON tokensByModel)
+ *   --since / --until DATE    only sessions active within the range (YYYY-MM-DD or YYYYMMDD)
+ *   --last N                  only sessions active in the last N days
+ *   --no-cost                 accepted for the shared grammar; inventory has no cost figures
+ *   --json                    machine-readable output
  */
 
 import { decodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
@@ -22,8 +31,8 @@ import {
   padL,
   resolveProjectDir,
   short,
-  takeFlagValue,
 } from './analyzeSession';
+import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
 interface RawUsage {
   input_tokens?: number;
@@ -63,6 +72,7 @@ export interface InventoryEntry {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   totalTokens: number;
+  tokensByModel: Record<string, number>;
   sizeBytes: number;
   billing: BillingScheme;
 }
@@ -82,8 +92,8 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   // anthropic-style rounds report cache writes; routers report cache_read with cw=0
   let sawWrite = false;
   let sawRead = false;
-  const usageByRequestId = new Map<string, RawUsage>();
-  let directUsage: RawUsage = {};
+  const usageByRequestId = new Map<string, { model: string; usage: RawUsage }>();
+  const directByModel = new Map<string, RawUsage>();
 
   for await (const line of rl) {
     if (line === '') continue;
@@ -112,15 +122,37 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       if (e.message.usage.cache_creation_input_tokens) sawWrite = true;
       else if (e.message.usage.cache_read_input_tokens) sawRead = true;
       // streaming writes several entries per request — the last one has final counts
-      if (e.requestId) usageByRequestId.set(e.requestId, e.message.usage);
-      else directUsage = mergeUsage(directUsage, e.message.usage);
+      if (e.requestId) {
+        usageByRequestId.set(e.requestId, {
+          model: e.message.model ?? 'unknown',
+          usage: e.message.usage,
+        });
+      } else {
+        const m = e.message.model ?? 'unknown';
+        directByModel.set(m, mergeUsage(directByModel.get(m) ?? {}, e.message.usage));
+      }
     }
   }
 
   if (firstTs === null || lastTs === null) return null;
 
-  let totals: RawUsage = directUsage;
-  for (const u of usageByRequestId.values()) totals = mergeUsage(totals, u);
+  let totals: RawUsage = {};
+  const byModel = new Map<string, RawUsage>();
+  const acc = (model: string, u: RawUsage): void => {
+    totals = mergeUsage(totals, u);
+    byModel.set(model, mergeUsage(byModel.get(model) ?? {}, u));
+  };
+  for (const { model, usage } of usageByRequestId.values()) acc(model, usage);
+  for (const [model, usage] of directByModel) acc(model, usage);
+
+  const tokensByModel: Record<string, number> = {};
+  for (const [model, u] of byModel) {
+    tokensByModel[model] =
+      (u.input_tokens ?? 0) +
+      (u.output_tokens ?? 0) +
+      (u.cache_read_input_tokens ?? 0) +
+      (u.cache_creation_input_tokens ?? 0);
+  }
 
   const rel = path.relative(getProjectsBasePath(), path.resolve(filePath));
   const [projectId = '', sessionId = ''] = rel.split(path.sep);
@@ -143,6 +175,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     cacheReadTokens,
     cacheCreationTokens,
     totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+    tokensByModel,
     sizeBytes: fs.statSync(filePath).size,
     billing: billingFromFlags(sawWrite, sawRead),
   };
@@ -203,57 +236,126 @@ const shortenHome = (p: string): string => {
   return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 };
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  if (argv.includes('--help') || argv.includes('-h')) {
-    console.log(
-      'usage: pnpm analyze:sessions [--project <dir|encoded>] [--min-minutes N] [--sort duration|tokens|date] [--limit N] [--json]'
-    );
-    return;
-  }
-  let projectArg: string | undefined;
-  let minMinutes = 0;
-  let sort: 'duration' | 'tokens' | 'date' = 'duration';
-  let limit = Number.POSITIVE_INFINITY;
-  let json = false;
+const ymd = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+export interface InventoryOpts {
+  projectArg?: string;
+  minMinutes: number;
+  sort: 'duration' | 'tokens' | 'date';
+  limit: number;
+  json: boolean;
+  breakdown: boolean;
+  since?: Date;
+  until?: Date;
+  error?: string;
+}
+
+export function parseInventoryArgs(argv: string[]): InventoryOpts {
+  const opts: InventoryOpts = {
+    minMinutes: 0,
+    sort: 'duration',
+    limit: Number.POSITIVE_INFINITY,
+    json: false,
+    breakdown: false,
+  };
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
     const { value, next } = takeFlagValue(argv, i);
     if (a === '--project') {
-      projectArg = value;
+      opts.projectArg = value;
       i = next;
       continue;
     }
     if (a === '--min-minutes') {
-      minMinutes = parseInt(value, 10) || 0;
+      opts.minMinutes = parseInt(value, 10) || 0;
       i = next;
       continue;
     }
     if (a === '--sort') {
-      sort = value === 'tokens' || value === 'date' ? value : 'duration';
+      opts.sort = value === 'tokens' || value === 'date' ? value : 'duration';
       i = next;
       continue;
     }
     if (a === '--limit') {
       const n = parseInt(value, 10);
-      limit = n > 0 ? n : Number.POSITIVE_INFINITY;
+      opts.limit = n > 0 ? n : Number.POSITIVE_INFINITY;
       i = next;
       continue;
     }
+    if (a === '--since' || a === '--until') {
+      const d = parseDayBound(value, a === '--until');
+      if (!d) opts.error = `invalid ${a} date (expected YYYY-MM-DD or YYYYMMDD): '${value}'`;
+      else if (a === '--since') opts.since = d;
+      else opts.until = d;
+      i = next;
+      continue;
+    }
+    if (a === '--last') {
+      const days = /^\d+$/.test(value) ? parseInt(value, 10) : NaN;
+      if (Number.isNaN(days)) {
+        opts.error = `--last requires a number of days, got '${value || '(missing)'}'`;
+        i += 1;
+      } else {
+        opts.since = lastDaysSince(days);
+        i = next;
+      }
+      continue;
+    }
+    if (a === '--breakdown') {
+      opts.breakdown = true;
+      i += 1;
+      continue;
+    }
+    // accepted for the shared grammar; the inventory carries no cost figures
+    if (a === '--no-cost') {
+      i += 1;
+      continue;
+    }
     if (a === '--json') {
-      json = true;
+      opts.json = true;
       i += 1;
       continue;
     }
     i += 1;
   }
+  return opts;
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  if (wantsHelp(argv)) {
+    console.log(
+      [
+        'usage: pnpm analyze:sessions [--project <dir|encoded>] [flags]',
+        '',
+        'flags:',
+        '  --min-minutes N           only sessions running at least N minutes',
+        '  --sort FIELD              duration | tokens | date (default duration)',
+        '  --limit N                 show first N rows',
+        '  --breakdown               per-session model token split',
+        '  --since DATE              only sessions active on/after this date (YYYY-MM-DD or YYYYMMDD)',
+        '  --until DATE              only sessions active on/before this date',
+        '  --last N                  only sessions active in the last N days',
+        '  --no-cost                 accepted for the shared grammar; inventory has no cost figures',
+        '  --json                    machine-readable output',
+      ].join('\n')
+    );
+    return;
+  }
+  const opts = parseInventoryArgs(argv);
+  if (opts.error) {
+    console.error(opts.error);
+    process.exitCode = 1;
+    return;
+  }
 
   let projectDir: string | undefined;
-  if (projectArg) {
-    projectDir = resolveProjectDir(projectArg);
+  if (opts.projectArg) {
+    projectDir = resolveProjectDir(opts.projectArg);
     if (!fs.existsSync(projectDir)) {
-      console.error(`project dir not found: ${projectDir}`);
+      console.error(`project dir not found: ${opts.projectArg}`);
       process.exitCode = 1;
       return;
     }
@@ -261,30 +363,57 @@ async function main(): Promise<void> {
 
   const entries = await collect(getProjectsBasePath(), projectDir);
   entries.sort((a, b) => {
-    if (sort === 'tokens') return b.totalTokens - a.totalTokens;
-    if (sort === 'date') return (b.lastTs?.getTime() ?? 0) - (a.lastTs?.getTime() ?? 0);
+    if (opts.sort === 'tokens') return b.totalTokens - a.totalTokens;
+    if (opts.sort === 'date') return (b.lastTs?.getTime() ?? 0) - (a.lastTs?.getTime() ?? 0);
     return b.durationMs - a.durationMs;
   });
-  const shown = entries.filter((e) => e.durationMs >= minMinutes * 60000).slice(0, limit);
+  const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
+  const shown = entries
+    .filter((e) => e.durationMs >= opts.minMinutes * 60000)
+    .filter((e) =>
+      hasDateFilter ? e.lastTs !== null && inDateRange(e.lastTs, opts.since, opts.until) : true
+    )
+    .slice(0, opts.limit);
 
-  if (json) {
-    console.log(JSON.stringify(shown, null, 2));
+  if (opts.json) {
+    // tokensByModel surfaces only with --breakdown; default JSON stays as before
+    const out = shown.map((e) => {
+      if (opts.breakdown) return e;
+      const copy = { ...e };
+      delete (copy as Partial<InventoryEntry>).tokensByModel;
+      return copy;
+    });
+    console.log(JSON.stringify(out, null, 2));
     return;
   }
 
-  const minNote = minMinutes > 0 ? ` (>= ${String(minMinutes)} min)` : '';
-  console.log(`sessions: ${entries.length} total, showing ${shown.length}${minNote}`);
+  const notes: string[] = [];
+  if (opts.minMinutes > 0) notes.push(`>= ${String(opts.minMinutes)} min`);
+  if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
+  else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
+  else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
+  const note = notes.length > 0 ? ` (${notes.join(', ')})` : '';
+  console.log(`sessions: ${entries.length} total, showing ${shown.length}${note}`);
   console.log();
   console.log(
-    `${padL('duration', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad('models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
+    `${padL('duration', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
   );
   for (const e of shown) {
     const project = shortenHome(decodePath(e.projectId));
-    const models = e.models.join(', ');
+    const models = opts.breakdown ? modelShareCell(e) : e.models.join(', ');
     console.log(
       `${padL(dur(e.durationMs), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
     );
   }
+}
+
+function modelShareCell(e: InventoryEntry): string {
+  const total = Object.values(e.tokensByModel).reduce((s, v) => s + v, 0);
+  if (total === 0) return 'n/a';
+  return Object.entries(e.tokensByModel)
+    .sort((a, b) => b[1] - a[1])
+    .map(([m, v]) => `${m} ${Math.round((v / total) * 100)}%`)
+    .join(', ');
 }
 
 // run only when executed directly — vitest imports this file for scanSessionFile

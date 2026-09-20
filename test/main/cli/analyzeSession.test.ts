@@ -10,9 +10,11 @@ import * as path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  breakdownFromRounds,
   buildLedger,
   computeFindings,
   detectBillingScheme,
+  filterLedgerByDate,
   normalizeCallKey,
   parseArgs,
   priceFamily,
@@ -330,5 +332,106 @@ describe('priceFamily and billing scheme', () => {
     const ledger = buildLedger(messages);
     expect(ledger.totals.costUsd).toBeDefined();
     expect(ledger.totals.costPartial).toBe(true);
+  });
+});
+
+describe('unified flag grammar', () => {
+  it('parses --since/--until as local day bounds (dash and compact forms)', () => {
+    const opts = parseArgs(['--since', '2026-09-01', '--until', '20260920', 'x.jsonl']);
+    expect(opts.since).toEqual(new Date(2026, 8, 1));
+    expect(opts.until).toEqual(new Date(2026, 8, 20, 23, 59, 59, 999));
+    expect(opts.sessionPath).toBe('x.jsonl');
+  });
+
+  it('reports an error for malformed date bounds', () => {
+    expect(parseArgs(['--since', 'nah']).error).toContain('--since');
+    expect(parseArgs(['--until', '2026-13-01']).error).toContain('--until');
+  });
+
+  it('keeps bare --last as pick-newest and numeric --last N as a day window', () => {
+    expect(parseArgs(['--project', 'p', '--last']).useLast).toBe(true);
+    const w = parseArgs(['--last', '7']);
+    expect(w.useLast).toBe(false);
+    expect(w.since?.getTime()).toBeLessThanOrEqual(Date.now() - 7 * 86400000);
+    expect(w.since?.getTime()).toBeGreaterThan(Date.now() - 8 * 86400000);
+  });
+
+  it('does not swallow a non-numeric --last value or a following flag', () => {
+    const a = parseArgs(['--last', 'x.jsonl']);
+    expect(a.useLast).toBe(true);
+    expect(a.sessionPath).toBe('x.jsonl');
+    const b = parseArgs(['--last', '--json']);
+    expect(b.useLast).toBe(true);
+    expect(b.json).toBe(true);
+  });
+
+  it('parses --breakdown and --no-cost', () => {
+    const opts = parseArgs(['--breakdown', '--no-cost', '--json']);
+    expect(opts.breakdown).toBe(true);
+    expect(opts.noCost).toBe(true);
+    expect(opts.json).toBe(true);
+  });
+});
+
+describe('filterLedgerByDate and breakdownFromRounds', () => {
+  const twoModelSession = () => [
+    makeMsg({ type: 'user', content: 'go' }),
+    makeMsg({
+      type: 'assistant',
+      model: 'claude-sonnet-5',
+      timestamp: new Date('2026-09-01T10:00:00Z'),
+      usage: usage(100, 1000, 0, 10),
+    }),
+    makeMsg({
+      type: 'assistant',
+      model: 'glm-5.3-flash',
+      timestamp: new Date('2026-09-15T10:00:00Z'),
+      usage: usage(50, 0, 0, 5),
+    }),
+    makeMsg({
+      type: 'assistant',
+      model: 'claude-sonnet-5',
+      timestamp: new Date('2026-09-20T10:00:00Z'),
+      usage: usage(30, 0, 0, 2),
+    }),
+  ];
+
+  it('keeps rounds inside the window and recomputes totals/models/duration', () => {
+    const ledger = buildLedger(twoModelSession());
+    const filtered = filterLedgerByDate(ledger, new Date(2026, 8, 15), undefined);
+    expect(filtered.rounds).toHaveLength(2);
+    expect(filtered.totals.inputTokens).toBe(80);
+    expect(filtered.totals.outputTokens).toBe(7);
+    expect(filtered.models).toEqual(['glm-5.3-flash', 'claude-sonnet-5']);
+    expect(filtered.durationMs).toBe(
+      new Date('2026-09-20T10:00:00Z').getTime() - new Date('2026-09-15T10:00:00Z').getTime()
+    );
+  });
+
+  it('recomputes cost from kept rounds only and flags partial when unpriced', () => {
+    const ledger = buildLedger(twoModelSession());
+    const filtered = filterLedgerByDate(
+      ledger,
+      new Date(2026, 8, 15),
+      new Date(2026, 8, 30, 23, 59, 59, 999)
+    );
+    // kept: glm (unpriced) + sonnet 30/0/0/2 → (30*3 + 2*15) / 1e6
+    expect(filtered.totals.costUsd).toBeCloseTo(0.00012, 10);
+    expect(filtered.totals.costPartial).toBe(true);
+  });
+
+  it('returns the ledger untouched without bounds', () => {
+    const ledger = buildLedger(twoModelSession());
+    expect(filterLedgerByDate(ledger)).toBe(ledger);
+  });
+
+  it('breakdown groups tokens per model and drops cost for unpriced ones', () => {
+    const rows = breakdownFromRounds(buildLedger(twoModelSession()).rounds);
+    expect(rows).toHaveLength(2);
+    const sonnet = rows.find((r) => r.model === 'claude-sonnet-5');
+    expect(sonnet?.billedTokens).toBe(100 + 1000 + 10 + 30 + 2);
+    // (100*3 + 10*15 + 1000*0.3) + (30*3 + 2*15) = 750 + 120 per 1e6
+    expect(sonnet?.costUsd).toBeCloseTo(0.00087, 10);
+    expect(rows.find((r) => r.model === 'glm-5.3-flash')?.costUsd).toBeUndefined();
   });
 });
