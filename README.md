@@ -197,6 +197,53 @@ The standalone server has **zero** outbound network calls. For maximum isolation
 
 ---
 
+## CLI: Token Analytics
+
+Two scripts answer "where did the billed tokens go" with exact numbers from your JSONL sessions — no app, no rebuild:
+
+```bash
+# Deep audit of one session: per-turn/per-round ledger (input / cache_read /
+# cache_write / output), waste findings, slow subagents, cost estimate
+pnpm analyze:session <file.jsonl>
+pnpm analyze:session --project <dir-or-encoded-name> --last
+
+# Inventory of all sessions: duration, models, token totals, billing scheme
+pnpm analyze:sessions
+pnpm analyze:sessions --min-minutes 120 --sort tokens
+```
+
+Both commands share one flag grammar:
+
+| Flag | Effect |
+|------|--------|
+| `--json` | Machine-readable output (the single machine-readable mode) |
+| `--breakdown` | Per-model token/cost split (`analyze:session`: BY MODEL table + JSON `breakdown`; `analyze:sessions`: model share in the models column + JSON `tokensByModel` per session) |
+| `--since DATE` / `--until DATE` | Date-range filter (`YYYY-MM-DD` or `YYYYMMDD`; activity window for `analyze:session`, session last-activity dates for `analyze:sessions` — a session that ran past `--until` drops out) |
+| `--last N` | Relative shortcut for `--since`: last N calendar days, local midnight N−1 days back (ccusage-style). On `analyze:session` a bare `--last` (no value) keeps its original meaning: pick the newest session of `--project` |
+| `--no-cost` | Omit cost estimates (hides the cost line, JSON `costUsd`/`costPartial`, breakdown costs) |
+| `--project`, `--min-minutes`, `--sort`, `--limit`, `--subagent-min-minutes` | Existing per-command flags, unchanged |
+
+More examples:
+
+```bash
+# Token cost breakdown by model for the latest session of a project
+pnpm analyze:session --project my-project --last --breakdown
+
+# Audit only yesterday's rounds, without cost estimates
+pnpm analyze:session session.jsonl --since 2026-09-20 --until 2026-09-20 --no-cost
+
+# Sessions active in the last 7 days, newest first
+pnpm analyze:sessions --last 7 --sort date --limit 20
+```
+
+### Positioning vs ccusage
+
+[ccusage](https://github.com/ryoppippi/ccusage) computes **macro usage aggregates** — daily/monthly/blocks reports across many agent sources, plus a statusline. claude-devtools does the opposite: a **deep per-session audit** of Claude Code sessions (ledger, waste findings, subagents, inventory). Complementary tools, zero feature mixing: no daily/monthly/blocks aggregates, no multi-agent sources, no statusline, no pricing-sync network logic here — and no per-session waste audit in ccusage. The commands above deliberately reuse ccusage's flag *conventions* (`--json`, `--since`/`--until`, `--last N`, `--breakdown`, `--no-cost`) so the two tools feel consistent side by side.
+
+`--help` on either command prints the full flag list.
+
+---
+
 ## Development
 
 <details>

@@ -11,6 +11,10 @@
  *   --rounds N                rounds table length (default 20)
  *   --subagent-min-minutes N  slow-subagent threshold (default 5)
  *   --min-severity S          low | medium | high (default low = all)
+ *   --breakdown               per-model token/cost breakdown
+ *   --since / --until DATE    only activity within the range (YYYY-MM-DD or YYYYMMDD)
+ *   --last [N]                no value: newest session of --project; N: last N calendar days
+ *   --no-cost                 omit cost estimates
  *   --json                    machine-readable output
  */
 
@@ -27,6 +31,8 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
+
+import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
 import type { ParsedMessage, Process } from '@main/types';
 
@@ -149,6 +155,113 @@ function thinkingTokensOf(msg: ParsedMessage): number {
   return Math.ceil(chars / 4);
 }
 
+// cost of one round at the built-in claude price table; null = unpriced model
+export function roundCostUsd(r: RoundRow): number | null {
+  const price = PRICE_PER_MTOK[priceFamily(r.model) ?? ''];
+  if (!price) return null;
+  return (
+    (r.inputTokens * price[0] +
+      r.outputTokens * price[1] +
+      r.cacheReadTokens * price[2] +
+      r.cacheCreationTokens * price[3]) /
+    1e6
+  );
+}
+
+export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
+  const t = {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    billedTokens: 0,
+    rereadShare: 0,
+    thinkingTokens: 0,
+  };
+  let costUsd = 0;
+  let unpriced = false;
+  for (const r of rounds) {
+    t.inputTokens += r.inputTokens;
+    t.cacheReadTokens += r.cacheReadTokens;
+    t.cacheCreationTokens += r.cacheCreationTokens;
+    t.outputTokens += r.outputTokens;
+    t.thinkingTokens += r.thinkingTokens;
+    const c = roundCostUsd(r);
+    if (c === null) unpriced = true;
+    else costUsd += c;
+  }
+  t.billedTokens = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens + t.outputTokens;
+  t.rereadShare = t.billedTokens > 0 ? t.cacheReadTokens / t.billedTokens : 0;
+  return { ...t, ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}) };
+}
+
+export interface ModelBreakdownRow {
+  model: string;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  billedTokens: number;
+  costUsd?: number;
+}
+
+// --breakdown: per-model token/cost totals; costUsd dropped when any round of
+// that model is unpriced (no partial per-model figures). withCost=false is the
+// --no-cost mode: no cost figures at all.
+export function breakdownFromRounds(rounds: RoundRow[], withCost = true): ModelBreakdownRow[] {
+  const byModel = new Map<string, ModelBreakdownRow>();
+  for (const r of rounds) {
+    let row = byModel.get(r.model);
+    if (!row) {
+      row = {
+        model: r.model,
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 0,
+        billedTokens: 0,
+      };
+      byModel.set(r.model, row);
+    }
+    row.inputTokens += r.inputTokens;
+    row.cacheReadTokens += r.cacheReadTokens;
+    row.cacheCreationTokens += r.cacheCreationTokens;
+    row.outputTokens += r.outputTokens;
+    row.billedTokens += r.inputTokens + r.cacheReadTokens + r.cacheCreationTokens + r.outputTokens;
+    if (withCost) {
+      const c = roundCostUsd(r);
+      if (c === null) delete row.costUsd;
+      else row.costUsd = (row.costUsd ?? 0) + c;
+    }
+  }
+  return [...byModel.values()].sort((a, b) => b.billedTokens - a.billedTokens);
+}
+
+// --since/--until: keep rounds inside the window, recompute everything derived
+export function filterLedgerByDate(
+  ledger: SessionLedger,
+  since?: Date,
+  until?: Date
+): SessionLedger {
+  if (!since && !until) return ledger;
+  const rounds = ledger.rounds.filter((r) => inDateRange(r.timestamp, since, until));
+  const keptTurns = new Set(rounds.map((r) => r.turnIndex));
+  let minTs = Number.POSITIVE_INFINITY;
+  let maxTs = Number.NEGATIVE_INFINITY;
+  for (const r of rounds) {
+    minTs = Math.min(minTs, r.timestamp.getTime());
+    maxTs = Math.max(maxTs, r.timestamp.getTime());
+  }
+  return {
+    turns: ledger.turns.filter((t) => keptTurns.has(t.index)),
+    rounds,
+    totals: totalsFromRounds(rounds),
+    models: [...new Set(rounds.map((r) => r.model))],
+    durationMs: Number.isFinite(minTs) ? Math.max(0, maxTs - minTs) : 0,
+    billing: detectBillingScheme(rounds),
+  };
+}
+
 export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const messages = deduplicateByRequestId(allMessages);
 
@@ -156,8 +269,6 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const rounds: RoundRow[] = [];
   const models = new Set<string>();
   let currentTurn: TurnRow | null = null;
-  let costUsd = 0;
-  let unpriced = false;
   let prevContext = 0;
   let minTs = Number.POSITIVE_INFINITY;
   let maxTs = Number.NEGATIVE_INFINITY;
@@ -208,39 +319,12 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     prevContext = contextSize;
     rounds.push(round);
     models.add(model);
-
-    const price = PRICE_PER_MTOK[priceFamily(model) ?? ''];
-    if (price) {
-      costUsd +=
-        (input * price[0] + output * price[1] + cacheRead * price[2] + cacheWrite * price[3]) / 1e6;
-    } else {
-      unpriced = true;
-    }
   }
-
-  const t = {
-    inputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    outputTokens: 0,
-    billedTokens: 0,
-    rereadShare: 0,
-    thinkingTokens: 0,
-  };
-  for (const r of rounds) {
-    t.inputTokens += r.inputTokens;
-    t.cacheReadTokens += r.cacheReadTokens;
-    t.cacheCreationTokens += r.cacheCreationTokens;
-    t.outputTokens += r.outputTokens;
-    t.thinkingTokens += r.thinkingTokens;
-  }
-  t.billedTokens = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens + t.outputTokens;
-  t.rereadShare = t.billedTokens > 0 ? t.cacheReadTokens / t.billedTokens : 0;
 
   return {
     turns,
     rounds,
-    totals: { ...t, ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}) },
+    totals: totalsFromRounds(rounds),
     models: [...models],
     durationMs: Number.isFinite(minTs) ? Math.max(0, maxTs - minTs) : 0,
     billing: detectBillingScheme(rounds),
@@ -294,7 +378,15 @@ function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }
 
-export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger): Finding[] {
+// since/until scope the tool-call walk (duplicate/failed/oversized) to the same
+// window as the ledger; the results map is still built from ALL messages, so a
+// call inside the window resolves a result that landed after --until
+export function computeFindings(
+  messages: ParsedMessage[],
+  ledger: SessionLedger,
+  since?: Date,
+  until?: Date
+): Finding[] {
   const findings: Finding[] = [];
   const th = WASTE_THRESHOLDS;
 
@@ -310,6 +402,7 @@ export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger
   const seen = new Map<string, { count: number; tokens: number; first: number }>();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
+    if (!inDateRange(msg.timestamp, since, until)) continue;
     for (const call of msg.toolCalls) {
       const key = normalizeCallKey(call.name, call.input);
       const result = results.get(call.id);
@@ -416,18 +509,16 @@ interface CliOpts {
   sessionPath?: string;
   projectArg?: string;
   useLast: boolean;
+  lastDays?: number;
   rounds: number;
   subagentMinMinutes: number;
   minSeverity: 'low' | 'medium' | 'high';
   json: boolean;
-}
-
-// the next token is a flag's value unless missing or itself a flag
-// (--rounds --json must not swallow --json)
-export function takeFlagValue(argv: string[], i: number): { value: string; next: number } {
-  const hasArg = i + 1 < argv.length;
-  const isValue = hasArg && !argv[i + 1].startsWith('--');
-  return isValue ? { value: argv[i + 1], next: i + 2 } : { value: '', next: i + 1 };
+  breakdown: boolean;
+  noCost: boolean;
+  since?: Date;
+  until?: Date;
+  error?: string;
 }
 
 export function parseArgs(argv: string[]): CliOpts {
@@ -437,6 +528,8 @@ export function parseArgs(argv: string[]): CliOpts {
     subagentMinMinutes: 5,
     minSeverity: 'low',
     json: false,
+    breakdown: false,
+    noCost: false,
   };
   let i = 0;
   while (i < argv.length) {
@@ -462,8 +555,36 @@ export function parseArgs(argv: string[]): CliOpts {
       i = next;
       continue;
     }
+    if (a === '--since' || a === '--until') {
+      const d = parseDayBound(value, a === '--until');
+      if (!d) opts.error = `invalid ${a} date (expected YYYY-MM-DD or YYYYMMDD): '${value}'`;
+      else if (a === '--since') opts.since = d;
+      else opts.until = d;
+      i = next;
+      continue;
+    }
+    // numeric --last N = ccusage-style day window; bare --last keeps its older
+    // meaning here: pick the newest session file of --project
     if (a === '--last') {
-      opts.useLast = true;
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.lastDays = parseInt(value, 10);
+        opts.since = lastDaysSince(opts.lastDays);
+        i = next;
+      } else {
+        // bare --last, or a token that is not --last's value (e.g. a positional
+        // path) — do not swallow it
+        opts.useLast = true;
+        i += 1;
+      }
+      continue;
+    }
+    if (a === '--breakdown') {
+      opts.breakdown = true;
+      i += 1;
+      continue;
+    }
+    if (a === '--no-cost') {
+      opts.noCost = true;
       i += 1;
       continue;
     }
@@ -551,7 +672,7 @@ function printReport(
   );
   console.log('models:', ledger.models.join(', ') || 'n/a');
   console.log('billing:', ledger.billing);
-  if (t.costUsd !== undefined) {
+  if (t.costUsd !== undefined && !opts.noCost) {
     const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
     console.log('est. cost: $' + t.costUsd.toFixed(2) + partial);
   }
@@ -567,6 +688,21 @@ function printReport(
   console.log(`TOTAL                : ${fmt(t.billedTokens)}`);
   console.log(`reread share         : ${Math.round(t.rereadShare * 100)}%`);
   console.log();
+  if (opts.breakdown) {
+    const rows = breakdownFromRounds(ledger.rounds);
+    console.log('=== BY MODEL ===');
+    console.log(
+      `${pad('model', 28)} ${padL('in', 8)} ${padL('cr', 8)} ${padL('cw', 8)} ${padL('out', 8)} ${padL('total', 9)}${opts.noCost ? '' : padL('cost', 10)}`
+    );
+    for (const b of rows) {
+      const cost =
+        opts.noCost || b.costUsd === undefined ? '' : padL('$' + b.costUsd.toFixed(2), 10);
+      console.log(
+        `${pad(short(b.model, 28), 28)} ${padL(fmt(b.inputTokens), 8)} ${padL(fmt(b.cacheReadTokens), 8)} ${padL(fmt(b.cacheCreationTokens), 8)} ${padL(fmt(b.outputTokens), 8)} ${padL(fmt(b.billedTokens), 9)}${cost}`
+      );
+    }
+    console.log();
+  }
   console.log('=== BY TURN ===');
   console.log(
     `${pad('#', 3)} ${pad('time', 6)} ${padL('context', 9)} ${padL('reread', 9)} ${padL('new', 8)} ${padL('out', 7)} ${pad('think%', 7)}  tools`
@@ -635,18 +771,37 @@ function printReport(
 
 async function main(): Promise<void> {
   const raw = process.argv.slice(2);
-  if (raw.includes('--help') || raw.includes('-h')) {
+  if (wantsHelp(raw)) {
     console.log(
-      'usage: pnpm analyze:session <file.jsonl> | --project <dir|encoded> --last [--rounds N] [--subagent-min-minutes N] [--min-severity low|medium|high] [--json]'
+      [
+        'usage: pnpm analyze:session <file.jsonl> | --project <dir|encoded> --last [N] [flags]',
+        '',
+        'flags:',
+        '  --rounds N                rounds table length (default 20)',
+        '  --subagent-min-minutes N  slow-subagent threshold in minutes (default 5)',
+        '  --min-severity S          low | medium | high (default low = all)',
+        '  --breakdown               per-model token/cost breakdown',
+        '  --since DATE              only activity on/after this date (YYYY-MM-DD or YYYYMMDD)',
+        '  --until DATE              only activity on/before this date',
+        '  --last [N]                no value: analyze newest session of --project;',
+        '                            N: only activity of the last N calendar days',
+        '  --no-cost                 omit cost estimates',
+        '  --json                    machine-readable output',
+      ].join('\n')
     );
     return;
   }
   const opts = parseArgs(raw);
+  if (opts.error) {
+    console.error(opts.error);
+    process.exitCode = 1;
+    return;
+  }
 
   let sessionFile = opts.sessionPath ? path.resolve(opts.sessionPath) : null;
   if (!sessionFile && opts.projectArg) {
-    if (!opts.useLast) {
-      console.error('--project requires --last');
+    if (!opts.useLast && opts.lastDays === undefined) {
+      console.error('--project requires --last (bare, or with a day count: --last N)');
       process.exitCode = 1;
       return;
     }
@@ -673,14 +828,23 @@ async function main(): Promise<void> {
 
   const { projectId, sessionId } = splitSessionPath(sessionFile);
   const messages = await parseJsonlFile(sessionFile);
-  const ledger = buildLedger(messages);
-  const findings = computeFindings(messages, ledger);
+  const ledger = filterLedgerByDate(buildLedger(messages), opts.since, opts.until);
+  const findings = computeFindings(messages, ledger, opts.since, opts.until);
 
   let subagents: Process[] = [];
   try {
     subagents = await resolveSubagentsFor(projectId, sessionId, messages);
   } catch (err) {
     console.error(`(subagent resolution unavailable: ${String(err)})`);
+  }
+  // under --since/--until keep only subagents whose [startTime, endTime]
+  // overlaps the same window as the ledger and findings
+  if (opts.since || opts.until) {
+    subagents = subagents.filter((s) => {
+      if (opts.since && s.endTime < opts.since) return false;
+      if (opts.until && s.startTime > opts.until) return false;
+      return true;
+    });
   }
 
   if (opts.json) {
@@ -693,9 +857,25 @@ async function main(): Promise<void> {
       totalTokens: p.metrics?.totalTokens ?? 0,
       isOngoing: p.isOngoing,
     }));
+    // --no-cost: drop cost fields without mutating the live ledger
+    const totalsOut = { ...ledger.totals };
+    if (opts.noCost) {
+      delete totalsOut.costUsd;
+      delete totalsOut.costPartial;
+    }
+    const ledgerOut = opts.noCost ? { ...ledger, totals: totalsOut } : ledger;
+    const breakdown = opts.breakdown ? breakdownFromRounds(ledger.rounds, !opts.noCost) : undefined;
     console.log(
       JSON.stringify(
-        { file: sessionFile, projectId, sessionId, ledger, findings, subagents: subagentSummaries },
+        {
+          file: sessionFile,
+          projectId,
+          sessionId,
+          ledger: ledgerOut,
+          findings,
+          subagents: subagentSummaries,
+          ...(breakdown ? { breakdown } : {}),
+        },
         null,
         2
       )
