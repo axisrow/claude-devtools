@@ -28,6 +28,7 @@ const KNOWN_FAMILIES: KnownModelFamily[] = ['sonnet', 'opus', 'haiku'];
  *
  * Supported formats:
  * - New format: claude-{family}-{major}-{minor}-{date} (e.g., "claude-sonnet-4-5-20250929")
+ * - New format short: claude-{family}-{major} (e.g., "claude-sonnet-5")
  * - Old format: claude-{major}-{family}-{date} (e.g., "claude-3-opus-20240229")
  * - Old format with minor: claude-{major}-{minor}-{family}-{date} (e.g., "claude-3-5-sonnet-20241022")
  */
@@ -87,12 +88,9 @@ export function parseModelString(model: string | undefined): ModelInfo | null {
 
   // Determine format based on family position
   if (familyIndex === 1) {
-    // New format: claude-{family}-{major}-{minor}-{date}
+    // New format: claude-{family}-{major}[-{minor}][-{date}]
     // e.g., claude-sonnet-4-5-20250929 -> ["claude", "sonnet", "4", "5", "20250929"]
-    if (parts.length < 4) {
-      return null;
-    }
-
+    // e.g., claude-sonnet-5 -> ["claude", "sonnet", "5"]
     majorVersion = parseInt(parts[2], 10);
     if (isNaN(majorVersion)) {
       return null;
