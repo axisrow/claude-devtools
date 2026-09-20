@@ -182,6 +182,53 @@ describe('computeFindings', () => {
     expect(dup?.tokensWasted).toBe(estimateTokens('all passed')); // one re-read, not both results
   });
 
+  it('scopes tool-call findings to the window but resolves results from all messages', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go', timestamp: new Date('2026-09-01T10:00:00Z') }),
+      makeMsg({
+        type: 'assistant',
+        timestamp: new Date('2026-09-01T10:01:00Z'),
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [{ id: 'a', name: 'Bash', input: { command: 'pytest -q' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'assistant',
+        timestamp: new Date('2026-09-20T10:00:00Z'),
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [
+          { id: 'b1', name: 'Bash', input: { command: 'pytest -q' }, isTask: false },
+          { id: 'b2', name: 'Bash', input: { command: 'pytest -q' }, isTask: false },
+          { id: 'c', name: 'Bash', input: { command: 'boom' }, isTask: false },
+        ],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        timestamp: new Date('2026-09-25T10:00:00Z'),
+        toolResults: [
+          { toolUseId: 'a', content: 'all passed', isError: false },
+          { toolUseId: 'b1', content: 'all passed', isError: false },
+          { toolUseId: 'b2', content: 'all passed', isError: false },
+          { toolUseId: 'c', content: 'Traceback: boom', isError: true },
+        ],
+      }),
+    ];
+    const ledger = buildLedger(messages);
+    const findings = computeFindings(
+      messages,
+      ledger,
+      new Date(2026, 8, 15),
+      new Date(2026, 8, 20, 23, 59, 59, 999)
+    );
+
+    // only the two in-window 'pytest -q' calls count — the Sep 1 call is out of scope
+    const dup = findings.find((f) => f.type === 'duplicate_call');
+    expect(dup).toBeDefined();
+    expect(dup?.tokensWasted).toBe(estimateTokens('all passed'));
+    // 'boom' fails inside the window, its result lands after --until and still resolves
+    expect(findings.filter((f) => f.type === 'failed_call')).toHaveLength(1);
+  });
+
   it('flags context spikes and dead caching from ledger rounds', () => {
     const messages = [
       makeMsg({ type: 'user', content: 'go' }),
@@ -348,12 +395,18 @@ describe('unified flag grammar', () => {
     expect(parseArgs(['--until', '2026-13-01']).error).toContain('--until');
   });
 
-  it('keeps bare --last as pick-newest and numeric --last N as a day window', () => {
+  it('keeps bare --last as pick-newest and numeric --last N as a calendar window', () => {
     expect(parseArgs(['--project', 'p', '--last']).useLast).toBe(true);
+    const midnight = (back: number): Date => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - back);
+      return d;
+    };
     const w = parseArgs(['--last', '7']);
     expect(w.useLast).toBe(false);
-    expect(w.since?.getTime()).toBeLessThanOrEqual(Date.now() - 7 * 86400000);
-    expect(w.since?.getTime()).toBeGreaterThan(Date.now() - 8 * 86400000);
+    expect(w.lastDays).toBe(7);
+    expect(w.since).toEqual(midnight(6)); // ccusage-style: local midnight, N=1 → today
   });
 
   it('does not swallow a non-numeric --last value or a following flag', () => {

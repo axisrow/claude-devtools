@@ -218,8 +218,8 @@ Both commands share one flag grammar:
 |------|--------|
 | `--json` | Machine-readable output (the single machine-readable mode) |
 | `--breakdown` | Per-model token/cost split (`analyze:session`: BY MODEL table + JSON `breakdown`; `analyze:sessions`: model share in the models column + JSON `tokensByModel` per session) |
-| `--since DATE` / `--until DATE` | Date-range filter (`YYYY-MM-DD` or `YYYYMMDD`; activity window for `analyze:session`, session activity dates for `analyze:sessions`) |
-| `--last N` | Relative shortcut for `--since` (last N days). On `analyze:session` a bare `--last` (no value) keeps its original meaning: pick the newest session of `--project` |
+| `--since DATE` / `--until DATE` | Date-range filter (`YYYY-MM-DD` or `YYYYMMDD`; activity window for `analyze:session`, session last-activity dates for `analyze:sessions` — a session that ran past `--until` drops out) |
+| `--last N` | Relative shortcut for `--since`: last N calendar days, local midnight N−1 days back (ccusage-style). On `analyze:session` a bare `--last` (no value) keeps its original meaning: pick the newest session of `--project` |
 | `--no-cost` | Omit cost estimates (hides the cost line, JSON `costUsd`/`costPartial`, breakdown costs) |
 | `--project`, `--min-minutes`, `--sort`, `--limit`, `--subagent-min-minutes` | Existing per-command flags, unchanged |
 

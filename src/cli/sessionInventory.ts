@@ -9,8 +9,8 @@
  *   --sort FIELD              duration | tokens | date (default duration)
  *   --limit N                 show first N rows
  *   --breakdown               per-session model token split (models column + JSON tokensByModel)
- *   --since / --until DATE    only sessions active within the range (YYYY-MM-DD or YYYYMMDD)
- *   --last N                  only sessions active in the last N days
+ *   --since / --until DATE    filter by session last-activity date (YYYY-MM-DD or YYYYMMDD)
+ *   --last N                  last-activity date within the last N calendar days
  *   --no-cost                 accepted for the shared grammar; inventory has no cost figures
  *   --json                    machine-readable output
  */
@@ -293,13 +293,12 @@ export function parseInventoryArgs(argv: string[]): InventoryOpts {
       continue;
     }
     if (a === '--last') {
-      const days = /^\d+$/.test(value) ? parseInt(value, 10) : NaN;
-      if (Number.isNaN(days)) {
-        opts.error = `--last requires a number of days, got '${value || '(missing)'}'`;
-        i += 1;
-      } else {
-        opts.since = lastDaysSince(days);
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.since = lastDaysSince(parseInt(value, 10));
         i = next;
+      } else {
+        opts.error = `--last expects a number of days >= 1, got '${value || '(missing)'}'`;
+        i += 1;
       }
       continue;
     }
@@ -335,9 +334,9 @@ async function main(): Promise<void> {
         '  --sort FIELD              duration | tokens | date (default duration)',
         '  --limit N                 show first N rows',
         '  --breakdown               per-session model token split',
-        '  --since DATE              only sessions active on/after this date (YYYY-MM-DD or YYYYMMDD)',
-        '  --until DATE              only sessions active on/before this date',
-        '  --last N                  only sessions active in the last N days',
+        '  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)',
+        '  --until DATE              only sessions whose last activity is on/before this date',
+        '  --last N                  sessions whose last activity falls in the last N calendar days',
         '  --no-cost                 accepted for the shared grammar; inventory has no cost figures',
         '  --json                    machine-readable output',
       ].join('\n')
@@ -368,6 +367,9 @@ async function main(): Promise<void> {
     return b.durationMs - a.durationMs;
   });
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
+  // heuristic: a session's date = its LAST activity; a session that started
+  // before --since still matches if it ended inside the window, but one that
+  // ran past --until drops out
   const shown = entries
     .filter((e) => e.durationMs >= opts.minMinutes * 60000)
     .filter((e) =>

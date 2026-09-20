@@ -13,7 +13,7 @@
  *   --min-severity S          low | medium | high (default low = all)
  *   --breakdown               per-model token/cost breakdown
  *   --since / --until DATE    only activity within the range (YYYY-MM-DD or YYYYMMDD)
- *   --last [N]                no value: newest session of --project; N: only last N days
+ *   --last [N]                no value: newest session of --project; N: last N calendar days
  *   --no-cost                 omit cost estimates
  *   --json                    machine-readable output
  */
@@ -378,7 +378,15 @@ function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }
 
-export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger): Finding[] {
+// since/until scope the tool-call walk (duplicate/failed/oversized) to the same
+// window as the ledger; the results map is still built from ALL messages, so a
+// call inside the window resolves a result that landed after --until
+export function computeFindings(
+  messages: ParsedMessage[],
+  ledger: SessionLedger,
+  since?: Date,
+  until?: Date
+): Finding[] {
   const findings: Finding[] = [];
   const th = WASTE_THRESHOLDS;
 
@@ -394,6 +402,7 @@ export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger
   const seen = new Map<string, { count: number; tokens: number; first: number }>();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
+    if (!inDateRange(msg.timestamp, since, until)) continue;
     for (const call of msg.toolCalls) {
       const key = normalizeCallKey(call.name, call.input);
       const result = results.get(call.id);
@@ -500,6 +509,7 @@ interface CliOpts {
   sessionPath?: string;
   projectArg?: string;
   useLast: boolean;
+  lastDays?: number;
   rounds: number;
   subagentMinMinutes: number;
   minSeverity: 'low' | 'medium' | 'high';
@@ -553,14 +563,16 @@ export function parseArgs(argv: string[]): CliOpts {
       i = next;
       continue;
     }
-    // ccusage-style relative window; bare --last keeps its older meaning here:
-    // pick the newest session file of --project
+    // numeric --last N = ccusage-style day window; bare --last keeps its older
+    // meaning here: pick the newest session file of --project
     if (a === '--last') {
-      const days = /^\d+$/.test(value) ? parseInt(value, 10) : NaN;
-      if (!Number.isNaN(days)) {
-        opts.since = lastDaysSince(days);
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.lastDays = parseInt(value, 10);
+        opts.since = lastDaysSince(opts.lastDays);
         i = next;
       } else {
+        // bare --last, or a token that is not --last's value (e.g. a positional
+        // path) — do not swallow it
         opts.useLast = true;
         i += 1;
       }
@@ -772,7 +784,7 @@ async function main(): Promise<void> {
         '  --since DATE              only activity on/after this date (YYYY-MM-DD or YYYYMMDD)',
         '  --until DATE              only activity on/before this date',
         '  --last [N]                no value: analyze newest session of --project;',
-        '                            N: only activity of the last N days',
+        '                            N: only activity of the last N calendar days',
         '  --no-cost                 omit cost estimates',
         '  --json                    machine-readable output',
       ].join('\n')
@@ -788,8 +800,8 @@ async function main(): Promise<void> {
 
   let sessionFile = opts.sessionPath ? path.resolve(opts.sessionPath) : null;
   if (!sessionFile && opts.projectArg) {
-    if (!opts.useLast) {
-      console.error('--project requires --last');
+    if (!opts.useLast && opts.lastDays === undefined) {
+      console.error('--project requires --last (bare, or with a day count: --last N)');
       process.exitCode = 1;
       return;
     }
@@ -817,13 +829,22 @@ async function main(): Promise<void> {
   const { projectId, sessionId } = splitSessionPath(sessionFile);
   const messages = await parseJsonlFile(sessionFile);
   const ledger = filterLedgerByDate(buildLedger(messages), opts.since, opts.until);
-  const findings = computeFindings(messages, ledger);
+  const findings = computeFindings(messages, ledger, opts.since, opts.until);
 
   let subagents: Process[] = [];
   try {
     subagents = await resolveSubagentsFor(projectId, sessionId, messages);
   } catch (err) {
     console.error(`(subagent resolution unavailable: ${String(err)})`);
+  }
+  // under --since/--until keep only subagents whose [startTime, endTime]
+  // overlaps the same window as the ledger and findings
+  if (opts.since || opts.until) {
+    subagents = subagents.filter((s) => {
+      if (opts.since && s.endTime < opts.since) return false;
+      if (opts.until && s.startTime > opts.until) return false;
+      return true;
+    });
   }
 
   if (opts.json) {
@@ -843,9 +864,7 @@ async function main(): Promise<void> {
       delete totalsOut.costPartial;
     }
     const ledgerOut = opts.noCost ? { ...ledger, totals: totalsOut } : ledger;
-    const breakdown = opts.breakdown
-      ? breakdownFromRounds(ledger.rounds, !opts.noCost)
-      : undefined;
+    const breakdown = opts.breakdown ? breakdownFromRounds(ledger.rounds, !opts.noCost) : undefined;
     console.log(
       JSON.stringify(
         {

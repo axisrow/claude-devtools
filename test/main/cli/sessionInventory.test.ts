@@ -54,11 +54,23 @@ describe('parseInventoryArgs (unified grammar)', () => {
     expect(o.error).toBeUndefined();
   });
 
-  it('rejects malformed dates and --last without a number', () => {
+  it('rejects malformed dates and --last without a positive number', () => {
     expect(parseInventoryArgs(['--since', 'nah']).error).toContain('--since');
     expect(parseInventoryArgs(['--until', '2026-13-01']).error).toContain('--until');
     expect(parseInventoryArgs(['--last']).error).toContain('--last');
     expect(parseInventoryArgs(['--last', '--json']).error).toContain('--last');
+    expect(parseInventoryArgs(['--last', '0']).error).toContain('--last');
+  });
+
+  it('snaps --last N to local midnight N-1 days back', () => {
+    const midnight = (back: number): Date => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - back);
+      return d;
+    };
+    expect(parseInventoryArgs(['--last', '1']).since).toEqual(midnight(0)); // today
+    expect(parseInventoryArgs(['--last', '7']).since).toEqual(midnight(6));
   });
 });
 

@@ -26,9 +26,13 @@ export function parseDayBound(s: string, endOfDay: boolean): Date | null {
   return date;
 }
 
-// --last N → start of the rolling window, N*24h back
+// --last N → ccusage-style calendar window: local midnight of (today − N + 1),
+// so N = 1 means "today". Callers must reject N < 1.
 export function lastDaysSince(days: number): Date {
-  return new Date(Date.now() - days * 86400000);
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (days - 1));
+  return d;
 }
 
 export function inDateRange(ts: Date, since?: Date, until?: Date): boolean {
