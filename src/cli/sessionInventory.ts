@@ -36,6 +36,7 @@ interface ScanEntry {
   type?: string;
   timestamp?: string;
   requestId?: string;
+  isSidechain?: boolean;
   message?: { model?: string; usage?: RawUsage };
 }
 
@@ -99,7 +100,14 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     if (lastTs === null || ts > lastTs) lastTs = ts;
     if (e.type === 'user' || e.type === 'assistant') messageCount++;
 
-    if (e.type === 'assistant' && e.message?.usage && e.message.model !== '<synthetic>') {
+    // sidechain (subagent) entries stay out of totals/models/billing — same
+    // accounting as buildLedger; timestamps and message count cover the file
+    if (
+      e.type === 'assistant' &&
+      !e.isSidechain &&
+      e.message?.usage &&
+      e.message.model !== '<synthetic>'
+    ) {
       if (e.message.model) models.add(e.message.model);
       if (e.message.usage.cache_creation_input_tokens) sawWrite = true;
       else if (e.message.usage.cache_read_input_tokens) sawRead = true;
@@ -150,7 +158,7 @@ async function listSessionFiles(projectDir: string): Promise<string[]> {
   return out;
 }
 
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (x: T) => Promise<R>
@@ -166,7 +174,7 @@ async function mapWithConcurrency<T, R>(
         results.push(await fn(item));
       } catch (err) {
         // one unreadable file must not abort a 1200+-file scan
-        console.error(`(skipped ${item}: ${String(err)})`);
+        console.error(`(skipped ${String(item)}: ${String(err)})`);
         results.push(null);
       }
     }

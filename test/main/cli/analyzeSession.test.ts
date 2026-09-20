@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import * as path from 'path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildLedger,
@@ -17,7 +17,8 @@ import {
   parseArgs,
   priceFamily,
 } from '../../../src/cli/analyzeSession';
-import { scanSessionFile } from '../../../src/cli/sessionInventory';
+import { mapWithConcurrency, scanSessionFile } from '../../../src/cli/sessionInventory';
+import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
 import type { ParsedMessage } from '../../../src/main/types';
 
 let seq = 0;
@@ -168,12 +169,15 @@ describe('computeFindings', () => {
       }),
     ];
     const ledger = buildLedger(messages);
-    const types = computeFindings(messages, ledger).map((f) => f.type);
+    const findings = computeFindings(messages, ledger);
+    const types = findings.map((f) => f.type);
 
     expect(types).toContain('duplicate_call');
     expect(types).toContain('failed_call');
-    const failed = computeFindings(messages, ledger).filter((f) => f.type === 'failed_call');
+    const failed = findings.filter((f) => f.type === 'failed_call');
     expect(failed).toHaveLength(1); // only the real failure, not the rejection
+    const dup = findings.find((f) => f.type === 'duplicate_call');
+    expect(dup?.tokensWasted).toBe(estimateTokens('all passed')); // one re-read, not both results
   });
 
   it('flags context spikes and dead caching from ledger rounds', () => {
@@ -191,7 +195,7 @@ describe('computeFindings', () => {
 });
 
 describe('scanSessionFile', () => {
-  it('computes duration, dedups usage per requestId, excludes synthetic', async () => {
+  it('computes duration, dedups usage per requestId, excludes synthetic and sidechain usage', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'devtools-inv-'));
     try {
       const file = path.join(dir, 'session1.jsonl');
@@ -225,20 +229,51 @@ describe('scanSessionFile', () => {
             timestamp: '2026-09-20T10:07:00Z',
             message: { model: '<synthetic>', usage: { input_tokens: 9, output_tokens: 1 } },
           }),
+          JSON.stringify({
+            type: 'assistant',
+            uuid: '5',
+            timestamp: '2026-09-20T10:08:00Z',
+            isSidechain: true,
+            requestId: 'r2',
+            message: {
+              model: 'claude-haiku-4-5',
+              usage: { input_tokens: 500, output_tokens: 50, cache_creation_input_tokens: 30 },
+            },
+          }),
         ].join('\n')
       );
 
       const entry = await scanSessionFile(file);
       expect(entry).not.toBeNull();
-      expect(entry?.durationMs).toBe(7 * 60 * 1000);
+      // sidechain timestamps span the file, but its tokens/models/billing stay out
+      expect(entry?.durationMs).toBe(8 * 60 * 1000);
       expect(entry?.models).toEqual(['claude-sonnet-5']);
       expect(entry?.inputTokens).toBe(10);
       expect(entry?.outputTokens).toBe(5);
       expect(entry?.cacheReadTokens).toBe(100);
-      expect(entry?.messageCount).toBe(4);
+      expect(entry?.cacheCreationTokens).toBe(0);
+      expect(entry?.messageCount).toBe(5);
       expect(entry?.billing).toBe('router-style');
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('mapWithConcurrency', () => {
+  it('isolates per-item failures as null entries', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const results = await mapWithConcurrency([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error('EACCES: permission denied');
+        return n * 10;
+      });
+      expect(results).toHaveLength(3);
+      expect(results).toContain(10);
+      expect(results).toContain(30);
+      expect(results).toContain(null);
+    } finally {
+      errSpy.mockRestore();
     }
   });
 });
@@ -273,6 +308,7 @@ describe('priceFamily and billing scheme', () => {
     expect(ledger.billing).toBe('anthropic-style');
     expect(ledger.totals.costUsd).toBeDefined();
     expect(ledger.totals.costUsd).toBeGreaterThan(0);
+    expect(ledger.totals.costPartial).toBe(false);
   });
 
   it('labels router-style sessions without cost', () => {
@@ -283,5 +319,16 @@ describe('priceFamily and billing scheme', () => {
     const ledger = buildLedger(messages);
     expect(ledger.billing).toBe('router-style');
     expect(ledger.totals.costUsd).toBeUndefined();
+  });
+
+  it('marks cost partial when the session mixes priced and unpriced models', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'claude-sonnet-5', usage: usage(100, 0, 0, 10) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(100, 0, 0, 10) }),
+    ];
+    const ledger = buildLedger(messages);
+    expect(ledger.totals.costUsd).toBeDefined();
+    expect(ledger.totals.costPartial).toBe(true);
   });
 });

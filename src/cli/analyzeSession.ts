@@ -129,6 +129,7 @@ export interface SessionLedger {
     rereadShare: number;
     thinkingTokens: number;
     costUsd?: number;
+    costPartial?: boolean;
   };
   models: string[];
   durationMs: number;
@@ -156,6 +157,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const models = new Set<string>();
   let currentTurn: TurnRow | null = null;
   let costUsd = 0;
+  let unpriced = false;
   let prevContext = 0;
   let minTs = Number.POSITIVE_INFINITY;
   let maxTs = Number.NEGATIVE_INFINITY;
@@ -211,6 +213,8 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     if (price) {
       costUsd +=
         (input * price[0] + output * price[1] + cacheRead * price[2] + cacheWrite * price[3]) / 1e6;
+    } else {
+      unpriced = true;
     }
   }
 
@@ -236,7 +240,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   return {
     turns,
     rounds,
-    totals: { ...t, ...(costUsd > 0 ? { costUsd } : {}) },
+    totals: { ...t, ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}) },
     models: [...models],
     durationMs: Number.isFinite(minTs) ? Math.max(0, maxTs - minTs) : 0,
     billing: detectBillingScheme(rounds),
@@ -303,7 +307,7 @@ export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger
   }
 
   // duplicate / failed / oversized — walk tool calls in order
-  const seen = new Map<string, { count: number; tokens: number }>();
+  const seen = new Map<string, { count: number; tokens: number; first: number }>();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
     for (const call of msg.toolCalls) {
@@ -338,17 +342,18 @@ export function computeFindings(messages: ParsedMessage[], ledger: SessionLedger
         prev.count += 1;
         prev.tokens += resultTok;
       } else {
-        seen.set(key, { count: 1, tokens: resultTok });
+        seen.set(key, { count: 1, tokens: resultTok, first: resultTok });
       }
     }
   }
-  for (const [key, { count, tokens }] of seen) {
+  for (const [key, { count, tokens, first }] of seen) {
     if (count > 1) {
+      const reread = tokens - first; // repeats only — the first read was legitimate
       findings.push({
         type: 'duplicate_call',
         severity: 'medium',
-        tokensWasted: tokens,
-        summary: `${short(key, 90)} — called ${count}x (~${formatTokensCompact(tokens)} tok of results re-read)`,
+        tokensWasted: reread,
+        summary: `${short(key, 90)} — called ${count}x (~${formatTokensCompact(reread)} tok of results re-read)`,
       });
     }
   }
@@ -420,9 +425,9 @@ interface CliOpts {
 // the next token is a flag's value unless missing or itself a flag
 // (--rounds --json must not swallow --json)
 export function takeFlagValue(argv: string[], i: number): { value: string; next: number } {
-  const v = argv[i + 1];
-  const isValue = v !== undefined && !v.startsWith('--');
-  return isValue ? { value: v, next: i + 2 } : { value: '', next: i + 1 };
+  const hasArg = i + 1 < argv.length;
+  const isValue = hasArg && !argv[i + 1].startsWith('--');
+  return isValue ? { value: argv[i + 1], next: i + 2 } : { value: '', next: i + 1 };
 }
 
 export function parseArgs(argv: string[]): CliOpts {
@@ -479,7 +484,12 @@ export function pickNewestSessionFile(dir: string): string | null {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!e.isFile() || !e.name.endsWith('.jsonl') || e.name.startsWith('agent-')) continue;
     const file = path.join(dir, e.name);
-    const mtime = fs.statSync(file).mtimeMs;
+    let mtime: number;
+    try {
+      mtime = fs.statSync(file).mtimeMs;
+    } catch {
+      continue; // vanished between readdir and stat
+    }
     if (!newest || mtime > newest.mtime) newest = { file, mtime };
   }
   return newest?.file ?? null;
@@ -541,7 +551,10 @@ function printReport(
   );
   console.log('models:', ledger.models.join(', ') || 'n/a');
   console.log('billing:', ledger.billing);
-  if (t.costUsd !== undefined) console.log('est. cost: $' + t.costUsd.toFixed(2));
+  if (t.costUsd !== undefined) {
+    const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
+    console.log('est. cost: $' + t.costUsd.toFixed(2) + partial);
+  }
   console.log();
   console.log('=== TOKENS (billed) ===');
   console.log(`input (uncached)     : ${fmt(t.inputTokens)}`);
@@ -631,8 +644,24 @@ async function main(): Promise<void> {
   const opts = parseArgs(raw);
 
   let sessionFile = opts.sessionPath ? path.resolve(opts.sessionPath) : null;
-  if (!sessionFile && opts.projectArg && opts.useLast) {
-    sessionFile = pickNewestSessionFile(resolveProjectDir(opts.projectArg));
+  if (!sessionFile && opts.projectArg) {
+    if (!opts.useLast) {
+      console.error('--project requires --last');
+      process.exitCode = 1;
+      return;
+    }
+    const dir = resolveProjectDir(opts.projectArg);
+    if (!fs.existsSync(dir)) {
+      console.error(`project dir not found: ${dir}`);
+      process.exitCode = 1;
+      return;
+    }
+    sessionFile = pickNewestSessionFile(dir);
+    if (!sessionFile) {
+      console.error(`no .jsonl sessions found in ${dir}`);
+      process.exitCode = 1;
+      return;
+    }
   }
   if (!sessionFile || !fs.existsSync(sessionFile)) {
     console.error(
