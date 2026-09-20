@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 For the full list of merged PRs per release, see [GitHub Releases](https://github.com/matt1398/claude-devtools/releases).
 
+## Fork
+
+Development continues in this fork — see the [Upstream sync policy](README.md#upstream-sync-policy). Upstream entries below are kept unchanged.
+
+### Added
+- Session-audit CLI: `pnpm analyze:session` (deep per-session ledger, waste findings, slow subagents, cost estimate) and `pnpm analyze:sessions` (session inventory), with a unified ccusage-style flag grammar (#1).
+
 ## [Unreleased]
 
 ### Added

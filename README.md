@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Actively maintained fork** of [matt1398/claude-devtools](https://github.com/matt1398/claude-devtools) (upstream dormant since 2026-05). This fork carries new development: session-audit CLI, Claude Code plugin, fixes. See the [Upstream sync policy](#upstream-sync-policy).
+
 <p align="center">
   <img src="resources/claude.png" alt="Your Claude is coding blind" width="600" />
 </p>
@@ -168,6 +171,15 @@ System notifications for `.env` access, tool errors, high token usage, and custo
 ## Not a Wrapper
 
 claude-devtools does **not** wrap, modify, or interfere with Claude Code. It reads session logs that already exist on your machine. Works with sessions from the terminal, IDEs, or any tool that uses Claude Code.
+
+---
+
+## Upstream Sync Policy
+
+This repository is the actively maintained fork of [matt1398/claude-devtools](https://github.com/matt1398/claude-devtools); upstream has been dormant since 2026-05. Upstream is still fetched periodically, but it is not expected to move.
+
+- Local development happens in `main` and feature branches of this fork.
+- Open upstream PRs (e.g. [#235](https://github.com/matt1398/claude-devtools/pull/235)) are closed as "carried in fork" once their changes are applied locally.
 
 ---
 
