@@ -43,14 +43,6 @@ const PRICE_PER_MTOK: Record<string, [number, number, number, number]> = {
   haiku: [1, 5, 0.1, 1.25],
 };
 
-// ponytail: local stopgap for short ids (claude-sonnet-5) while upstream PR #235 is unmerged
-export function priceFamily(model: string): string | null {
-  const info = parseModelString(model);
-  if (info) return info.family;
-  const m = /claude-(opus|sonnet|haiku)/.exec(model.toLowerCase());
-  return m ? m[1] : null;
-}
-
 export type BillingScheme = 'anthropic-style' | 'router-style' | 'no-cache' | 'mixed';
 
 // anthropic-style billing has cache_write > 0 on rounds; routers typically report
@@ -157,7 +149,7 @@ function thinkingTokensOf(msg: ParsedMessage): number {
 
 // cost of one round at the built-in claude price table; null = unpriced model
 export function roundCostUsd(r: RoundRow): number | null {
-  const price = PRICE_PER_MTOK[priceFamily(r.model) ?? ''];
+  const price = PRICE_PER_MTOK[parseModelString(r.model)?.family ?? ''];
   if (!price) return null;
   return (
     (r.inputTokens * price[0] +

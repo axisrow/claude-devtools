@@ -17,7 +17,6 @@ import {
   filterLedgerByDate,
   normalizeCallKey,
   parseArgs,
-  priceFamily,
 } from '../../../src/cli/analyzeSession';
 import { mapWithConcurrency, scanSessionFile } from '../../../src/cli/sessionInventory';
 import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
@@ -327,13 +326,7 @@ describe('mapWithConcurrency', () => {
   });
 });
 
-describe('priceFamily and billing scheme', () => {
-  it('extracts claude family from short ids without date', () => {
-    expect(priceFamily('claude-sonnet-5')).toBe('sonnet');
-    expect(priceFamily('claude-sonnet-5-20250929')).toBe('sonnet');
-    expect(priceFamily('glm-5.3-flash')).toBeNull();
-  });
-
+describe('billing scheme', () => {
   it('detects billing scheme from round signatures', () => {
     const w = { cacheReadTokens: 0, cacheCreationTokens: 100 };
     const r = { cacheReadTokens: 500, cacheCreationTokens: 0 };
