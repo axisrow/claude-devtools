@@ -37,11 +37,18 @@ import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } f
 import type { ParsedMessage, Process } from '@main/types';
 
 // ponytail: single-file pricing table; extract to a module when something else needs it
+// glm: public rates (OpenRouter/z.ai, verified 2026-09-21); cache write assumed = input rate
 const PRICE_PER_MTOK: Record<string, [number, number, number, number]> = {
   opus: [15, 75, 1.5, 18.75],
   sonnet: [3, 15, 0.3, 3.75],
   haiku: [1, 5, 0.1, 1.25],
+  glm: [0.075, 0.25, 0.015, 0.075],
 };
+
+// pricing family: claude via parser; other models — first id segment (glm-5.3-flash → glm)
+function priceFamily(model: string): string {
+  return parseModelString(model)?.family ?? model.toLowerCase().split('-')[0];
+}
 
 export type BillingScheme = 'anthropic-style' | 'router-style' | 'no-cache' | 'mixed';
 
@@ -151,9 +158,9 @@ function thinkingTokensOf(msg: ParsedMessage): number {
   return Math.ceil(chars / 4);
 }
 
-// cost of one round at the built-in claude price table; null = unpriced model
+// cost of one round at the built-in price table; null = unpriced model
 export function roundCostUsd(r: RoundRow): number | null {
-  const price = PRICE_PER_MTOK[parseModelString(r.model)?.family ?? ''];
+  const price = PRICE_PER_MTOK[priceFamily(r.model)] ?? null;
   if (!price) return null;
   return (
     (r.inputTokens * price[0] +
