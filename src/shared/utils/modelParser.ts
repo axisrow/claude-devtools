@@ -92,7 +92,8 @@ export function parseModelString(model: string | undefined): ModelInfo | null {
     // e.g., claude-sonnet-4-5-20250929 -> ["claude", "sonnet", "4", "5", "20250929"]
     // e.g., claude-sonnet-5 -> ["claude", "sonnet", "5"]
     majorVersion = parseInt(parts[2], 10);
-    if (isNaN(majorVersion)) {
+    // 8 digits in major position is a misplaced date (claude-sonnet-20250929), not a version
+    if (isNaN(majorVersion) || /^\d{8}$/.test(parts[2])) {
       return null;
     }
 

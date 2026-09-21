@@ -116,6 +116,10 @@ describe('modelParser', () => {
       expect(parseModelString('claude-sonnet-x')).toBeNull();
     });
 
+    it('should return null for date-shaped major version: claude-sonnet-20250929', () => {
+      expect(parseModelString('claude-sonnet-20250929')).toBeNull();
+    });
+
     it('should return null for invalid format with only two parts', () => {
       expect(parseModelString('claude-sonnet')).toBeNull();
     });
