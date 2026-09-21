@@ -7,7 +7,8 @@
  * Flags:
  *   --min-minutes N           only sessions with at least N minutes of active (API) time
  *   --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes
- *   --sort FIELD              duration | active | turn | tokens | date (default duration)
+ *   --min-streak N            only sessions where some back-to-back cycle ran at least N times
+ *   --sort FIELD              duration | active | turn | streak | tokens | date (default duration)
  *   --limit N                 show first N rows
  *   --breakdown               per-session model token split (models column + JSON tokensByModel)
  *   --since / --until DATE    filter by session last-activity date (YYYY-MM-DD or YYYYMMDD)
@@ -31,14 +32,17 @@ import * as readline from 'readline';
 import { pathToFileURL } from 'url';
 
 import {
+  bashStem,
   billingFromFlags,
   type BillingScheme,
   dur,
+  normalizeCallKey,
   pad,
   padL,
   resolveProjectDir,
   short,
   TURN_IDLE_GAP_CAP_MINUTES,
+  WASTE_THRESHOLDS,
 } from './analyzeSession';
 import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
@@ -78,6 +82,8 @@ export interface InventoryEntry {
   activeMs: number;
   /** longest single turn's active time — a 96h-active session may have no turn over 20 min */
   longestTurnMs: number;
+  /** every maximal run of >= loopStreakMin back-to-back identical calls, longest first (cap 10) */
+  cycles: { key: string; count: number }[];
   lastTs: Date | null;
   models: string[];
   messageCount: number;
@@ -108,6 +114,42 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   let longestTurnMs = 0;
   let prevUsageTs: number | null = null;
   let messageCount = 0;
+  const seenCallIds = new Set<string>();
+  // back-to-back run tracking: one entry per maximal run of >= loopStreakMin
+  // identical calls. Buckets Bash by stem (pipe-cut) — analyze:session's
+  // loop_streak keys on the full input, so the two may split one session
+  let lastStreakKey = '';
+  let curStreak = 0;
+  const runs: { key: string; count: number }[] = [];
+  const flushStreak = (): void => {
+    if (lastStreakKey && curStreak >= WASTE_THRESHOLDS.loopStreakMin) {
+      runs.push({ key: lastStreakKey, count: curStreak });
+    }
+  };
+  const countCalls = (line: ScanEntry): void => {
+    const m = line.message;
+    if (!m || !Array.isArray(m.content)) return;
+    for (const block of m.content) {
+      const b = block as {
+        type?: string;
+        name?: string;
+        id?: string;
+        input?: Record<string, unknown>;
+      };
+      if (b?.type !== 'tool_use' || !b.name) continue;
+      const dedupId = `${line.requestId ?? ''}|${b.id ?? ''}`;
+      if (seenCallIds.has(dedupId)) continue;
+      seenCallIds.add(dedupId);
+      const key = bashStem(normalizeCallKey(b.name, b.input ?? {}));
+      if (key === lastStreakKey) {
+        curStreak += 1;
+      } else {
+        flushStreak();
+        lastStreakKey = key;
+        curStreak = 1;
+      }
+    }
+  };
   let cwd: string | undefined;
   const models = new Set<string>();
   // anthropic-style rounds report cache writes; routers report cache_read with cw=0
@@ -148,6 +190,18 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       prevUsageTs = null;
     }
 
+    // calls are counted on ALL main-chain assistant lines — router sessions
+    // log usage on a separate final line, so usage-gating would miss most;
+    // seenCallIds keeps streaming snapshots from double-counting
+    if (
+      e.type === 'assistant' &&
+      !e.isSidechain &&
+      e.message &&
+      e.message.model !== '<synthetic>'
+    ) {
+      countCalls(e);
+    }
+
     // sidechain (subagent) entries stay out of totals/models/billing — same
     // accounting as buildLedger; timestamps and message count cover the file
     if (
@@ -182,6 +236,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
 
   if (firstTs === null || lastTs === null) return null;
   longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
+  flushStreak();
 
   let totals: RawUsage = {};
   const byModel = new Map<string, RawUsage>();
@@ -216,6 +271,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     durationMs: Math.max(0, lastTs - firstTs),
     activeMs,
     longestTurnMs,
+    cycles: runs.toSorted((a, b) => b.count - a.count).slice(0, 10),
     lastTs: new Date(lastTs),
     models: [...models],
     messageCount,
@@ -292,11 +348,12 @@ const ymd = (d: Date): string =>
 export interface InventoryOpts {
   projectArg?: string;
   minMinutes: number;
-  sort: 'duration' | 'active' | 'turn' | 'tokens' | 'date';
+  sort: 'duration' | 'active' | 'turn' | 'streak' | 'tokens' | 'date';
   limit: number;
   json: boolean;
   breakdown: boolean;
   minTurnMinutes: number;
+  minStreak: number;
   since?: Date;
   until?: Date;
   error?: string;
@@ -310,6 +367,7 @@ export function parseInventoryArgs(argv: string[]): InventoryOpts {
     json: false,
     breakdown: false,
     minTurnMinutes: 0,
+    minStreak: 0,
   };
   let i = 0;
   while (i < argv.length) {
@@ -330,9 +388,18 @@ export function parseInventoryArgs(argv: string[]): InventoryOpts {
       i = next;
       continue;
     }
+    if (a === '--min-streak') {
+      opts.minStreak = parseInt(value, 10) || 0;
+      i = next;
+      continue;
+    }
     if (a === '--sort') {
       opts.sort =
-        value === 'tokens' || value === 'date' || value === 'active' || value === 'turn'
+        value === 'tokens' ||
+        value === 'date' ||
+        value === 'active' ||
+        value === 'turn' ||
+        value === 'streak'
           ? value
           : 'duration';
       i = next;
@@ -392,7 +459,8 @@ async function main(): Promise<void> {
         'flags:',
         '  --min-minutes N           only sessions with at least N minutes of active (API) time',
         '  --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes',
-        '  --sort FIELD              duration | active | turn | tokens | date (default duration)',
+        '  --min-streak N            only sessions where some back-to-back cycle ran at least N times',
+        '  --sort FIELD              duration | active | turn | streak | tokens | date (default duration)',
         '  --limit N                 show first N rows',
         '  --breakdown               per-session model token split',
         '  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)',
@@ -427,6 +495,9 @@ async function main(): Promise<void> {
     if (opts.sort === 'date') return (b.lastTs?.getTime() ?? 0) - (a.lastTs?.getTime() ?? 0);
     if (opts.sort === 'active') return b.activeMs - a.activeMs;
     if (opts.sort === 'turn') return b.longestTurnMs - a.longestTurnMs;
+    if (opts.sort === 'streak') {
+      return (b.cycles[0]?.count ?? 0) - (a.cycles[0]?.count ?? 0);
+    }
     return b.durationMs - a.durationMs;
   });
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
@@ -436,6 +507,7 @@ async function main(): Promise<void> {
   const shown = entries
     .filter((e) => e.activeMs >= opts.minMinutes * 60000)
     .filter((e) => e.longestTurnMs >= opts.minTurnMinutes * 60000)
+    .filter((e) => (e.cycles[0]?.count ?? 0) >= opts.minStreak)
     .filter((e) =>
       hasDateFilter ? e.lastTs !== null && inDateRange(e.lastTs, opts.since, opts.until) : true
     )
@@ -456,6 +528,7 @@ async function main(): Promise<void> {
   const notes: string[] = [];
   if (opts.minMinutes > 0) notes.push(`>= ${String(opts.minMinutes)} min active`);
   if (opts.minTurnMinutes > 0) notes.push(`turn >= ${String(opts.minTurnMinutes)} min`);
+  if (opts.minStreak > 0) notes.push(`cycle >= ${String(opts.minStreak)}x`);
   if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
   else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
   else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
@@ -463,17 +536,21 @@ async function main(): Promise<void> {
   console.log(`sessions: ${entries.length} total, showing ${shown.length}${note}`);
   console.log();
   console.log(
-    `${padL('active', 9)} ${padL('wall', 9)} ${padL('max turn', 8)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
+    `${padL('active', 9)} ${padL('wall', 9)} ${padL('max turn', 8)} ${padL('cycle', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
   );
   for (const e of shown) {
     // real path from the session beats decoding the encoded dir name (lossy on dashes)
     const project = e.cwd ? shortenHome(e.cwd) : shortenHome(decodePath(e.projectId));
     const models = opts.breakdown ? modelShareCell(e) : e.models.join(', ');
     console.log(
-      `${padL(dur(e.activeMs), 9)} ${padL(dur(e.durationMs), 9)} ${padL(dur(e.longestTurnMs), 8)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
+      `${padL(dur(e.activeMs), 9)} ${padL(dur(e.durationMs), 9)} ${padL(dur(e.longestTurnMs), 8)} ${padL(cycleCell(e), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
     );
   }
 }
+
+// "2c/40x" — number of distinct back-to-back cycles and the longest one
+const cycleCell = (e: InventoryEntry): string =>
+  e.cycles.length > 0 ? `${String(e.cycles.length)}c/${String(e.cycles[0].count)}x` : '-';
 
 function modelShareCell(e: InventoryEntry): string {
   const total = Object.values(e.tokensByModel).reduce((s, v) => s + v, 0);

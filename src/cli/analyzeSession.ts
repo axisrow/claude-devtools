@@ -525,6 +525,15 @@ export function normalizeCallKey(name: string, input: Record<string, unknown>): 
   }
 }
 
+// Bash key without its pipe tail — hundreds of `git show X | wc -l`-style
+// variants are ONE re-read loop.
+// ponytail: naive pipe cut — pipes inside quoted patterns merge, accepted
+export function bashStem(key: string): string {
+  if (!key.startsWith('Bash|')) return key;
+  const pipe = key.indexOf('|', 5);
+  return pipe === -1 ? key : key.slice(0, pipe).trimEnd();
+}
+
 function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }

@@ -175,6 +175,65 @@ describe('scanSessionFile tokensByModel', () => {
     expect(parseInventoryArgs(['--min-turn-minutes', '30']).minTurnMinutes).toBe(30);
   });
 
+  it('parses --sort streak and --min-streak', () => {
+    expect(parseInventoryArgs(['--sort', 'streak']).sort).toBe('streak');
+    expect(parseInventoryArgs(['--min-streak', '25']).minStreak).toBe(25);
+  });
+
+  it('tracks topRepeat across assistant lines with streaming dedup', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-tr-'));
+    try {
+      const file = path.join(dir, 'session-tr.jsonl');
+      const usageLine = (
+        uuid: string,
+        ts: string,
+        requestId?: string,
+        toolUse?: {
+          id: string;
+          command: string;
+        }
+      ): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          ...(requestId ? { requestId } : {}),
+          message: {
+            model: 'claude-sonnet-5',
+            usage: { input_tokens: 5 },
+            content: toolUse
+              ? [
+                  {
+                    type: 'tool_use',
+                    id: toolUse.id,
+                    name: 'Bash',
+                    input: { command: toolUse.command },
+                  },
+                ]
+              : [],
+          },
+        });
+      const lines = [
+        // one stem, three calls: two exact + one piped variant (merged by stem)
+        usageLine('a1', '2026-09-20T10:00:00Z', 'r1', { id: 't1', command: 'git show abc' }),
+        usageLine('a2', '2026-09-20T10:01:00Z', 'r1', { id: 't2', command: 'git show abc' }),
+        usageLine('a3', '2026-09-20T10:02:00Z', undefined, {
+          id: 't3',
+          command: 'git show abc | wc -l',
+        }),
+        // streaming snapshot: same requestId + same toolUseId → counted once
+        usageLine('a4', '2026-09-20T10:03:00Z', 'r9', { id: 'd1', command: 'ls -la' }),
+        usageLine('a5', '2026-09-20T10:04:00Z', 'r9', { id: 'd1', command: 'ls -la' }),
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      // a1,a2,a3 share one stem back-to-back → one cycle of 3
+      expect(entry?.cycles).toEqual([{ key: 'Bash|git show abc', count: 3 }]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('caps idle gaps in activeMs', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'devtools-am-'));
     try {
@@ -238,6 +297,39 @@ describe('scanSessionFile tokensByModel', () => {
       const entry = await scanSessionFile(file);
       expect(entry?.activeMs).toBe(120000); // only turn 2's gaps count
       expect(entry?.longestTurnMs).toBe(120000); // turn 2, not the sum across turns
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('distinguishes cycles from scattered repeats', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-sc-'));
+    try {
+      const file = path.join(dir, 'session-sc.jsonl');
+      const line = (uuid: string, n: number, command: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: `2026-09-20T10:0${n}:00Z`,
+          message: {
+            model: 'claude-sonnet-5',
+            usage: { input_tokens: 5 },
+            content: [{ type: 'tool_use', id: uuid, name: 'Bash', input: { command } }],
+          },
+        });
+      // A,A,B,A,A,A — repeat(A)=5 but the longest back-to-back run is 3
+      const lines = [
+        line('a1', 0, 'probe one'),
+        line('a2', 1, 'probe one'),
+        line('a3', 2, 'git show xyz'),
+        line('a4', 3, 'probe one'),
+        line('a5', 4, 'probe one'),
+        line('a6', 5, 'probe one'),
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      // A appears 5 times total, but only its 3-run qualifies as a cycle
+      expect(entry?.cycles).toEqual([{ key: 'Bash|probe one', count: 3 }]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
