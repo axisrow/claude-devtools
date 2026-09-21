@@ -161,8 +161,83 @@ describe('scanSessionFile tokensByModel', () => {
       expect(entry?.models).toEqual(['claude-sonnet-5', 'claude-haiku-4-5']);
       expect(entry?.totalTokens).toBe(122);
       expect(entry?.messageCount).toBe(6);
+      // API time: capped gaps between main-chain usage lines (10:05→10:06→10:07)
+      expect(entry?.activeMs).toBe(120000);
       // real path from the session's cwd, not the lossy dash-decode of the dir name
       expect(entry?.cwd).toBe('/Users/x/tg-content-factory');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses --sort turn and --min-turn-minutes', () => {
+    expect(parseInventoryArgs(['--sort', 'turn']).sort).toBe('turn');
+    expect(parseInventoryArgs(['--min-turn-minutes', '30']).minTurnMinutes).toBe(30);
+  });
+
+  it('caps idle gaps in activeMs', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-am-'));
+    try {
+      const file = path.join(dir, 'session-am.jsonl');
+      const lines = [
+        JSON.stringify({
+          type: 'assistant',
+          uuid: 'a1',
+          timestamp: '2026-09-20T10:00:00Z',
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          uuid: 'a2',
+          timestamp: '2026-09-20T10:35:00Z',
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          uuid: 'a3',
+          timestamp: '2026-09-20T10:37:00Z',
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        }),
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      // 35 min gap capped at 10, plus 2 min — not 37
+      expect(entry?.activeMs).toBe(720000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('longestTurnMs resets at user-turn boundaries', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-lt-'));
+    try {
+      const file = path.join(dir, 'session-lt.jsonl');
+      const userLine = (ts: string): string =>
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u',
+          timestamp: ts,
+          message: { role: 'user', content: 'go' },
+        });
+      const usageLine = (uuid: string, ts: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        });
+      const lines = [
+        usageLine('a1', '2026-09-20T10:00:00Z'), // implicit turn 1: 0 active
+        userLine('2026-09-20T10:35:00Z'), // boundary
+        usageLine('a2', '2026-09-20T10:37:00Z'),
+        usageLine('a3', '2026-09-20T10:39:00Z'), // turn 2: 2 min active
+        userLine('2026-09-20T10:41:00Z'), // boundary
+        usageLine('a4', '2026-09-20T10:42:00Z'), // turn 3: 0 active
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      expect(entry?.activeMs).toBe(120000); // only turn 2's gaps count
+      expect(entry?.longestTurnMs).toBe(120000); // turn 2, not the sum across turns
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -17,6 +17,7 @@ import {
   filterLedgerByDate,
   normalizeCallKey,
   parseArgs,
+  turnActiveMinutes,
 } from '../../../src/cli/analyzeSession';
 import { mapWithConcurrency, scanSessionFile } from '../../../src/cli/sessionInventory';
 import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
@@ -559,5 +560,187 @@ describe('data quality (issues #14/#15)', () => {
       (f) => f.type === 'duplicate_call'
     );
     expect(duplicates).toHaveLength(0); // the copy's call is not a real repeat
+  });
+});
+
+describe('long turns and loop streaks', () => {
+  const at = (min: number): Date => new Date(Date.UTC(2026, 8, 20, 10, min));
+  const call = (id: string, command = 'true') => ({
+    id,
+    name: 'Bash',
+    input: { command },
+    isTask: false,
+  });
+  const ok = (id: string) => ({ toolUseId: id, content: 'ok', isError: false });
+  const err = (id: string) => ({ toolUseId: id, content: 'Error: boom', isError: true });
+
+  it('flags back-to-back identical calls as a no-op loop streak', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [call('a1'), call('a2'), call('a3')],
+      }),
+      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('a1'), ok('a2'), ok('a3')] }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    const streak = findings.find((f) => f.type === 'loop_streak');
+    expect(streak).toBeDefined();
+    expect(streak?.severity).toBe('medium'); // x3 — not yet a hang
+    expect(streak?.summary).toContain('x3 back-to-back (no-op loop)');
+    expect(streak?.tokensWasted).toBe(2 * estimateTokens('ok')); // repeats only
+  });
+
+  it('a streak where every result is an error is an env loop', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [call('b1'), call('b2'), call('b3'), call('b4'), call('b5')],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [err('b1'), err('b2'), err('b3'), err('b4'), err('b5')],
+      }),
+    ];
+    const env = computeFindings(messages, buildLedger(messages)).find(
+      (f) => f.type === 'loop_streak'
+    );
+    expect(env?.summary).toContain('env loop');
+    expect(env?.severity).toBe('high'); // x5
+  });
+
+  it('calls separated by a different call do not form a streak', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [call('c1'), call('c2', 'ls -la'), call('c3'), call('c4')],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [ok('c1'), ok('c2'), ok('c3'), ok('c4')],
+      }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.filter((f) => f.type === 'loop_streak')).toHaveLength(0);
+    expect(findings.some((f) => f.type === 'duplicate_call')).toBe(true);
+  });
+
+  it('retry copies do not grow a streak', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash',
+        requestId: 'r1', // original was logged with a requestId
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [call('t1')],
+      }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash', // copy: no requestId, identical counters
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [call('t1-copy')],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [ok('t1'), ok('t1-copy')],
+      }),
+    ];
+    const streaks = computeFindings(messages, buildLedger(messages)).filter(
+      (f) => f.type === 'loop_streak'
+    );
+    expect(streaks).toHaveLength(0); // the copy's call is skipped from the walk
+  });
+
+  it('a dense turn (gaps under the idle cap) is flagged long_turn', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go', timestamp: at(0) }),
+      ...Array.from({ length: 14 }, (_, i) =>
+        makeMsg({
+          type: 'assistant',
+          model: 'm1',
+          timestamp: at(i * 5),
+          usage: usage(10, 0, 0, 1),
+        })
+      ),
+    ];
+    const ledger = buildLedger(messages);
+    const long = computeFindings(messages, ledger).find((f) => f.type === 'long_turn');
+    expect(long).toBeDefined();
+    expect(long?.severity).toBe('high');
+    expect(long?.turnIndex).toBe(1);
+    expect(ledger.turns[0].activeMinutes).toBe(65); // 13 gaps × 5 min, под капом
+    expect(ledger.totals.longestTurn?.activeMinutes).toBe(65);
+  });
+
+  it('idle-heavy turns stay under the flag (anti-noise regression)', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go', timestamp: at(0) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(0), usage: usage(10, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(35), usage: usage(10, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(40), usage: usage(10, 0, 0, 1) }),
+    ];
+    const ledger = buildLedger(messages);
+    expect(computeFindings(messages, ledger).some((f) => f.type === 'long_turn')).toBe(false);
+    expect(ledger.turns[0].activeMinutes).toBe(15); // 10 (кап) + 5
+  });
+
+  it('filterLedgerByDate recomputes activeMinutes in the window', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go', timestamp: at(0) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(0), usage: usage(10, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(35), usage: usage(10, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: 'm1', timestamp: at(40), usage: usage(10, 0, 0, 1) }),
+    ];
+    const ledger = filterLedgerByDate(buildLedger(messages), at(35));
+    expect(ledger.turns[0].activeMinutes).toBe(5);
+  });
+
+  it('flags a turn of quiet expensive rounds as wait_loop', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go', timestamp: at(0) }),
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeMsg({
+          type: 'assistant',
+          model: 'm1',
+          timestamp: at(i + 1),
+          // distinct outputs: identical counters would read as router-retry copies
+          usage: usage(60_000, 0, 0, 100 + i), // tick: 60k billed, ~100 out
+        })
+      ),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    const wait = findings.find((f) => f.type === 'wait_loop');
+    expect(wait).toBeDefined();
+    expect(wait?.severity).toBe('medium'); // 5 ticks — not yet a night watch
+    expect(wait?.tokensWasted).toBe(5 * 60_000);
+  });
+
+  it('needs 5 ticks: loud rounds and retry copies do not count', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      // 4 real ticks, distinct outputs so they don't match each other as copies
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 100) }),
+      // a router-retry copy of tick 1 — identical counters, no requestId → skipped
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 101) }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 102) }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 103) }),
+      // a loud round: 400 tok of output — not a tick
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(60_000, 0, 0, 400) }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.some((f) => f.type === 'wait_loop')).toBe(false);
   });
 });

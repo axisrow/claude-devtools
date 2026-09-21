@@ -5,8 +5,9 @@
  * Usage:
  *   pnpm analyze:sessions [--project <dir|encoded>] [flags]
  * Flags:
- *   --min-minutes N           only sessions running at least N minutes
- *   --sort FIELD              duration | tokens | date (default duration)
+ *   --min-minutes N           only sessions with at least N minutes of active (API) time
+ *   --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes
+ *   --sort FIELD              duration | active | turn | tokens | date (default duration)
  *   --limit N                 show first N rows
  *   --breakdown               per-session model token split (models column + JSON tokensByModel)
  *   --since / --until DATE    filter by session last-activity date (YYYY-MM-DD or YYYYMMDD)
@@ -37,6 +38,7 @@ import {
   padL,
   resolveProjectDir,
   short,
+  TURN_IDLE_GAP_CAP_MINUTES,
 } from './analyzeSession';
 import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
@@ -52,8 +54,9 @@ interface ScanEntry {
   timestamp?: string;
   requestId?: string;
   isSidechain?: boolean;
+  isMeta?: boolean;
   cwd?: string;
-  message?: { model?: string; usage?: RawUsage };
+  message?: { model?: string; usage?: RawUsage; content?: unknown };
 }
 
 function mergeUsage(a: RawUsage, b: RawUsage): RawUsage {
@@ -71,6 +74,10 @@ export interface InventoryEntry {
   sessionId: string;
   filePath: string;
   durationMs: number;
+  /** API work time: capped gaps between main-chain usage lines — same cap as turnActiveMinutes */
+  activeMs: number;
+  /** longest single turn's active time — a 96h-active session may have no turn over 20 min */
+  longestTurnMs: number;
   lastTs: Date | null;
   models: string[];
   messageCount: number;
@@ -96,6 +103,10 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
 
   let firstTs: number | null = null;
   let lastTs: number | null = null;
+  let activeMs = 0;
+  let turnActiveMs = 0;
+  let longestTurnMs = 0;
+  let prevUsageTs: number | null = null;
   let messageCount = 0;
   let cwd: string | undefined;
   const models = new Set<string>();
@@ -122,6 +133,21 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     // normalize like extractCwd: uppercase drive letter, WSL mount → Windows path
     if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
 
+    // turn boundary ≈ real user message: isMeta lines are tool-result carriers,
+    // teammate pings look like users but must not split a turn. Mirrors
+    // isParsedUserChunkMessage cheaply (string content, no teammate tag).
+    if (
+      e.type === 'user' &&
+      !e.isMeta &&
+      !e.isSidechain &&
+      typeof e.message?.content === 'string' &&
+      !e.message.content.includes('<teammate-message')
+    ) {
+      longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
+      turnActiveMs = 0;
+      prevUsageTs = null;
+    }
+
     // sidechain (subagent) entries stay out of totals/models/billing — same
     // accounting as buildLedger; timestamps and message count cover the file
     if (
@@ -130,6 +156,14 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       e.message?.usage &&
       e.message.model !== '<synthetic>'
     ) {
+      // API time: gap to the previous main-chain usage line, capped —
+      // same accounting as turnActiveMinutes, hours of silence cost zero
+      if (prevUsageTs !== null) {
+        const gap = Math.min(Math.max(ts - prevUsageTs, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
+        activeMs += gap;
+        turnActiveMs += gap;
+      }
+      prevUsageTs = ts;
       if (e.message.model) models.add(e.message.model);
       if (e.message.usage.cache_creation_input_tokens) sawWrite = true;
       else if (e.message.usage.cache_read_input_tokens) sawRead = true;
@@ -147,6 +181,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   }
 
   if (firstTs === null || lastTs === null) return null;
+  longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
 
   let totals: RawUsage = {};
   const byModel = new Map<string, RawUsage>();
@@ -179,6 +214,8 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     sessionId: extractSessionId(sessionId),
     filePath,
     durationMs: Math.max(0, lastTs - firstTs),
+    activeMs,
+    longestTurnMs,
     lastTs: new Date(lastTs),
     models: [...models],
     messageCount,
@@ -255,10 +292,11 @@ const ymd = (d: Date): string =>
 export interface InventoryOpts {
   projectArg?: string;
   minMinutes: number;
-  sort: 'duration' | 'tokens' | 'date';
+  sort: 'duration' | 'active' | 'turn' | 'tokens' | 'date';
   limit: number;
   json: boolean;
   breakdown: boolean;
+  minTurnMinutes: number;
   since?: Date;
   until?: Date;
   error?: string;
@@ -271,6 +309,7 @@ export function parseInventoryArgs(argv: string[]): InventoryOpts {
     limit: Number.POSITIVE_INFINITY,
     json: false,
     breakdown: false,
+    minTurnMinutes: 0,
   };
   let i = 0;
   while (i < argv.length) {
@@ -286,8 +325,16 @@ export function parseInventoryArgs(argv: string[]): InventoryOpts {
       i = next;
       continue;
     }
+    if (a === '--min-turn-minutes') {
+      opts.minTurnMinutes = parseInt(value, 10) || 0;
+      i = next;
+      continue;
+    }
     if (a === '--sort') {
-      opts.sort = value === 'tokens' || value === 'date' ? value : 'duration';
+      opts.sort =
+        value === 'tokens' || value === 'date' || value === 'active' || value === 'turn'
+          ? value
+          : 'duration';
       i = next;
       continue;
     }
@@ -343,8 +390,9 @@ async function main(): Promise<void> {
         'usage: pnpm analyze:sessions [--project <dir|encoded>] [flags]',
         '',
         'flags:',
-        '  --min-minutes N           only sessions running at least N minutes',
-        '  --sort FIELD              duration | tokens | date (default duration)',
+        '  --min-minutes N           only sessions with at least N minutes of active (API) time',
+        '  --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes',
+        '  --sort FIELD              duration | active | turn | tokens | date (default duration)',
         '  --limit N                 show first N rows',
         '  --breakdown               per-session model token split',
         '  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)',
@@ -377,6 +425,8 @@ async function main(): Promise<void> {
   entries.sort((a, b) => {
     if (opts.sort === 'tokens') return b.totalTokens - a.totalTokens;
     if (opts.sort === 'date') return (b.lastTs?.getTime() ?? 0) - (a.lastTs?.getTime() ?? 0);
+    if (opts.sort === 'active') return b.activeMs - a.activeMs;
+    if (opts.sort === 'turn') return b.longestTurnMs - a.longestTurnMs;
     return b.durationMs - a.durationMs;
   });
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
@@ -384,7 +434,8 @@ async function main(): Promise<void> {
   // before --since still matches if it ended inside the window, but one that
   // ran past --until drops out
   const shown = entries
-    .filter((e) => e.durationMs >= opts.minMinutes * 60000)
+    .filter((e) => e.activeMs >= opts.minMinutes * 60000)
+    .filter((e) => e.longestTurnMs >= opts.minTurnMinutes * 60000)
     .filter((e) =>
       hasDateFilter ? e.lastTs !== null && inDateRange(e.lastTs, opts.since, opts.until) : true
     )
@@ -403,7 +454,8 @@ async function main(): Promise<void> {
   }
 
   const notes: string[] = [];
-  if (opts.minMinutes > 0) notes.push(`>= ${String(opts.minMinutes)} min`);
+  if (opts.minMinutes > 0) notes.push(`>= ${String(opts.minMinutes)} min active`);
+  if (opts.minTurnMinutes > 0) notes.push(`turn >= ${String(opts.minTurnMinutes)} min`);
   if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
   else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
   else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
@@ -411,14 +463,14 @@ async function main(): Promise<void> {
   console.log(`sessions: ${entries.length} total, showing ${shown.length}${note}`);
   console.log();
   console.log(
-    `${padL('duration', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
+    `${padL('active', 9)} ${padL('wall', 9)} ${padL('max turn', 8)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
   );
   for (const e of shown) {
     // real path from the session beats decoding the encoded dir name (lossy on dashes)
     const project = e.cwd ? shortenHome(e.cwd) : shortenHome(decodePath(e.projectId));
     const models = opts.breakdown ? modelShareCell(e) : e.models.join(', ');
     console.log(
-      `${padL(dur(e.durationMs), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
+      `${padL(dur(e.activeMs), 9)} ${padL(dur(e.durationMs), 9)} ${padL(dur(e.longestTurnMs), 8)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
     );
   }
 }
