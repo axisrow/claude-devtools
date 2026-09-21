@@ -280,6 +280,9 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const models = new Set<string>();
   let currentTurn: TurnRow | null = null;
   let prevContext = 0;
+  // retry copies (#15) compare against the last real round — not the immediate
+  // predecessor, which may be a ghost (#14) or another copy
+  let retryAnchor: RoundRow | null = null;
   let minTs = Number.POSITIVE_INFINITY;
   let maxTs = Number.NEGATIVE_INFINITY;
 
@@ -312,10 +315,11 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     const model = msg.model ?? 'unknown';
     const tools = msg.toolCalls.map((tc) => tc.name);
 
-    const prev = rounds[rounds.length - 1];
-    // router retries re-log the same response without a requestId (#15)
+    const prev = retryAnchor;
+    // router retries re-log the same response without a requestId (#15);
+    // ghosts never anchor, so they can't match the all-zero pattern (#14)
     const isRetryCopy =
-      rounds.length > 0 &&
+      prev !== null &&
       !msg.requestId &&
       prev.model === model &&
       prev.inputTokens === input &&
@@ -341,6 +345,8 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       isRetryCopy: isRetryCopy || undefined,
     };
     if (contextSize > 0) prevContext = contextSize;
+    // ghosts and copies never become the comparison anchor
+    if (contextSize > 0 && !isRetryCopy) retryAnchor = round;
     rounds.push(round);
     models.add(model);
   }

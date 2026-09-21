@@ -514,4 +514,20 @@ describe('data quality (issues #14/#15)', () => {
     const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
     expect(cacheDead).toHaveLength(1); // original round only
   });
+
+  it('ghost runs are not copies; a copy after a ghost still matches its original', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(0, 0, 0, 0) }), // ghost 1
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(0, 0, 0, 0) }), // ghost 2
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }), // copy after ghosts
+    ];
+    const ledger = buildLedger(messages);
+    // ghosts never match the all-zero pattern against a non-zero anchor
+    expect(ledger.totals.noUsageRounds).toBe(2);
+    expect(ledger.totals.retryCopies).toBe(1); // only the re-logged copy
+    const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
+    expect(cacheDead).toHaveLength(1); // copy after ghosts is still suppressed
+  });
 });
