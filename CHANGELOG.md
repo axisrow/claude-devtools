@@ -10,8 +10,15 @@ For the full list of merged PRs per release, see [GitHub Releases](https://githu
 
 Development continues in this fork — see the [Upstream sync policy](README.md#upstream-sync-policy). Upstream entries below are kept unchanged.
 
+## [0.1.0-fork.1] — 2026-09-21
+
 ### Added
 - Session-audit CLI: `pnpm analyze:session` (deep per-session ledger, waste findings, slow subagents, cost estimate) and `pnpm analyze:sessions` (session inventory), with a unified ccusage-style flag grammar (#1).
+- Session-audit CLI packaged as a Claude Code plugin with marketplace manifest and skills (#12).
+
+### Fixed
+- Treat the `Agent` tool as a subagent spawn (renamed from `Task` in Claude Code 2.1.63).
+- Short model ids parsed correctly; removed the `priceFamily` stopgap (#13).
 
 ## [Unreleased]
 
