@@ -272,17 +272,63 @@ export function filterLedgerByDate(
   };
 }
 
+// router retries re-log the same response without a requestId (#15): identical
+// counters, seconds apart. Comparison anchors on the last real round — ghosts
+// (#14) and copies themselves never anchor, so ghost runs don't false-match and
+// a ghost between original and copy doesn't hide the copy. Used by both the
+// ledger (round flags) and findings (skip the copies' tool calls).
+export function getRetryCopyMessageIds(allMessages: ParsedMessage[]): Set<string> {
+  const copies = new Set<string>();
+  let anchor: {
+    model: string;
+    input: number;
+    cr: number;
+    cw: number;
+    out: number;
+    ts: number;
+  } | null = null;
+  for (const msg of deduplicateByRequestId(allMessages)) {
+    if (isParsedUserChunkMessage(msg)) continue;
+    if (msg.type !== 'assistant' || msg.isSidechain) continue;
+    if (!msg.usage || msg.model === '<synthetic>') continue;
+    const u = msg.usage;
+    const input = u.input_tokens ?? 0;
+    const cacheRead = u.cache_read_input_tokens ?? 0;
+    const cacheWrite = u.cache_creation_input_tokens ?? 0;
+    const output = u.output_tokens ?? 0;
+    const isCopy =
+      anchor !== null &&
+      !msg.requestId &&
+      anchor.model === (msg.model ?? 'unknown') &&
+      anchor.input === input &&
+      anchor.cr === cacheRead &&
+      anchor.cw === cacheWrite &&
+      anchor.out === output &&
+      msg.timestamp.getTime() - anchor.ts <= 120_000;
+    if (isCopy) copies.add(msg.uuid);
+    if (input + cacheRead + cacheWrite > 0 && !isCopy) {
+      anchor = {
+        model: msg.model ?? 'unknown',
+        input,
+        cr: cacheRead,
+        cw: cacheWrite,
+        out: output,
+        ts: msg.timestamp.getTime(),
+      };
+    }
+  }
+  return copies;
+}
+
 export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const messages = deduplicateByRequestId(allMessages);
+  const retryCopies = getRetryCopyMessageIds(messages);
 
   const turns: TurnRow[] = [];
   const rounds: RoundRow[] = [];
   const models = new Set<string>();
   let currentTurn: TurnRow | null = null;
   let prevContext = 0;
-  // retry copies (#15) compare against the last real round — not the immediate
-  // predecessor, which may be a ghost (#14) or another copy
-  let retryAnchor: RoundRow | null = null;
   let minTs = Number.POSITIVE_INFINITY;
   let maxTs = Number.NEGATIVE_INFINITY;
 
@@ -315,18 +361,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     const model = msg.model ?? 'unknown';
     const tools = msg.toolCalls.map((tc) => tc.name);
 
-    const prev = retryAnchor;
-    // router retries re-log the same response without a requestId (#15);
-    // ghosts never anchor, so they can't match the all-zero pattern (#14)
-    const isRetryCopy =
-      prev !== null &&
-      !msg.requestId &&
-      prev.model === model &&
-      prev.inputTokens === input &&
-      prev.cacheReadTokens === cacheRead &&
-      prev.cacheCreationTokens === cacheWrite &&
-      prev.outputTokens === output &&
-      msg.timestamp.getTime() - prev.timestamp.getTime() <= 120_000;
+    const isRetryCopy = retryCopies.has(msg.uuid);
 
     const round: RoundRow = {
       index: rounds.length + 1,
@@ -345,8 +380,6 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       isRetryCopy: isRetryCopy || undefined,
     };
     if (contextSize > 0) prevContext = contextSize;
-    // ghosts and copies never become the comparison anchor
-    if (contextSize > 0 && !isRetryCopy) retryAnchor = round;
     rounds.push(round);
     models.add(model);
   }
@@ -429,9 +462,13 @@ export function computeFindings(
   }
 
   // duplicate / failed / oversized — walk tool calls in order
+  // re-logged router copies (#15) are skipped: their calls were already walked
+  // with the original — counting them doubles duplicate/failed/oversized
+  const retryCopies = getRetryCopyMessageIds(messages);
   const seen = new Map<string, { count: number; tokens: number; first: number }>();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
+    if (retryCopies.has(msg.uuid)) continue;
     if (!inDateRange(msg.timestamp, since, until)) continue;
     for (const call of msg.toolCalls) {
       const key = normalizeCallKey(call.name, call.input);

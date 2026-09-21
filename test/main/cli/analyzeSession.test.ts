@@ -530,4 +530,34 @@ describe('data quality (issues #14/#15)', () => {
     const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
     expect(cacheDead).toHaveLength(1); // copy after ghosts is still suppressed
   });
+
+  it('skips re-logged copy tool calls in duplicate/failed/oversized findings', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash',
+        requestId: 'r1', // original was logged with a requestId
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [{ id: 't1', name: 'Bash', input: { command: 'pytest -q' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash', // copy: no requestId, identical counters
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [
+          { id: 't1-copy', name: 'Bash', input: { command: 'pytest -q' }, isTask: false },
+        ],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't1', content: 'ok', isError: false }],
+      }),
+    ];
+    const duplicates = computeFindings(messages, buildLedger(messages)).filter(
+      (f) => f.type === 'duplicate_call'
+    );
+    expect(duplicates).toHaveLength(0); // the copy's call is not a real repeat
+  });
 });
