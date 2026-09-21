@@ -1,0 +1,14 @@
+{
+  "name": "claude-devtools",
+  "description": "Audit Claude Code sessions for token waste: per-session findings and a cross-session inventory.",
+  "owner": {
+    "name": "axisrow",
+    "url": "https://github.com/axisrow/claude-devtools"
+  },
+  "plugins": [
+    {
+      "name": "session-audit",
+      "source": "./"
+    }
+  ]
+}
