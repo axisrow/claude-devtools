@@ -95,6 +95,17 @@ export function extractProjectName(encodedName: string, cwdHint?: string): strin
 }
 
 /**
+ * Normalize Windows drive letter to uppercase for consistent path comparison.
+ * CLI uses uppercase (C:\...) while VS Code extension uses lowercase (c:\...).
+ */
+export function normalizeDriveLetter(p: string): string {
+  if (p.length >= 2 && p[1] === ':') {
+    return p[0].toUpperCase() + p.slice(1);
+  }
+  return p;
+}
+
+/**
  * Translate WSL mount paths (/mnt/X/...) to Windows drive-letter paths (X:/...)
  * when running on Windows. No-op on other platforms.
  */

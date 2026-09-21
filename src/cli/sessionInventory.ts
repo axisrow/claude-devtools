@@ -15,7 +15,13 @@
  *   --json                    machine-readable output
  */
 
-import { decodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
+import {
+  decodePath,
+  extractSessionId,
+  getProjectsBasePath,
+  normalizeDriveLetter,
+  translateWslMountPath,
+} from '@main/utils/pathDecoder';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -113,7 +119,8 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     if (firstTs === null || ts < firstTs) firstTs = ts;
     if (lastTs === null || ts > lastTs) lastTs = ts;
     if (e.type === 'user' || e.type === 'assistant') messageCount++;
-    if (!cwd && e.cwd) cwd = e.cwd;
+    // normalize like extractCwd: uppercase drive letter, WSL mount → Windows path
+    if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
 
     // sidechain (subagent) entries stay out of totals/models/billing — same
     // accounting as buildLedger; timestamps and message count cover the file
