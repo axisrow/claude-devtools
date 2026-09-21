@@ -353,21 +353,22 @@ describe('billing scheme', () => {
     expect(ledger.totals.costPartial).toBe(false);
   });
 
-  it('labels router-style sessions without cost', () => {
+  it('prices router-style glm rounds and leaves unpriced models without cost', () => {
     const messages = [
       makeMsg({ type: 'user', content: 'go' }),
       makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(100, 4000, 0, 10) }),
     ];
     const ledger = buildLedger(messages);
     expect(ledger.billing).toBe('router-style');
-    expect(ledger.totals.costUsd).toBeUndefined();
+    // glm is priced now: (100*0.075 + 4000*0.015 + 10*0.25) / 1e6 = 70 / 1e6
+    expect(ledger.totals.costUsd).toBeCloseTo(0.00007, 8);
   });
 
   it('marks cost partial when the session mixes priced and unpriced models', () => {
     const messages = [
       makeMsg({ type: 'user', content: 'go' }),
       makeMsg({ type: 'assistant', model: 'claude-sonnet-5', usage: usage(100, 0, 0, 10) }),
-      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(100, 0, 0, 10) }),
+      makeMsg({ type: 'assistant', model: 'deepseek-v4-flash', usage: usage(100, 0, 0, 10) }),
     ];
     const ledger = buildLedger(messages);
     expect(ledger.totals.costUsd).toBeDefined();
@@ -454,16 +455,16 @@ describe('filterLedgerByDate and breakdownFromRounds', () => {
     );
   });
 
-  it('recomputes cost from kept rounds only and flags partial when unpriced', () => {
+  it('recomputes cost from kept rounds only (glm now priced, no partial flag)', () => {
     const ledger = buildLedger(twoModelSession());
     const filtered = filterLedgerByDate(
       ledger,
       new Date(2026, 8, 15),
       new Date(2026, 8, 30, 23, 59, 59, 999)
     );
-    // kept: glm (unpriced) + sonnet 30/0/0/2 → (30*3 + 2*15) / 1e6
-    expect(filtered.totals.costUsd).toBeCloseTo(0.00012, 10);
-    expect(filtered.totals.costPartial).toBe(true);
+    // kept: glm (50*0.075 + 5*0.25) + sonnet (30*3 + 2*15) → 125 / 1e6
+    expect(filtered.totals.costUsd).toBeCloseTo(0.000125, 10);
+    expect(filtered.totals.costPartial).toBe(false);
   });
 
   it('returns the ledger untouched without bounds', () => {
@@ -471,13 +472,92 @@ describe('filterLedgerByDate and breakdownFromRounds', () => {
     expect(filterLedgerByDate(ledger)).toBe(ledger);
   });
 
-  it('breakdown groups tokens per model and drops cost for unpriced ones', () => {
+  it('breakdown groups tokens per model with per-model cost', () => {
     const rows = breakdownFromRounds(buildLedger(twoModelSession()).rounds);
     expect(rows).toHaveLength(2);
     const sonnet = rows.find((r) => r.model === 'claude-sonnet-5');
     expect(sonnet?.billedTokens).toBe(100 + 1000 + 10 + 30 + 2);
     // (100*3 + 10*15 + 1000*0.3) + (30*3 + 2*15) = 750 + 120 per 1e6
     expect(sonnet?.costUsd).toBeCloseTo(0.00087, 10);
-    expect(rows.find((r) => r.model === 'glm-5.3-flash')?.costUsd).toBeUndefined();
+    // glm: (50*0.075 + 5*0.25) / 1e6
+    expect(rows.find((r) => r.model === 'glm-5.3-flash')?.costUsd).toBeCloseTo(0.000005, 10);
+  });
+});
+
+describe('data quality (issues #14/#15)', () => {
+  it('zero-usage rounds: no false spike, baseline kept, counted as noUsageRounds', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(1000, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(0, 0, 0, 0) }), // ghost, #14
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(2000, 0, 0, 100) }),
+    ];
+    const ledger = buildLedger(messages);
+    // round 3 measures against round 1, not against the ghost
+    expect(ledger.rounds[2].contextDelta).toBe(1000);
+    expect(ledger.totals.noUsageRounds).toBe(1);
+    expect(ledger.totals.retryCopies).toBe(0);
+    expect(computeFindings(messages, ledger).some((f) => f.type === 'context_spike')).toBe(false);
+  });
+
+  it('flags router-retry copies without touching sums or doubling findings', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+    ];
+    const ledger = buildLedger(messages);
+    expect(ledger.totals.retryCopies).toBe(2);
+    // variant A: sums stay untouched — gluing is postponed until billing is known
+    expect(ledger.totals.billedTokens).toBe(3 * (335200 + 100));
+    const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
+    expect(cacheDead).toHaveLength(1); // original round only
+  });
+
+  it('ghost runs are not copies; a copy after a ghost still matches its original', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(0, 0, 0, 0) }), // ghost 1
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(0, 0, 0, 0) }), // ghost 2
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }), // copy after ghosts
+    ];
+    const ledger = buildLedger(messages);
+    // ghosts never match the all-zero pattern against a non-zero anchor
+    expect(ledger.totals.noUsageRounds).toBe(2);
+    expect(ledger.totals.retryCopies).toBe(1); // only the re-logged copy
+    const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
+    expect(cacheDead).toHaveLength(1); // copy after ghosts is still suppressed
+  });
+
+  it('skips re-logged copy tool calls in duplicate/failed/oversized findings', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash',
+        requestId: 'r1', // original was logged with a requestId
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [{ id: 't1', name: 'Bash', input: { command: 'pytest -q' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash', // copy: no requestId, identical counters
+        usage: usage(335200, 0, 0, 100),
+        toolCalls: [
+          { id: 't1-copy', name: 'Bash', input: { command: 'pytest -q' }, isTask: false },
+        ],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't1', content: 'ok', isError: false }],
+      }),
+    ];
+    const duplicates = computeFindings(messages, buildLedger(messages)).filter(
+      (f) => f.type === 'duplicate_call'
+    );
+    expect(duplicates).toHaveLength(0); // the copy's call is not a real repeat
   });
 });

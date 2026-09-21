@@ -37,11 +37,18 @@ import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } f
 import type { ParsedMessage, Process } from '@main/types';
 
 // ponytail: single-file pricing table; extract to a module when something else needs it
+// glm: public rates (OpenRouter/z.ai, verified 2026-09-21); cache write assumed = input rate
 const PRICE_PER_MTOK: Record<string, [number, number, number, number]> = {
   opus: [15, 75, 1.5, 18.75],
   sonnet: [3, 15, 0.3, 3.75],
   haiku: [1, 5, 0.1, 1.25],
+  glm: [0.075, 0.25, 0.015, 0.075],
 };
+
+// pricing family: claude via parser; other models — first id segment (glm-5.3-flash → glm)
+function priceFamily(model: string): string {
+  return parseModelString(model)?.family ?? model.toLowerCase().split('-')[0];
+}
 
 export type BillingScheme = 'anthropic-style' | 'router-style' | 'no-cache' | 'mixed';
 
@@ -108,6 +115,8 @@ export interface RoundRow {
   contextDelta: number;
   thinkingTokens: number;
   tools: string[];
+  /** router-retry copy of the previous round — counted in sums, excluded from findings (#15) */
+  isRetryCopy?: boolean;
 }
 
 export interface TurnRow {
@@ -126,6 +135,8 @@ export interface SessionLedger {
     billedTokens: number;
     rereadShare: number;
     thinkingTokens: number;
+    noUsageRounds: number;
+    retryCopies: number;
     costUsd?: number;
     costPartial?: boolean;
   };
@@ -147,9 +158,9 @@ function thinkingTokensOf(msg: ParsedMessage): number {
   return Math.ceil(chars / 4);
 }
 
-// cost of one round at the built-in claude price table; null = unpriced model
+// cost of one round at the built-in price table; null = unpriced model
 export function roundCostUsd(r: RoundRow): number | null {
-  const price = PRICE_PER_MTOK[parseModelString(r.model)?.family ?? ''];
+  const price = PRICE_PER_MTOK[priceFamily(r.model)] ?? null;
   if (!price) return null;
   return (
     (r.inputTokens * price[0] +
@@ -184,7 +195,14 @@ export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
   }
   t.billedTokens = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens + t.outputTokens;
   t.rereadShare = t.billedTokens > 0 ? t.cacheReadTokens / t.billedTokens : 0;
-  return { ...t, ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}) };
+  const noUsageRounds = rounds.filter((r) => r.contextSize === 0).length;
+  const retryCopies = rounds.filter((r) => r.isRetryCopy === true).length;
+  return {
+    ...t,
+    noUsageRounds,
+    retryCopies,
+    ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}),
+  };
 }
 
 export interface ModelBreakdownRow {
@@ -254,8 +272,57 @@ export function filterLedgerByDate(
   };
 }
 
+// router retries re-log the same response without a requestId (#15): identical
+// counters, seconds apart. Comparison anchors on the last real round — ghosts
+// (#14) and copies themselves never anchor, so ghost runs don't false-match and
+// a ghost between original and copy doesn't hide the copy. Used by both the
+// ledger (round flags) and findings (skip the copies' tool calls).
+export function getRetryCopyMessageIds(allMessages: ParsedMessage[]): Set<string> {
+  const copies = new Set<string>();
+  let anchor: {
+    model: string;
+    input: number;
+    cr: number;
+    cw: number;
+    out: number;
+    ts: number;
+  } | null = null;
+  for (const msg of deduplicateByRequestId(allMessages)) {
+    if (isParsedUserChunkMessage(msg)) continue;
+    if (msg.type !== 'assistant' || msg.isSidechain) continue;
+    if (!msg.usage || msg.model === '<synthetic>') continue;
+    const u = msg.usage;
+    const input = u.input_tokens ?? 0;
+    const cacheRead = u.cache_read_input_tokens ?? 0;
+    const cacheWrite = u.cache_creation_input_tokens ?? 0;
+    const output = u.output_tokens ?? 0;
+    const isCopy =
+      anchor !== null &&
+      !msg.requestId &&
+      anchor.model === (msg.model ?? 'unknown') &&
+      anchor.input === input &&
+      anchor.cr === cacheRead &&
+      anchor.cw === cacheWrite &&
+      anchor.out === output &&
+      msg.timestamp.getTime() - anchor.ts <= 120_000;
+    if (isCopy) copies.add(msg.uuid);
+    if (input + cacheRead + cacheWrite > 0 && !isCopy) {
+      anchor = {
+        model: msg.model ?? 'unknown',
+        input,
+        cr: cacheRead,
+        cw: cacheWrite,
+        out: output,
+        ts: msg.timestamp.getTime(),
+      };
+    }
+  }
+  return copies;
+}
+
 export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   const messages = deduplicateByRequestId(allMessages);
+  const retryCopies = getRetryCopyMessageIds(messages);
 
   const turns: TurnRow[] = [];
   const rounds: RoundRow[] = [];
@@ -294,6 +361,8 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     const model = msg.model ?? 'unknown';
     const tools = msg.toolCalls.map((tc) => tc.name);
 
+    const isRetryCopy = retryCopies.has(msg.uuid);
+
     const round: RoundRow = {
       index: rounds.length + 1,
       timestamp: msg.timestamp,
@@ -304,11 +373,13 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       cacheCreationTokens: cacheWrite,
       outputTokens: output,
       contextSize,
-      contextDelta: rounds.length === 0 ? 0 : contextSize - prevContext,
+      // empty rounds (provider ghosts, #14) must not drag the baseline to 0
+      contextDelta: rounds.length === 0 || contextSize === 0 ? 0 : contextSize - prevContext,
       thinkingTokens: think,
       tools,
+      isRetryCopy: isRetryCopy || undefined,
     };
-    prevContext = contextSize;
+    if (contextSize > 0) prevContext = contextSize;
     rounds.push(round);
     models.add(model);
   }
@@ -391,9 +462,13 @@ export function computeFindings(
   }
 
   // duplicate / failed / oversized — walk tool calls in order
+  // re-logged router copies (#15) are skipped: their calls were already walked
+  // with the original — counting them doubles duplicate/failed/oversized
+  const retryCopies = getRetryCopyMessageIds(messages);
   const seen = new Map<string, { count: number; tokens: number; first: number }>();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
+    if (retryCopies.has(msg.uuid)) continue;
     if (!inDateRange(msg.timestamp, since, until)) continue;
     for (const call of msg.toolCalls) {
       const key = normalizeCallKey(call.name, call.input);
@@ -445,6 +520,7 @@ export function computeFindings(
 
   // context-side findings from the ledger
   for (const r of ledger.rounds) {
+    if (r.isRetryCopy) continue; // findings already reported for the original round
     if (r.contextDelta > th.contextSpikeTokens) {
       findings.push({
         type: 'context_spike',
@@ -664,6 +740,14 @@ function printReport(
   );
   console.log('models:', ledger.models.join(', ') || 'n/a');
   console.log('billing:', ledger.billing);
+  if (t.noUsageRounds > 0) {
+    console.log(
+      `⚠ ${t.noUsageRounds} rounds have no usage stats — root cause under investigation (#14)`
+    );
+  }
+  if (t.retryCopies > 0) {
+    console.log(`ℹ ${t.retryCopies} router-retry copies detected (sums untouched — #15)`);
+  }
   if (t.costUsd !== undefined && !opts.noCost) {
     const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
     console.log('est. cost: $' + t.costUsd.toFixed(2) + partial);
@@ -702,7 +786,7 @@ function printReport(
   for (const turn of ledger.turns) {
     const rs = ledger.rounds.filter((r) => r.turnIndex === turn.index);
     if (rs.length === 0) continue; // trailing user msg / empty implicit turn
-    const ctx = rs.at(-1)?.contextSize ?? 0;
+    const ctx = rs.filter((r) => r.contextSize > 0).at(-1)?.contextSize ?? 0; // ghosts (#14) don't hide the real context
     const reread = rs.reduce((s, r) => s + r.cacheReadTokens, 0);
     const fresh = rs.reduce((s, r) => s + r.inputTokens + r.cacheCreationTokens, 0);
     const out = rs.reduce((s, r) => s + r.outputTokens, 0);
