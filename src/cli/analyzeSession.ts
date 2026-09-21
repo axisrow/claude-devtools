@@ -108,6 +108,8 @@ export interface RoundRow {
   contextDelta: number;
   thinkingTokens: number;
   tools: string[];
+  /** router-retry copy of the previous round — counted in sums, excluded from findings (#15) */
+  isRetryCopy?: boolean;
 }
 
 export interface TurnRow {
@@ -126,6 +128,8 @@ export interface SessionLedger {
     billedTokens: number;
     rereadShare: number;
     thinkingTokens: number;
+    noUsageRounds: number;
+    retryCopies: number;
     costUsd?: number;
     costPartial?: boolean;
   };
@@ -184,7 +188,14 @@ export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
   }
   t.billedTokens = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens + t.outputTokens;
   t.rereadShare = t.billedTokens > 0 ? t.cacheReadTokens / t.billedTokens : 0;
-  return { ...t, ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}) };
+  const noUsageRounds = rounds.filter((r) => r.contextSize === 0).length;
+  const retryCopies = rounds.filter((r) => r.isRetryCopy === true).length;
+  return {
+    ...t,
+    noUsageRounds,
+    retryCopies,
+    ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}),
+  };
 }
 
 export interface ModelBreakdownRow {
@@ -294,6 +305,18 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     const model = msg.model ?? 'unknown';
     const tools = msg.toolCalls.map((tc) => tc.name);
 
+    const prev = rounds[rounds.length - 1];
+    // router retries re-log the same response without a requestId (#15)
+    const isRetryCopy =
+      rounds.length > 0 &&
+      !msg.requestId &&
+      prev.model === model &&
+      prev.inputTokens === input &&
+      prev.cacheReadTokens === cacheRead &&
+      prev.cacheCreationTokens === cacheWrite &&
+      prev.outputTokens === output &&
+      msg.timestamp.getTime() - prev.timestamp.getTime() <= 120_000;
+
     const round: RoundRow = {
       index: rounds.length + 1,
       timestamp: msg.timestamp,
@@ -304,11 +327,13 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       cacheCreationTokens: cacheWrite,
       outputTokens: output,
       contextSize,
-      contextDelta: rounds.length === 0 ? 0 : contextSize - prevContext,
+      // empty rounds (provider ghosts, #14) must not drag the baseline to 0
+      contextDelta: rounds.length === 0 || contextSize === 0 ? 0 : contextSize - prevContext,
       thinkingTokens: think,
       tools,
+      isRetryCopy: isRetryCopy || undefined,
     };
-    prevContext = contextSize;
+    if (contextSize > 0) prevContext = contextSize;
     rounds.push(round);
     models.add(model);
   }
@@ -445,6 +470,7 @@ export function computeFindings(
 
   // context-side findings from the ledger
   for (const r of ledger.rounds) {
+    if (r.isRetryCopy) continue; // findings already reported for the original round
     if (r.contextDelta > th.contextSpikeTokens) {
       findings.push({
         type: 'context_spike',
@@ -664,6 +690,14 @@ function printReport(
   );
   console.log('models:', ledger.models.join(', ') || 'n/a');
   console.log('billing:', ledger.billing);
+  if (t.noUsageRounds > 0) {
+    console.log(
+      `⚠ ${t.noUsageRounds} rounds have no usage stats — root cause under investigation (#14)`
+    );
+  }
+  if (t.retryCopies > 0) {
+    console.log(`ℹ ${t.retryCopies} router-retry copies detected (sums untouched — #15)`);
+  }
   if (t.costUsd !== undefined && !opts.noCost) {
     const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
     console.log('est. cost: $' + t.costUsd.toFixed(2) + partial);

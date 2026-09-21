@@ -481,3 +481,35 @@ describe('filterLedgerByDate and breakdownFromRounds', () => {
     expect(rows.find((r) => r.model === 'glm-5.3-flash')?.costUsd).toBeUndefined();
   });
 });
+
+describe('data quality (issues #14/#15)', () => {
+  it('zero-usage rounds: no false spike, baseline kept, counted as noUsageRounds', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(1000, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(0, 0, 0, 0) }), // ghost, #14
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(2000, 0, 0, 100) }),
+    ];
+    const ledger = buildLedger(messages);
+    // round 3 measures against round 1, not against the ghost
+    expect(ledger.rounds[2].contextDelta).toBe(1000);
+    expect(ledger.totals.noUsageRounds).toBe(1);
+    expect(ledger.totals.retryCopies).toBe(0);
+    expect(computeFindings(messages, ledger).some((f) => f.type === 'context_spike')).toBe(false);
+  });
+
+  it('flags router-retry copies without touching sums or doubling findings', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+      makeMsg({ type: 'assistant', model: 'glm-5.3-flash', usage: usage(335200, 0, 0, 100) }),
+    ];
+    const ledger = buildLedger(messages);
+    expect(ledger.totals.retryCopies).toBe(2);
+    // variant A: sums stay untouched — gluing is postponed until billing is known
+    expect(ledger.totals.billedTokens).toBe(3 * (335200 + 100));
+    const cacheDead = computeFindings(messages, ledger).filter((f) => f.type === 'cache_dead');
+    expect(cacheDead).toHaveLength(1); // original round only
+  });
+});
