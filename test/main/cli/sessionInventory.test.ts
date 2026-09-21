@@ -304,6 +304,73 @@ describe('scanSessionFile tokensByModel', () => {
     }
   });
 
+  it('array-content user messages split turns (faithful isParsedUserChunkMessage guard)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-ac-'));
+    try {
+      const file = path.join(dir, 'session-ac.jsonl');
+      const usageLine = (uuid: string, ts: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        });
+      const lines = [
+        usageLine('a1', '2026-09-20T10:00:00Z'),
+        usageLine('a2', '2026-09-20T10:01:00Z'), // turn 1: 1 min active
+        // newer-format user turn: array content with a text block
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u2',
+          timestamp: '2026-09-20T10:02:00Z',
+          message: { role: 'user', content: [{ type: 'text', text: 'go again' }] },
+        }),
+        usageLine('a3', '2026-09-20T10:10:00Z'), // turn 2: 0 active
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      expect(entry?.activeMs).toBe(60000); // turn 1 only; turn 2 has a single round
+      expect(entry?.longestTurnMs).toBe(60000); // not the uncapped merge (10 min)
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('local-command-stdout lines do not split turns', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-so-'));
+    try {
+      const file = path.join(dir, 'session-so.jsonl');
+      const usageLine = (uuid: string, ts: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          message: { model: 'claude-sonnet-5', usage: { input_tokens: 5 } },
+        });
+      const lines = [
+        usageLine('a1', '2026-09-20T10:00:00Z'),
+        // bash-mode command output: type user, string content, falsy isMeta —
+        // must NOT be a boundary (buildLedger does not split here either)
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-09-20T10:01:00Z',
+          message: {
+            role: 'user',
+            content: '<local-command-stdout>done</local-command-stdout>',
+          },
+        }),
+        usageLine('a2', '2026-09-20T10:02:00Z'), // same turn: 2 min total
+      ];
+      await writeFile(file, lines.join('\n'));
+      const entry = await scanSessionFile(file);
+      expect(entry?.activeMs).toBe(120000); // 10:00→10:02, the stdout line did not reset
+      expect(entry?.longestTurnMs).toBe(120000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('distinguishes cycles from scattered repeats', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'devtools-sc-'));
     try {

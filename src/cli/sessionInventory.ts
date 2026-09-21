@@ -17,6 +17,7 @@
  *   --json                    machine-readable output
  */
 
+import { isParsedUserChunkMessage, type ParsedMessage } from '@main/types';
 import {
   decodePath,
   extractSessionId,
@@ -175,15 +176,19 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     // normalize like extractCwd: uppercase drive letter, WSL mount → Windows path
     if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
 
-    // turn boundary ≈ real user message: isMeta lines are tool-result carriers,
-    // teammate pings look like users but must not split a turn. Mirrors
-    // isParsedUserChunkMessage cheaply (string content, no teammate tag).
+    // turn boundary = real user message, via the same isParsedUserChunkMessage
+    // guard buildLedger uses (system-output tags, array content, teammate pings
+    // all behave identically — the divergence this way is structural). !isSidechain
+    // stays local: sidechain lines never split the main-chain turn accounting.
+    // cast: the guard reads only type/isMeta/content, all present on the raw line
     if (
       e.type === 'user' &&
-      !e.isMeta &&
       !e.isSidechain &&
-      typeof e.message?.content === 'string' &&
-      !e.message.content.includes('<teammate-message')
+      isParsedUserChunkMessage({
+        type: e.type,
+        isMeta: e.isMeta,
+        content: e.message?.content,
+      } as unknown as ParsedMessage)
     ) {
       longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
       turnActiveMs = 0;
