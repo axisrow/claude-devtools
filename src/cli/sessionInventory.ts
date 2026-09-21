@@ -46,6 +46,7 @@ interface ScanEntry {
   timestamp?: string;
   requestId?: string;
   isSidechain?: boolean;
+  cwd?: string;
   message?: { model?: string; usage?: RawUsage };
 }
 
@@ -75,6 +76,8 @@ export interface InventoryEntry {
   tokensByModel: Record<string, number>;
   sizeBytes: number;
   billing: BillingScheme;
+  /** real project path from the session's cwd field — decodePath is lossy when the name has dashes */
+  cwd?: string;
 }
 
 // ponytail: own streaming pass instead of parseJsonlFile — it materializes every
@@ -88,6 +91,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   let firstTs: number | null = null;
   let lastTs: number | null = null;
   let messageCount = 0;
+  let cwd: string | undefined;
   const models = new Set<string>();
   // anthropic-style rounds report cache writes; routers report cache_read with cw=0
   let sawWrite = false;
@@ -109,6 +113,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     if (firstTs === null || ts < firstTs) firstTs = ts;
     if (lastTs === null || ts > lastTs) lastTs = ts;
     if (e.type === 'user' || e.type === 'assistant') messageCount++;
+    if (!cwd && e.cwd) cwd = e.cwd;
 
     // sidechain (subagent) entries stay out of totals/models/billing — same
     // accounting as buildLedger; timestamps and message count cover the file
@@ -178,6 +183,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     tokensByModel,
     sizeBytes: fs.statSync(filePath).size,
     billing: billingFromFlags(sawWrite, sawRead),
+    cwd,
   };
 }
 
@@ -401,7 +407,8 @@ async function main(): Promise<void> {
     `${padL('duration', 9)} ${pad('date', 11)} ${pad('file', 9)} ${pad('project', 42)} ${pad(opts.breakdown ? 'by model (share)' : 'models', 30)} ${padL('tokens', 9)} ${padL('msgs', 6)} ${pad('billing', 15)}`
   );
   for (const e of shown) {
-    const project = shortenHome(decodePath(e.projectId));
+    // real path from the session beats decoding the encoded dir name (lossy on dashes)
+    const project = e.cwd ? shortenHome(e.cwd) : shortenHome(decodePath(e.projectId));
     const models = opts.breakdown ? modelShareCell(e) : e.models.join(', ');
     console.log(
       `${padL(dur(e.durationMs), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : 'n/a', 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
