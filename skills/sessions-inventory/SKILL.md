@@ -6,7 +6,7 @@ allowed-tools: Bash(pnpm analyze:sessions:*)
 
 # Sessions inventory
 
-Runs the inventory CLI from a claude-devtools checkout (plugin root = repo root). If `pnpm analyze:sessions` fails with "no such script", cd to this plugin's checkout first and run `pnpm install` once.
+Runs the inventory CLI from a claude-devtools checkout (plugin root = repo root). If `pnpm analyze:sessions` fails with "no such script", cd to this plugin's checkout first and run `pnpm install` once. Those two steps are outside the `allowed-tools` prefix, so a permission prompt there is expected — approve it, it is not a failure.
 
 ## Filters
 
