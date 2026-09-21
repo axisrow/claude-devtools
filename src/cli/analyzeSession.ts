@@ -232,12 +232,6 @@ const countTools = (rs: RoundRow[]): Map<string, number> => {
   return counts;
 };
 
-const sumBilled = (rs: RoundRow[]): number =>
-  rs.reduce(
-    (s, r) => s + r.inputTokens + r.cacheReadTokens + r.cacheCreationTokens + r.outputTokens,
-    0
-  );
-
 export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
   const t = {
     inputTokens: 0,
@@ -710,11 +704,13 @@ export function computeFindings(
         .slice(0, 5)
         .map(([n, c]) => `${n} ${c}`)
         .join(', ');
-      const billed = sumBilled(rs);
       findings.push({
         type: 'long_turn',
         severity: 'high',
-        tokensWasted: billed,
+        // observation, not waste — unlike other findings this books no redundant
+        // tokens (the summary carries the activity numbers), so consumers summing
+        // tokensWasted don't count a healthy turn's whole billing as waste
+        tokensWasted: 0,
         turnIndex: turn.index,
         summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
       });

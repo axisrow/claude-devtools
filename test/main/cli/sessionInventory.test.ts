@@ -161,8 +161,10 @@ describe('scanSessionFile tokensByModel', () => {
       expect(entry?.models).toEqual(['claude-sonnet-5', 'claude-haiku-4-5']);
       expect(entry?.totalTokens).toBe(122);
       expect(entry?.messageCount).toBe(6);
-      // API time: capped gaps between main-chain usage lines (10:05→10:06→10:07)
-      expect(entry?.activeMs).toBe(120000);
+      // API time: r1's two streaming snapshots (10:05, 10:06) anchor once — the
+      // only gap is r1-last (10:06) → haiku (10:07); the intra-request minute
+      // does not count (parity with analyze:session's one round per request)
+      expect(entry?.activeMs).toBe(60000);
       // real path from the session's cwd, not the lossy dash-decode of the dir name
       expect(entry?.cwd).toBe('/Users/x/tg-content-factory');
     } finally {

@@ -680,6 +680,7 @@ describe('long turns and loop streaks', () => {
     expect(long).toBeDefined();
     expect(long?.severity).toBe('high');
     expect(long?.turnIndex).toBe(1);
+    expect(long?.tokensWasted).toBe(0); // observation, not waste — unlike other findings
     expect(ledger.turns[0].activeMinutes).toBe(65); // 13 gaps × 5 min, под капом
     expect(ledger.totals.longestTurn?.activeMinutes).toBe(65);
   });

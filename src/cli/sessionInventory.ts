@@ -7,7 +7,7 @@
  * Flags:
  *   --min-minutes N           only sessions with at least N minutes of active (API) time
  *   --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes
- *   --min-streak N            only sessions where some back-to-back cycle ran at least N times
+ *   --min-streak N            only sessions where some back-to-back cycle ran at least N times (runs < 3x are never recorded)
  *   --sort FIELD              duration | active | turn | streak | tokens | date (default duration)
  *   --limit N                 show first N rows
  *   --breakdown               per-session model token split (models column + JSON tokensByModel)
@@ -78,7 +78,7 @@ export interface InventoryEntry {
   sessionId: string;
   filePath: string;
   durationMs: number;
-  /** API work time: capped gaps between main-chain usage lines — same cap as turnActiveMinutes */
+  /** API work time: capped gaps between main-chain usage lines (one anchor per requestId) — same cap as turnActiveMinutes */
   activeMs: number;
   /** longest single turn's active time — a 96h-active session may have no turn over 20 min */
   longestTurnMs: number;
@@ -210,9 +210,13 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       e.message?.usage &&
       e.message.model !== '<synthetic>'
     ) {
-      // API time: gap to the previous main-chain usage line, capped —
-      // same accounting as turnActiveMinutes, hours of silence cost zero
-      if (prevUsageTs !== null) {
+      // API time: gap to the previous main-chain usage line, capped — same
+      // accounting as turnActiveMinutes, hours of silence cost zero. Streaming
+      // snapshots of an already-seen requestId add no gap (analyze:session keeps
+      // one round per request, anchored at the last line) but still advance the
+      // anchor, so the next gap starts from the newest line of the request.
+      const snapshot = e.requestId !== undefined && usageByRequestId.has(e.requestId);
+      if (prevUsageTs !== null && !snapshot) {
         const gap = Math.min(Math.max(ts - prevUsageTs, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
         activeMs += gap;
         turnActiveMs += gap;
@@ -459,7 +463,7 @@ async function main(): Promise<void> {
         'flags:',
         '  --min-minutes N           only sessions with at least N minutes of active (API) time',
         '  --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes',
-        '  --min-streak N            only sessions where some back-to-back cycle ran at least N times',
+        `  --min-streak N            only sessions where some back-to-back cycle ran at least N times (floor: ${String(WASTE_THRESHOLDS.loopStreakMin)}x — shorter runs are not recorded)`,
         '  --sort FIELD              duration | active | turn | streak | tokens | date (default duration)',
         '  --limit N                 show first N rows',
         '  --breakdown               per-session model token split',
