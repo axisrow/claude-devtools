@@ -743,7 +743,7 @@ function printReport(
   for (const turn of ledger.turns) {
     const rs = ledger.rounds.filter((r) => r.turnIndex === turn.index);
     if (rs.length === 0) continue; // trailing user msg / empty implicit turn
-    const ctx = rs.at(-1)?.contextSize ?? 0;
+    const ctx = rs.filter((r) => r.contextSize > 0).at(-1)?.contextSize ?? 0; // ghosts (#14) don't hide the real context
     const reread = rs.reduce((s, r) => s + r.cacheReadTokens, 0);
     const fresh = rs.reduce((s, r) => s + r.inputTokens + r.cacheCreationTokens, 0);
     const out = rs.reduce((s, r) => s + r.outputTokens, 0);
