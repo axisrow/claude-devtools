@@ -102,6 +102,24 @@ describe('modelParser', () => {
       });
     });
 
+    it('should parse short format without minor or date: claude-sonnet-5', () => {
+      const result = parseModelString('claude-sonnet-5');
+      expect(result).toEqual({
+        name: 'sonnet5',
+        family: 'sonnet',
+        majorVersion: 5,
+        minorVersion: null,
+      });
+    });
+
+    it('should return null for invalid short format with non-numeric version', () => {
+      expect(parseModelString('claude-sonnet-x')).toBeNull();
+    });
+
+    it('should return null for date-shaped major version: claude-sonnet-20250929', () => {
+      expect(parseModelString('claude-sonnet-20250929')).toBeNull();
+    });
+
     it('should return null for invalid format with only two parts', () => {
       expect(parseModelString('claude-sonnet')).toBeNull();
     });
