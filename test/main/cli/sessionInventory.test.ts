@@ -100,7 +100,12 @@ describe('scanSessionFile tokensByModel', () => {
     try {
       const file = path.join(dir, 'session1.jsonl');
       const lines = [
-        JSON.stringify({ type: 'user', uuid: '1', timestamp: '2026-09-20T10:00:00Z' }),
+        JSON.stringify({
+          type: 'user',
+          uuid: '1',
+          timestamp: '2026-09-20T10:00:00Z',
+          cwd: '/Users/x/tg-content-factory',
+        }),
         JSON.stringify({
           type: 'assistant',
           uuid: '2',
@@ -156,6 +161,8 @@ describe('scanSessionFile tokensByModel', () => {
       expect(entry?.models).toEqual(['claude-sonnet-5', 'claude-haiku-4-5']);
       expect(entry?.totalTokens).toBe(122);
       expect(entry?.messageCount).toBe(6);
+      // real path from the session's cwd, not the lossy dash-decode of the dir name
+      expect(entry?.cwd).toBe('/Users/x/tg-content-factory');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
