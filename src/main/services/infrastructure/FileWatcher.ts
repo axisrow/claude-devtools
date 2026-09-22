@@ -985,6 +985,20 @@ export class FileWatcher extends EventEmitter {
             projectId: dir.name,
             sessionId: path.basename(entry.name, '.jsonl'),
           });
+          // Baseline silently: the file's history predates this watcher, so
+          // the bell must only ring for calls that happen after discovery.
+          // Pin the size cursor; line count is a >0 placeholder — the byte
+          // offset is the real cursor for incremental appends.
+          try {
+            const observed =
+              typeof entry.size === 'number'
+                ? entry.size
+                : (await this.fsProvider.stat(fullPath)).size;
+            this.lastProcessedSize.set(fullPath, observed);
+            this.lastProcessedLineCount.set(fullPath, 1);
+          } catch {
+            this.activeSessionFiles.delete(fullPath);
+          }
         }
       }
     } catch (err) {

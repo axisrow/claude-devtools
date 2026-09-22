@@ -291,12 +291,55 @@ describe('FileWatcher', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it('discovers brand-new session files missed by fs.watch', async () => {
+    it('baselines a discovered file silently: old loops never ring', async () => {
       vi.useRealTimers();
       useRealExistsSync();
       vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
 
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-discover-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'new-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      // history already contains a full loop (3 identical calls)
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(
+        filePath,
+        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+        'utf8'
+      );
+      const sizeAtDiscovery = fs.statSync(filePath).size;
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const watcherAny = watcher as unknown as {
+        lastProcessedLineCount: Map<string, number>;
+        lastProcessedSize: Map<string, number>;
+        runCatchUpScan: () => Promise<void>;
+      };
+
+      // fs.watch never fired for this file (mocked watch is silent) — catch-up
+      // must discover it, but its history predates the watcher: silent baseline
+      await watcherAny.runCatchUpScan();
+
+      expect(errorDetector.detectErrors).not.toHaveBeenCalled();
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+      expect(watcherAny.lastProcessedSize.get(filePath)).toBe(sizeAtDiscovery);
+      expect(watcherAny.activeSessionFiles.has(filePath)).toBe(true);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('rings for a loop that develops after discovery', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-grow-'));
       const projectsDir = path.join(tempDir, 'projects');
       const projectDir = path.join(projectsDir, 'new-project');
       fs.mkdirSync(projectDir, { recursive: true });
@@ -310,20 +353,26 @@ describe('FileWatcher', () => {
       watcher.setNotificationManager(notificationManager);
 
       const watcherAny = watcher as unknown as {
-        lastProcessedLineCount: Map<string, number>;
         runCatchUpScan: () => Promise<void>;
       };
 
-      // fs.watch never fired for this file (mocked watch is silent) — the
-      // catch-up sweep must still discover it, or loop detection is blind
-      // to every brand-new session
+      // discovery baselines the file silently
+      mockConfig.notifications.loopDetection.enabled = true;
+      await watcherAny.runCatchUpScan();
+      expect(errorDetector.detectErrors).not.toHaveBeenCalled();
+
+      // now a NEW loop develops (3 identical calls appended post-discovery)
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('a4', 't4') + toolUseLine('a5', 't5') + toolUseLine('a6', 't6'),
+        'utf8'
+      );
       await watcherAny.runCatchUpScan();
 
       expect(errorDetector.detectErrors).toHaveBeenCalled();
-      const calls = vi.mocked(errorDetector.detectErrors).mock.calls;
-      expect(calls[calls.length - 1][2]).toBe('new-project');
-
-      expect(watcherAny.lastProcessedLineCount.get(filePath)).toBe(1);
+      expect(notificationManager.addError).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'loop' })
+      );
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
