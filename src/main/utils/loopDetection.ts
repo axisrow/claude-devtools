@@ -63,6 +63,11 @@ export class LoopDetector {
     const state = this.perFile.get(filePath) ?? freshState();
     this.perFile.set(filePath, state);
 
+    // One incident per batch (the first): keep scanning to the end so
+    // streak/lastToolUseId stay accurate — FileWatcher marks the whole
+    // batch processed, so an early return would strand the remainder.
+    let incident: LoopIncident | null = null;
+
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       // main-chain assistant lines only — same accounting as the inventory scan
@@ -84,14 +89,21 @@ export class LoopDetector {
         }
         state.lastToolUseId = call.id ?? '';
         if (
+          !incident &&
           state.streak >= threshold &&
           (state.notifiedCount === 0 || state.streak >= state.notifiedCount * 2)
         ) {
           state.notifiedCount = state.streak;
-          return { key, count: state.streak, toolUseId: call.id, cwd: state.cwd, batchIndex: i };
+          incident = {
+            key,
+            count: state.streak,
+            toolUseId: call.id,
+            cwd: state.cwd,
+            batchIndex: i,
+          };
         }
       }
     }
-    return null;
+    return incident;
   }
 }

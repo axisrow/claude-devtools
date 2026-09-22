@@ -50,6 +50,22 @@ describe('LoopDetector', () => {
     expect(second?.toolUseId).toBe('t6');
   });
 
+  it('keeps counting after an incident to the end of the batch', () => {
+    const det = new LoopDetector();
+    const msgs = [1, 2, 3, 4, 5, 6].map((n) => assistant(`m${n}`, [read(`t${n}`, '/x/f')]));
+    // first incident at 3; the rest of the batch still counts (no second incident)
+    expect(det.feed('s', msgs, 3)?.count).toBe(3);
+    // streak reached 6 in-batch, so the doubling bar (2×3) is crossed at 7,
+    // and the streaming snapshot dup of t6 is skipped (true last call id)
+    const next = det.feed(
+      's',
+      [assistant('d', [read('t6', '/x/f')]), assistant('m7', [read('t7', '/x/f')])],
+      3
+    );
+    expect(next?.count).toBe(7);
+    expect(next?.toolUseId).toBe('t7');
+  });
+
   it('dedupes streaming snapshots by consecutive toolUseId', () => {
     const det = new LoopDetector();
     const msgs = [

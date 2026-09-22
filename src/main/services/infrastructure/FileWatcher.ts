@@ -206,6 +206,7 @@ export class FileWatcher extends EventEmitter {
     this.activeSessionFiles.clear();
     this.processingInProgress.clear();
     this.pendingReprocess.clear();
+    this.loopDetector.resetAll();
 
     logger.info('Stopped watching');
   }
@@ -692,9 +693,17 @@ export class FileWatcher extends EventEmitter {
       }
 
       // Live tool-call loop detection — stateful, main sessions only (agent
-      // files arrive with subagentId and are excluded)
+      // files arrive with subagentId and are excluded), incremental appends
+      // only: a first-read/catch-up batch replays whole-file history and
+      // would re-notify loops that already ended (live detector, not a
+      // report — the CLI analyzers cover the offline case).
       const loopCfg = ConfigManager.getInstance().getConfig().notifications.loopDetection;
-      if (loopCfg.enabled && !subagentId && !path.basename(filePath).startsWith('agent-')) {
+      if (
+        loopCfg.enabled &&
+        canUseIncrementalAppend &&
+        !subagentId &&
+        !path.basename(filePath).startsWith('agent-')
+      ) {
         const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
         if (incident) {
           await this.notificationManager.addError(
