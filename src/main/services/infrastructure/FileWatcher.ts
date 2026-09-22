@@ -955,11 +955,45 @@ export class FileWatcher extends EventEmitter {
    * Only checks files modified within the last hour.
    */
   private async runCatchUpScan(): Promise<void> {
-    if (!this.notificationManager || this.activeSessionFiles.size === 0) {
+    if (!this.notificationManager) {
       return;
     }
 
     const now = Date.now();
+
+    // Discovery sweep: fs.watch can drop events for brand-new files (macOS
+    // coalesces directory creation and may deliver a null filename, which is
+    // discarded), and only event-seen files ever enter activeSessionFiles.
+    // Walk the projects tree for untracked session files so nothing is missed;
+    // stale files are evicted by the mtime guard in the loop below.
+    try {
+      const dirs = await this.fsProvider.readdir(this.projectsPath);
+      for (const dir of dirs) {
+        if (!dir.isDirectory()) continue;
+        let entries: FsDirent[];
+        try {
+          entries = await this.fsProvider.readdir(path.join(this.projectsPath, dir.name));
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+          if (entry.name.startsWith('agent-')) continue;
+          const fullPath = path.join(this.projectsPath, dir.name, entry.name);
+          if (this.activeSessionFiles.has(fullPath)) continue;
+          this.activeSessionFiles.set(fullPath, {
+            projectId: dir.name,
+            sessionId: path.basename(entry.name, '.jsonl'),
+          });
+        }
+      }
+    } catch (err) {
+      logger.error('FileWatcher: Error discovering session files during catch-up:', err);
+    }
+
+    if (this.activeSessionFiles.size === 0) {
+      return;
+    }
 
     for (const [filePath, info] of this.activeSessionFiles) {
       try {
