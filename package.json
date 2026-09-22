@@ -180,6 +180,8 @@
     "publish": [
       {
         "provider": "github",
+        "owner": "axisrow",
+        "repo": "claude-devtools",
         "releaseType": "draft"
       }
     ]
