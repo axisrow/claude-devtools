@@ -698,6 +698,12 @@ export class FileWatcher extends EventEmitter {
       // would re-notify loops that already ended (live detector, not a
       // report — the CLI analyzers cover the offline case).
       const loopCfg = ConfigManager.getInstance().getConfig().notifications.loopDetection;
+      logger.debug(
+        `loop gate ${path.basename(filePath)}: enabled=${loopCfg.enabled} ` +
+          `threshold=${loopCfg.cycleThreshold} ` +
+          `incremental=${canUseIncrementalAppend} newMessages=${newMessages.length} ` +
+          `notificationManager=${this.notificationManager ? 'set' : 'null'}`
+      );
       if (
         loopCfg.enabled &&
         canUseIncrementalAppend &&
@@ -705,6 +711,8 @@ export class FileWatcher extends EventEmitter {
         !path.basename(filePath).startsWith('agent-')
       ) {
         const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
+        const incidentText = incident ? `${incident.key} x${incident.count}` : 'none';
+        logger.debug(`loop feed ${path.basename(filePath)}: incident=${incidentText}`);
         if (incident) {
           await this.notificationManager.addError(
             createDetectedError({
