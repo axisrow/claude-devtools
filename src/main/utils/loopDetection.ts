@@ -6,7 +6,7 @@
  * cycles (bashStem(normalizeCallKey)) so `git show X | wc -l` variants and
  * offset-only Read repeats bucket as one loop. Notification policy: first
  * incident when a run reaches `threshold`, re-notify when it doubles — a
- * 7-hour loop escalates (3 → 6 → 12 …) instead of pinging every round.
+ * 7-hour loop escalates (4 → 8 → 16 …) instead of pinging every round.
  */
 
 import { type ParsedMessage } from '@main/types';

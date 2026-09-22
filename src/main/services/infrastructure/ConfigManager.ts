@@ -245,7 +245,7 @@ const DEFAULT_CONFIG: AppConfig = {
     snoozeMinutes: 30,
     includeSubagentErrors: true,
     triggers: DEFAULT_TRIGGERS,
-    loopDetection: { enabled: true, cycleThreshold: 3 },
+    loopDetection: { enabled: true, cycleThreshold: 4 },
   },
   general: {
     launchAtLogin: false,
