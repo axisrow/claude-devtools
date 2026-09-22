@@ -78,7 +78,20 @@ export const WASTE_THRESHOLDS = {
   contextSpikeTokens: 30000,
   cacheDeadContextTokens: 20000,
   thinkingHeavyTokens: 8000,
+  longTurnActiveMinutes: 45,
+  loopStreakMin: 3,
+  waitLoopTicks: 5,
 } as const;
+
+// gaps between a turn's rounds longer than this are idle, not work
+// ponytail: calibration knob — tune after live runs
+export const TURN_IDLE_GAP_CAP_MINUTES = 10;
+
+// wait-loop tick: a round that billed a huge context and produced ~nothing
+// (self-waking night watches, poll cycles). Corpus-calibrated: such rounds are
+// 47.5% of all billed tokens across 1266 local sessions
+export const WAIT_TICK_CONTEXT_TOKENS = 50_000;
+export const WAIT_TICK_OUTPUT_TOKENS = 300;
 
 // Tool results that look like errors but are normal flow (user said no / aborted)
 const REJECTION_PATTERNS = [
@@ -92,7 +105,10 @@ export type FindingType =
   | 'oversized_output'
   | 'context_spike'
   | 'cache_dead'
-  | 'thinking_heavy';
+  | 'thinking_heavy'
+  | 'long_turn'
+  | 'loop_streak'
+  | 'wait_loop';
 
 export interface Finding {
   type: FindingType;
@@ -100,6 +116,16 @@ export interface Finding {
   tokensWasted: number;
   turnIndex?: number;
   summary: string;
+}
+
+// run of back-to-back identical calls being tracked for loop_streak
+interface StreakState {
+  count: number;
+  tokens: number;
+  errors: number;
+  turn?: number;
+  start: Date;
+  end: Date;
 }
 
 export interface RoundRow {
@@ -122,6 +148,8 @@ export interface RoundRow {
 export interface TurnRow {
   index: number;
   start: Date;
+  /** active work time: inter-round gaps capped at TURN_IDLE_GAP_CAP_MINUTES */
+  activeMinutes: number;
 }
 
 export interface SessionLedger {
@@ -137,11 +165,14 @@ export interface SessionLedger {
     thinkingTokens: number;
     noUsageRounds: number;
     retryCopies: number;
+    longestTurn?: { turn: number; activeMinutes: number; rounds: number };
     costUsd?: number;
     costPartial?: boolean;
   };
   models: string[];
   durationMs: number;
+  /** sum of turn activeMinutes — API work time, idle excluded (the honest "how long did it run") */
+  activeMinutes: number;
   billing: BillingScheme;
 }
 
@@ -171,6 +202,36 @@ export function roundCostUsd(r: RoundRow): number | null {
   );
 }
 
+// active work time of a turn: gaps between consecutive rounds, each capped —
+// hours of orchestrator silence between pings count as zero, not as a "turn"
+export function turnActiveMinutes(rounds: RoundRow[]): number {
+  let ms = 0;
+  for (let i = 1; i < rounds.length; i++) {
+    const gap = rounds[i].timestamp.getTime() - rounds[i - 1].timestamp.getTime();
+    ms += Math.min(Math.max(gap, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
+  }
+  return Math.round(ms / 60000);
+}
+
+// one grouping of rounds by turn, shared by totals, findings and the report
+function roundsByTurn(rounds: RoundRow[]): Map<number, RoundRow[]> {
+  const byTurn = new Map<number, RoundRow[]>();
+  for (const r of rounds) {
+    const list = byTurn.get(r.turnIndex);
+    if (list) list.push(r);
+    else byTurn.set(r.turnIndex, [r]);
+  }
+  return byTurn;
+}
+
+const countTools = (rs: RoundRow[]): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const r of rs) {
+    for (const name of r.tools) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return counts;
+};
+
 export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
   const t = {
     inputTokens: 0,
@@ -197,10 +258,18 @@ export function totalsFromRounds(rounds: RoundRow[]): SessionLedger['totals'] {
   t.rereadShare = t.billedTokens > 0 ? t.cacheReadTokens / t.billedTokens : 0;
   const noUsageRounds = rounds.filter((r) => r.contextSize === 0).length;
   const retryCopies = rounds.filter((r) => r.isRetryCopy === true).length;
+  let longestTurn: SessionLedger['totals']['longestTurn'];
+  for (const [turn, rs] of roundsByTurn(rounds)) {
+    const active = turnActiveMinutes(rs);
+    if (!longestTurn || active > longestTurn.activeMinutes) {
+      longestTurn = { turn, activeMinutes: active, rounds: rs.length };
+    }
+  }
   return {
     ...t,
     noUsageRounds,
     retryCopies,
+    ...(longestTurn ? { longestTurn } : {}),
     ...(costUsd > 0 ? { costUsd, costPartial: unpriced } : {}),
   };
 }
@@ -262,12 +331,19 @@ export function filterLedgerByDate(
     minTs = Math.min(minTs, r.timestamp.getTime());
     maxTs = Math.max(maxTs, r.timestamp.getTime());
   }
+  // turns are copies: activeMinutes must reflect the filtered window, not the
+  // whole session
+  const byTurn = roundsByTurn(rounds);
+  const turns = ledger.turns
+    .filter((t) => keptTurns.has(t.index))
+    .map((t) => ({ ...t, activeMinutes: turnActiveMinutes(byTurn.get(t.index) ?? []) }));
   return {
-    turns: ledger.turns.filter((t) => keptTurns.has(t.index)),
+    turns,
     rounds,
     totals: totalsFromRounds(rounds),
     models: [...new Set(rounds.map((r) => r.model))],
     durationMs: Number.isFinite(minTs) ? Math.max(0, maxTs - minTs) : 0,
+    activeMinutes: turns.reduce((s, t) => s + t.activeMinutes, 0),
     billing: detectBillingScheme(rounds),
   };
 }
@@ -333,7 +409,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   let maxTs = Number.NEGATIVE_INFINITY;
 
   const newTurn = (ts: Date): TurnRow => {
-    const turn: TurnRow = { index: turns.length + 1, start: ts };
+    const turn: TurnRow = { index: turns.length + 1, start: ts, activeMinutes: 0 };
     turns.push(turn);
     currentTurn = turn;
     return turn;
@@ -384,12 +460,18 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     models.add(model);
   }
 
+  const byTurn = roundsByTurn(rounds);
+  for (const turn of turns) {
+    turn.activeMinutes = turnActiveMinutes(byTurn.get(turn.index) ?? []);
+  }
+
   return {
     turns,
     rounds,
     totals: totalsFromRounds(rounds),
     models: [...models],
     durationMs: Number.isFinite(minTs) ? Math.max(0, maxTs - minTs) : 0,
+    activeMinutes: turns.reduce((s, t) => s + t.activeMinutes, 0),
     billing: detectBillingScheme(rounds),
   };
 }
@@ -437,6 +519,15 @@ export function normalizeCallKey(name: string, input: Record<string, unknown>): 
   }
 }
 
+// Bash key without its pipe tail — hundreds of `git show X | wc -l`-style
+// variants are ONE re-read loop.
+// ponytail: naive pipe cut — pipes inside quoted patterns merge, accepted
+export function bashStem(key: string): string {
+  if (!key.startsWith('Bash|')) return key;
+  const pipe = key.indexOf('|', 5);
+  return pipe === -1 ? key : key.slice(0, pipe).trimEnd();
+}
+
 function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }
@@ -466,6 +557,36 @@ export function computeFindings(
   // with the original — counting them doubles duplicate/failed/oversized
   const retryCopies = getRetryCopyMessageIds(messages);
   const seen = new Map<string, { count: number; tokens: number; first: number }>();
+
+  // loop_streak: the same call repeated back-to-back — model no-op loops
+  // (Bash true x114) and env retry loops (same failure hammered). Turn
+  // attribution walks the ledger's turn starts (sorted by construction).
+  let turnCursor = 0;
+  const turnOf = (ts: number): number | undefined => {
+    const turns = ledger.turns;
+    if (turns.length === 0 || ts < turns[0].start.getTime()) return undefined;
+    while (turnCursor + 1 < turns.length && turns[turnCursor + 1].start.getTime() <= ts) {
+      turnCursor += 1;
+    }
+    return turns[turnCursor].index;
+  };
+  let streakKey: string | null = null;
+  let streak: StreakState | null = null;
+  const flushStreak = (): void => {
+    if (streak && streakKey && streak.count >= th.loopStreakMin) {
+      const env = streak.errors === streak.count;
+      findings.push({
+        type: 'loop_streak',
+        severity: streak.count >= 5 ? 'high' : 'medium',
+        tokensWasted: streak.tokens,
+        turnIndex: streak.turn,
+        summary: `${short(streakKey, 60)} — x${streak.count} back-to-back (${env ? 'env loop — same failure each time' : 'no-op loop'}) ${hhmm(streak.start)}–${hhmm(streak.end)}`,
+      });
+    }
+    streak = null;
+    streakKey = null;
+  };
+
   for (const msg of messages) {
     if (msg.isSidechain) continue;
     if (retryCopies.has(msg.uuid)) continue;
@@ -475,6 +596,24 @@ export function computeFindings(
       const result = results.get(call.id);
       const text = result ? resultText(result.content) : '';
       const resultTok = estimateTokens(text);
+
+      if (streak && streakKey === key) {
+        streak.count += 1;
+        streak.tokens += resultTok;
+        if (result?.isError) streak.errors += 1;
+        streak.end = msg.timestamp;
+      } else {
+        flushStreak();
+        streakKey = key;
+        streak = {
+          count: 1,
+          tokens: 0,
+          errors: result?.isError ? 1 : 0,
+          turn: turnOf(msg.timestamp.getTime()),
+          start: msg.timestamp,
+          end: msg.timestamp,
+        };
+      }
 
       if (result?.isError) {
         const rejected = REJECTION_PATTERNS.some((p) => text.includes(p));
@@ -506,6 +645,7 @@ export function computeFindings(
       }
     }
   }
+  flushStreak();
   for (const [key, { count, tokens, first }] of seen) {
     if (count > 1) {
       const reread = tokens - first; // repeats only — the first read was legitimate
@@ -544,10 +684,10 @@ export function computeFindings(
       });
     }
   }
+  const byTurn = roundsByTurn(ledger.rounds);
   for (const turn of ledger.turns) {
-    const think = ledger.rounds
-      .filter((r) => r.turnIndex === turn.index)
-      .reduce((s, r) => s + r.thinkingTokens, 0);
+    const rs = byTurn.get(turn.index) ?? [];
+    const think = rs.reduce((s, r) => s + r.thinkingTokens, 0);
     if (think > th.thinkingHeavyTokens) {
       findings.push({
         type: 'thinking_heavy',
@@ -555,6 +695,40 @@ export function computeFindings(
         tokensWasted: think,
         turnIndex: turn.index,
         summary: `thinking ~${formatTokensCompact(think)} tok in turn ${turn.index}`,
+      });
+    }
+    if (turn.activeMinutes >= th.longTurnActiveMinutes) {
+      const calls = rs.reduce((s, r) => s + r.tools.length, 0);
+      const top = [...countTools(rs)]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([n, c]) => `${n} ${c}`)
+        .join(', ');
+      findings.push({
+        type: 'long_turn',
+        severity: 'high',
+        // observation, not waste — unlike other findings this books no redundant
+        // tokens (the summary carries the activity numbers), so consumers summing
+        // tokensWasted don't count a healthy turn's whole billing as waste
+        tokensWasted: 0,
+        turnIndex: turn.index,
+        summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
+      });
+    }
+    const ticks = rs.filter(
+      (r) =>
+        !r.isRetryCopy &&
+        r.contextSize >= WAIT_TICK_CONTEXT_TOKENS &&
+        r.outputTokens <= WAIT_TICK_OUTPUT_TOKENS
+    );
+    if (ticks.length >= th.waitLoopTicks) {
+      const wasted = ticks.reduce((s, r) => s + r.contextSize, 0);
+      findings.push({
+        type: 'wait_loop',
+        severity: ticks.length >= 20 ? 'high' : 'medium',
+        tokensWasted: wasted,
+        turnIndex: turn.index,
+        summary: `wait-loop: ${ticks.length} quiet rounds re-read ~${formatTokensCompact(wasted)} tok (≤300 tok of output each)`,
       });
     }
   }
@@ -736,7 +910,7 @@ function printReport(
   console.log('=== SESSION ===');
   console.log('file :', path.basename(file));
   console.log(
-    `turns: ${activeTurns}  rounds: ${ledger.rounds.length}  duration: ${dur(ledger.durationMs)}`
+    `turns: ${activeTurns}  rounds: ${ledger.rounds.length}  active: ${dur(ledger.activeMinutes * 60000)} (wall ${dur(ledger.durationMs)})`
   );
   console.log('models:', ledger.models.join(', ') || 'n/a');
   console.log('billing:', ledger.billing);
@@ -747,6 +921,11 @@ function printReport(
   }
   if (t.retryCopies > 0) {
     console.log(`ℹ ${t.retryCopies} router-retry copies detected (sums untouched — #15)`);
+  }
+  if (t.longestTurn) {
+    console.log(
+      `longest turn: #${t.longestTurn.turn} (active ${t.longestTurn.activeMinutes}m, ${t.longestTurn.rounds} rounds)`
+    );
   }
   if (t.costUsd !== undefined && !opts.noCost) {
     const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
@@ -781,10 +960,11 @@ function printReport(
   }
   console.log('=== BY TURN ===');
   console.log(
-    `${pad('#', 3)} ${pad('time', 6)} ${padL('context', 9)} ${padL('reread', 9)} ${padL('new', 8)} ${padL('out', 7)} ${pad('think%', 7)}  tools`
+    `${pad('#', 3)} ${pad('time', 6)} ${padL('dur', 5)} ${padL('context', 9)} ${padL('reread', 9)} ${padL('new', 8)} ${padL('out', 7)} ${pad('think%', 7)}  tools`
   );
+  const byTurn = roundsByTurn(ledger.rounds);
   for (const turn of ledger.turns) {
-    const rs = ledger.rounds.filter((r) => r.turnIndex === turn.index);
+    const rs = byTurn.get(turn.index) ?? [];
     if (rs.length === 0) continue; // trailing user msg / empty implicit turn
     const ctx = rs.filter((r) => r.contextSize > 0).at(-1)?.contextSize ?? 0; // ghosts (#14) don't hide the real context
     const reread = rs.reduce((s, r) => s + r.cacheReadTokens, 0);
@@ -793,12 +973,10 @@ function printReport(
     const think = rs.reduce((s, r) => s + r.thinkingTokens, 0);
     const genTotal = think + out;
     const thinkPct = genTotal > 0 ? Math.round((think / genTotal) * 100) : 0;
-    const toolCounts = new Map<string, number>();
-    for (const r of rs)
-      for (const name of r.tools) toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
+    const toolCounts = countTools(rs);
     const tools = [...toolCounts].map(([n, c]) => `${n} x${c}`).join(', ');
     console.log(
-      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
+      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(turn.activeMinutes + 'm', 5)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
     );
   }
   console.log();
