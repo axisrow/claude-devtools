@@ -110,6 +110,7 @@ function validateNotificationsSection(
     'snoozedUntil',
     'snoozeMinutes',
     'triggers',
+    'loopDetection',
   ];
 
   const result: Partial<NotificationConfig> = {};
@@ -180,6 +181,30 @@ function validateNotificationsSection(
         }
         result.triggers = value;
         break;
+      case 'loopDetection': {
+        if (!isPlainObject(value)) {
+          return { valid: false, error: 'notifications.loopDetection must be an object' };
+        }
+        const { enabled, cycleThreshold } = value as {
+          enabled?: unknown;
+          cycleThreshold?: unknown;
+        };
+        if (typeof enabled !== 'boolean') {
+          return { valid: false, error: 'notifications.loopDetection.enabled must be a boolean' };
+        }
+        if (
+          !isFiniteNumber(cycleThreshold) ||
+          !Number.isInteger(cycleThreshold) ||
+          cycleThreshold < 1
+        ) {
+          return {
+            valid: false,
+            error: 'notifications.loopDetection.cycleThreshold must be an integer >= 1',
+          };
+        }
+        result.loopDetection = { enabled, cycleThreshold };
+        break;
+      }
       default:
         return { valid: false, error: `Unsupported notifications key: ${key}` };
     }

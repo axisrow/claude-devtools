@@ -34,7 +34,11 @@ vi.mock('../../../../src/main/services/infrastructure/ConfigManager', () => ({
   ConfigManager: {
     getInstance: () => ({
       getConfig: () => ({
-        notifications: { includeSubagentErrors: true, triggers: [] },
+        notifications: {
+          includeSubagentErrors: true,
+          triggers: [],
+          loopDetection: { enabled: false, cycleThreshold: 3 },
+        },
       }),
     }),
   },

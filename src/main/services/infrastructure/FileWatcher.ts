@@ -12,7 +12,8 @@
 
 import { type FileChangeEvent, type ParsedMessage } from '@main/types';
 import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
-import { getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
+import { LoopDetector } from '@main/utils/loopDetection';
+import { extractProjectName, getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -21,6 +22,7 @@ import * as path from 'path';
 import { projectPathResolver } from '../discovery/ProjectPathResolver';
 import { type ProjectScanner } from '../discovery/ProjectScanner';
 import { errorDetector } from '../error/ErrorDetector';
+import { createDetectedError } from '../error/ErrorMessageBuilder';
 
 import { ConfigManager } from './ConfigManager';
 import { type DataCache } from './DataCache';
@@ -86,6 +88,8 @@ export class FileWatcher extends EventEmitter {
   private processingInProgress = new Set<string>();
   /** Files that need reprocessing after current processing completes */
   private pendingReprocess = new Set<string>();
+  /** Live tool-call loop detection state, fed from detectErrorsInSessionFile */
+  private loopDetector = new LoopDetector();
   /** Flag to prevent reuse after disposal */
   private disposed = false;
 
@@ -653,6 +657,7 @@ export class FileWatcher extends EventEmitter {
         processedSize = lastSize + appended.consumedBytes;
       } else {
         // Fallback for first-read, truncation, or rewrite scenarios
+        this.loopDetector.reset(filePath);
         const messages = await parseJsonlFile(filePath);
         currentLineCount = messages.length;
         newMessages = messages.slice(lastLineCount);
@@ -686,6 +691,31 @@ export class FileWatcher extends EventEmitter {
         await this.notificationManager.addError(error);
       }
 
+      // Live tool-call loop detection — stateful, main sessions only (agent
+      // files arrive with subagentId and are excluded)
+      const loopCfg = ConfigManager.getInstance().getConfig().notifications.loopDetection;
+      if (loopCfg.enabled && !subagentId && !path.basename(filePath).startsWith('agent-')) {
+        const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
+        if (incident) {
+          await this.notificationManager.addError(
+            createDetectedError({
+              sessionId,
+              projectId,
+              filePath,
+              projectName: extractProjectName(projectId, incident.cwd),
+              // approximate — deep link targets toolUseId, line is a fallback
+              lineNumber: lastLineCount + incident.batchIndex + 1,
+              source: 'loop',
+              message: `${incident.key} ×${incident.count} — possible stuck loop`,
+              timestamp: new Date(),
+              cwd: incident.cwd,
+              toolUseId: incident.toolUseId || undefined,
+              triggerName: 'Loop detected',
+            })
+          );
+        }
+      }
+
       // Update the last processed line count
       this.lastProcessedLineCount.set(filePath, currentLineCount);
       this.lastProcessedSize.set(filePath, processedSize);
@@ -716,6 +746,7 @@ export class FileWatcher extends EventEmitter {
     this.lastProcessedLineCount.delete(filePath);
     this.lastProcessedSize.delete(filePath);
     this.activeSessionFiles.delete(filePath);
+    this.loopDetector.reset(filePath);
   }
 
   /**
@@ -725,6 +756,7 @@ export class FileWatcher extends EventEmitter {
     this.lastProcessedLineCount.clear();
     this.lastProcessedSize.clear();
     this.activeSessionFiles.clear();
+    this.loopDetector.resetAll();
   }
 
   /**
