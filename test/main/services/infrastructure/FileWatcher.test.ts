@@ -30,12 +30,19 @@ vi.mock('../../../../src/main/services/error/ErrorDetector', () => ({
   },
 }));
 
+// Mutable so loop-detection tests can flip notifications.loopDetection.enabled
+const mockConfig = vi.hoisted(() => ({
+  notifications: {
+    includeSubagentErrors: true,
+    triggers: [] as never[],
+    loopDetection: { enabled: false, cycleThreshold: 3 },
+  },
+}));
+
 vi.mock('../../../../src/main/services/infrastructure/ConfigManager', () => ({
   ConfigManager: {
     getInstance: () => ({
-      getConfig: () => ({
-        notifications: { includeSubagentErrors: true, triggers: [] },
-      }),
+      getConfig: () => mockConfig,
     }),
   },
 }));
@@ -87,6 +94,23 @@ function jsonlLine(uuid: string, text: string): string {
   );
 }
 
+/** Assistant JSONL line carrying one Read tool_use — identical calls key as one loop */
+function toolUseLine(uuid: string, toolUseId: string): string {
+  return (
+    JSON.stringify({
+      type: 'assistant',
+      uuid,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      cwd: '/tmp/loop-project',
+      message: {
+        role: 'assistant',
+        model: 'claude-sonnet-5',
+        content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: '/x/f' } }],
+      },
+    }) + '\n'
+  );
+}
+
 describe('FileWatcher', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -95,6 +119,7 @@ describe('FileWatcher', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    mockConfig.notifications.loopDetection.enabled = false;
   });
 
   it('retries and starts watchers when directories appear later', () => {
@@ -505,6 +530,193 @@ describe('FileWatcher', () => {
       const actualSize = fs.statSync(filePath).size;
       expect(watcherAny.lastProcessedSize.get(filePath)).toBe(actualSize);
       expect(watcherAny.lastProcessedLineCount.get(filePath)).toBe(1);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+  });
+
+  // ===========================================================================
+  // Loop Detection Wiring
+  // ===========================================================================
+
+  describe('loop detection wiring', () => {
+    it('emits exactly one synthetic DetectedError at threshold from an incremental append', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = true;
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(filePath, jsonlLine('u1', 'hello'), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const run = (): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (p: string, s: string, f: string) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('test-project', 'session-1', filePath);
+
+      // First read establishes the baseline — whole-file replay must not feed the detector
+      await run();
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+
+      // Incremental append of 3 identical Read calls (threshold 3) -> one incident
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+        'utf8'
+      );
+      await run();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const loopError = vi.mocked(notificationManager.addError).mock.calls[0][0];
+      expect(loopError.source).toBe('loop');
+      expect(loopError.triggerName).toBe('Loop detected');
+      expect(loopError.toolUseId).toBe('t3');
+      expect(loopError.message).toContain('Read|/x/f ×3');
+      // pre-batch base (1 seed line) + batchIndex 2 + 1
+      expect(loopError.lineNumber).toBe(4);
+      expect(loopError.sessionId).toBe('session-1');
+      expect(loopError.projectId).toBe('test-project');
+
+      // Counts 4 and 5 stay below the doubling bar — quiet
+      fs.appendFileSync(filePath, toolUseLine('a4', 't4') + toolUseLine('a5', 't5'), 'utf8');
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('never fires for agent files or subagent calls', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = true;
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-agent-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const runWith = (file: string, subagentId?: string): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (
+              p: string,
+              s: string,
+              f: string,
+              sub?: string
+            ) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('test-project', 'session-1', file, subagentId);
+
+      const seedAndLoop = (file: string): void => {
+        fs.writeFileSync(file, jsonlLine('u1', 'hello'), 'utf8');
+        fs.appendFileSync(
+          file,
+          toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+          'utf8'
+        );
+      };
+
+      // Subagent-annotated file: baseline first, then an incremental append
+      // of 3 identical calls that would fire if the subagentId gate leaked
+      const agentPath = path.join(projectDir, 'session-1', 'subagents', 'agent-abc.jsonl');
+      fs.mkdirSync(path.dirname(agentPath), { recursive: true });
+      seedAndLoop(agentPath);
+      await runWith(agentPath, 'abc');
+      fs.appendFileSync(
+        agentPath,
+        toolUseLine('a4', 't4') + toolUseLine('a5', 't5') + toolUseLine('a6', 't6'),
+        'utf8'
+      );
+      await runWith(agentPath, 'abc');
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+
+      // agent- named file arriving without subagentId: basename guard
+      const agentNamedPath = path.join(projectDir, 'agent-xyz.jsonl');
+      seedAndLoop(agentNamedPath);
+      await runWith(agentNamedPath);
+      fs.appendFileSync(
+        agentNamedPath,
+        toolUseLine('a4', 't4') + toolUseLine('a5', 't5') + toolUseLine('a6', 't6'),
+        'utf8'
+      );
+      await runWith(agentNamedPath);
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('resets on truncation/rewrite: no phantom count, a fresh run notifies again', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = true;
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-reset-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const seed = jsonlLine('u1', 'hello');
+      fs.writeFileSync(filePath, seed, 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const run = (): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (p: string, s: string, f: string) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('test-project', 'session-1', filePath);
+
+      await run(); // baseline
+
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+        'utf8'
+      );
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      // Truncate back to the seed: fallback path resets detector state, no new incident
+      fs.writeFileSync(filePath, seed, 'utf8');
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      // Re-append the same loop with fresh ids: a fresh run notifies again, not ×6
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('b1', 'u1') + toolUseLine('b2', 'u2') + toolUseLine('b3', 'u3'),
+        'utf8'
+      );
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(notificationManager.addError).mock.calls[1][0].message).toContain('×3');
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });

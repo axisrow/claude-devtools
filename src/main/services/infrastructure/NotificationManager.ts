@@ -454,8 +454,14 @@ export class NotificationManager extends EventEmitter {
     // Deduplicate by toolUseId: the same tool call can appear in both the
     // subagent JSONL file and the parent session JSONL (as a progress event).
     // Keep the subagent-annotated version (with subagentId) when possible.
-    if (error.toolUseId) {
-      const existingIndex = this.notifications.findIndex((n) => n.toolUseId === error.toolUseId);
+    // Loop incidents (source 'loop') are exempt in both directions: they
+    // carry the run's latest call's toolUseId, which per-call error
+    // notifications also carry, but the two are different kinds — neither
+    // should suppress the other.
+    if (error.toolUseId && error.source !== 'loop') {
+      const existingIndex = this.notifications.findIndex(
+        (n) => n.toolUseId === error.toolUseId && n.source !== 'loop'
+      );
       if (existingIndex !== -1) {
         const existing = this.notifications[existingIndex];
         if (!existing.subagentId && error.subagentId) {

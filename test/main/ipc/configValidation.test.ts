@@ -117,6 +117,23 @@ describe('configValidation', () => {
     }
   });
 
+  it('accepts valid notifications.loopDetection payload', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      loopDetection: { enabled: true, cycleThreshold: 3 },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects loopDetection with non-integer threshold', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      loopDetection: { enabled: true, cycleThreshold: 2.5 },
+    });
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain('integer >= 1');
+    }
+  });
+
   it('accepts valid display updates', () => {
     const result = validateConfigUpdatePayload('display', {
       compactMode: true,

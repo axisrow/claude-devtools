@@ -42,6 +42,8 @@ export interface NotificationConfig {
   includeSubagentErrors: boolean;
   /** Notification triggers - define when to generate notifications */
   triggers: NotificationTrigger[];
+  /** Live tool-call loop detection (FileWatcher) */
+  loopDetection: { enabled: boolean; cycleThreshold: number };
 }
 
 /**
@@ -243,6 +245,7 @@ const DEFAULT_CONFIG: AppConfig = {
     snoozeMinutes: 30,
     includeSubagentErrors: true,
     triggers: DEFAULT_TRIGGERS,
+    loopDetection: { enabled: true, cycleThreshold: 4 },
   },
   general: {
     launchAtLogin: false,
@@ -429,6 +432,12 @@ export class ConfigManager {
   private mergeWithDefaults(loaded: Partial<AppConfig>): AppConfig {
     const loadedNotifications = loaded.notifications ?? ({} as Partial<NotificationConfig>);
     const loadedTriggers = loadedNotifications.triggers ?? [];
+    // nested field — shallow spread would let a partial hand-edited object
+    // drop the other subfield's default
+    const mergedLoopDetection = {
+      ...DEFAULT_CONFIG.notifications.loopDetection,
+      ...(loadedNotifications.loopDetection ?? {}),
+    };
     const mergedGeneral: GeneralConfig = {
       ...DEFAULT_CONFIG.general,
       ...(loaded.general ?? {}),
@@ -443,6 +452,7 @@ export class ConfigManager {
         ...DEFAULT_CONFIG.notifications,
         ...loadedNotifications,
         triggers: mergedTriggers,
+        loopDetection: mergedLoopDetection,
       },
       general: mergedGeneral,
       display: {
