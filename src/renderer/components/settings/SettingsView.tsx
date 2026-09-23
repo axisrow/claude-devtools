@@ -143,6 +143,7 @@ export const SettingsView = (): React.JSX.Element | null => {
               ignoredRepositoryItems={ignoredRepositoryItems}
               excludedRepositoryIds={excludedRepositoryIds}
               onNotificationToggle={handlers.handleNotificationToggle}
+              onLoopDetectionChange={handlers.handleLoopDetectionChange}
               onSnooze={handlers.handleSnooze}
               onClearSnooze={handlers.handleClearSnooze}
               onAddIgnoredRepository={handlers.handleAddIgnoredRepository}

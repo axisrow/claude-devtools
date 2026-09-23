@@ -33,6 +33,7 @@ interface NotificationsSectionProps {
     key: 'enabled' | 'soundEnabled' | 'includeSubagentErrors',
     value: boolean
   ) => void;
+  readonly onLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
   readonly onAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -52,6 +53,7 @@ export const NotificationsSection = ({
   ignoredRepositoryItems,
   excludedRepositoryIds,
   onNotificationToggle,
+  onLoopDetectionChange,
   onSnooze,
   onClearSnooze,
   onAddIgnoredRepository,
@@ -99,6 +101,51 @@ export const NotificationsSection = ({
           onChange={(v) => onNotificationToggle('includeSubagentErrors', v)}
           disabled={saving || !safeConfig.notifications.enabled}
         />
+      </SettingRow>
+
+      {/* Live loop detection */}
+      <SettingsSectionHeader title="Loop Detection" />
+      <SettingRow
+        label="Detect tool-call loops"
+        description="Ring the bell when a live session repeats one identical call back-to-back"
+      >
+        <SettingsToggle
+          enabled={safeConfig.notifications.loopDetection.enabled}
+          onChange={(v) =>
+            onLoopDetectionChange({
+              ...safeConfig.notifications.loopDetection,
+              enabled: v,
+            })
+          }
+          disabled={saving || !safeConfig.notifications.enabled}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Loop threshold"
+        description="Identical back-to-back calls needed to ring the bell"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-claude-dark-text-secondary">
+            {safeConfig.notifications.loopDetection.cycleThreshold}×
+          </span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={safeConfig.notifications.loopDetection.cycleThreshold}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              if (Number.isInteger(n) && n >= 1) {
+                onLoopDetectionChange({
+                  ...safeConfig.notifications.loopDetection,
+                  cycleThreshold: n,
+                });
+              }
+            }}
+            disabled={saving || !safeConfig.notifications.loopDetection.enabled}
+            className="w-20 rounded-md border border-claude-dark-border bg-surface px-2 py-1 text-sm text-claude-dark-text"
+          />
+        </div>
       </SettingRow>
       <SettingRow
         label="Snooze notifications"

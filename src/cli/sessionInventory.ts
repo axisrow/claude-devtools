@@ -84,7 +84,7 @@ export interface InventoryEntry {
   /** longest single turn's active time — a 96h-active session may have no turn over 20 min */
   longestTurnMs: number;
   /** every maximal run of >= loopStreakMin back-to-back identical calls, longest first (cap 10) */
-  cycles: { key: string; count: number }[];
+  cycles: { key: string; count: number; startTs: string; toolUseId: string }[];
   lastTs: Date | null;
   models: string[];
   messageCount: number;
@@ -121,10 +121,17 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   // loop_streak keys on the full input, so the two may split one session
   let lastStreakKey = '';
   let curStreak = 0;
-  const runs: { key: string; count: number }[] = [];
+  let curStreakStartTs = '';
+  let curStreakToolUseId = '';
+  const runs: { key: string; count: number; startTs: string; toolUseId: string }[] = [];
   const flushStreak = (): void => {
     if (lastStreakKey && curStreak >= WASTE_THRESHOLDS.loopStreakMin) {
-      runs.push({ key: lastStreakKey, count: curStreak });
+      runs.push({
+        key: lastStreakKey,
+        count: curStreak,
+        startTs: curStreakStartTs,
+        toolUseId: curStreakToolUseId,
+      });
     }
   };
   const countCalls = (line: ScanEntry): void => {
@@ -148,7 +155,9 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
         flushStreak();
         lastStreakKey = key;
         curStreak = 1;
+        curStreakStartTs = line.timestamp ?? '';
       }
+      curStreakToolUseId = b.id ?? curStreakToolUseId;
     }
   };
   let cwd: string | undefined;

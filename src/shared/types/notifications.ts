@@ -249,6 +249,8 @@ export interface AppConfig {
     includeSubagentErrors: boolean;
     /** Notification triggers - define when to generate notifications */
     triggers: NotificationTrigger[];
+    /** Live tool-call loop detection (FileWatcher) */
+    loopDetection: { enabled: boolean; cycleThreshold: number };
   };
   /** General application settings */
   general: {
