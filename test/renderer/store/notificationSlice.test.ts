@@ -396,6 +396,19 @@ describe('notificationSlice', () => {
         expect(last?.[0]).toBe('project-1');
         expect(last?.[1]).toBe('session-target');
       });
+
+      it('fetches session detail when opening a brand-new tab', () => {
+        mockAPI.getSessionDetail.mockClear();
+
+        store.getState().navigateToError(createMockError());
+
+        // A notification-opened tab has no other fetch trigger (openTab does
+        // not load, SessionTabContent only refetches on the Retry button)
+        expect(mockAPI.getSessionDetail).toHaveBeenCalled();
+        const last = mockAPI.getSessionDetail.mock.calls.at(-1);
+        expect(last?.[0]).toBe('project-1');
+        expect(last?.[1]).toBe('session-target');
+      });
     });
 
     describe('grouped mode (viewMode === grouped)', () => {
