@@ -83,6 +83,8 @@ const SessionContextSection = ({
   const toolOutputsCount = counts.toolOutputs;
   const taskCoordinationCount = counts.taskCoordination;
   const userMessagesCount = counts.userMessages;
+  const loopCount = counts.loop;
+  const waitLoopCount = counts.waitLoop;
 
   // Calculate percentages for each category
   const claudeMdPercent =
@@ -106,6 +108,12 @@ const SessionContextSection = ({
   const userMessagesPercent =
     totalTokens > 0
       ? Math.min((tokensByCategory.userMessages / totalTokens) * 100, 100).toFixed(1)
+      : '0.0';
+  const loopPercent =
+    totalTokens > 0 ? Math.min((tokensByCategory.loop / totalTokens) * 100, 100).toFixed(1) : '0.0';
+  const waitLoopPercent =
+    totalTokens > 0
+      ? Math.min((tokensByCategory.waitLoop / totalTokens) * 100, 100).toFixed(1)
       : '0.0';
 
   return (
@@ -191,6 +199,32 @@ const SessionContextSection = ({
               <span className="tabular-nums" style={{ color: COLOR_TEXT_SECONDARY }}>
                 {formatTokens(tokensByCategory.taskCoordination)}{' '}
                 <span className="opacity-60">({taskCoordinationPercent}%)</span>
+              </span>
+            </div>
+          )}
+
+          {/* Loop (repeat calls) */}
+          {tokensByCategory.loop > 0 && (
+            <div className="flex items-center justify-between text-[10px]">
+              <span style={{ color: '#f87171' }}>
+                Loop <span className="opacity-60">×{loopCount}</span>
+              </span>
+              <span className="tabular-nums" style={{ color: '#f87171' }}>
+                {formatTokens(tokensByCategory.loop)}{' '}
+                <span className="opacity-60">({loopPercent}%)</span>
+              </span>
+            </div>
+          )}
+
+          {/* Wait-loop (quiet rounds) */}
+          {tokensByCategory.waitLoop > 0 && (
+            <div className="flex items-center justify-between text-[10px]">
+              <span style={{ color: '#f87171' }}>
+                Wait-loop <span className="opacity-60">×{waitLoopCount}</span>
+              </span>
+              <span className="tabular-nums" style={{ color: '#f87171' }}>
+                {formatTokens(tokensByCategory.waitLoop)}{' '}
+                <span className="opacity-60">({waitLoopPercent}%)</span>
               </span>
             </div>
           )}

@@ -28,6 +28,8 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string 
   'thinking-text': { bg: 'rgba(167, 139, 250, 0.15)', text: '#a78bfa', label: 'Thinking' },
   'task-coordination': { bg: 'rgba(251, 146, 60, 0.15)', text: '#fb923c', label: 'Team' },
   'user-message': { bg: 'rgba(96, 165, 250, 0.15)', text: '#60a5fa', label: 'User' },
+  loop: { bg: 'rgba(239, 68, 68, 0.15)', text: '#f87171', label: 'Loop' },
+  'wait-loop': { bg: 'rgba(239, 68, 68, 0.15)', text: '#f87171', label: 'Wait' },
 };
 
 // =============================================================================
@@ -59,6 +61,10 @@ function getInjectionDescription(injection: ContextInjection): string {
       return `Turn ${injection.turnIndex + 1} coordination`;
     case 'user-message':
       return injection.textPreview;
+    case 'loop':
+      return `Turn ${injection.turnIndex + 1} repeat calls`;
+    case 'wait-loop':
+      return `Turn ${injection.turnIndex + 1} · ${injection.roundCount} quiet rounds`;
   }
 }
 
@@ -72,6 +78,8 @@ function getInjectionTurnIndex(injection: ContextInjection): number {
     case 'thinking-text':
     case 'task-coordination':
     case 'user-message':
+    case 'loop':
+    case 'wait-loop':
       return injection.turnIndex;
   }
 }

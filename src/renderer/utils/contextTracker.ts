@@ -9,6 +9,13 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
+import {
+  LOOP_MIN_STREAK,
+  WAIT_LOOP_MIN_ROUNDS,
+  WAIT_TICK_CONTEXT_TOKENS,
+  WAIT_TICK_OUTPUT_TOKENS,
+} from '@shared/constants/loopPolicy';
+import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
 import { MAX_MENTIONED_FILE_TOKENS } from '../types/contextInjection';
@@ -32,6 +39,8 @@ import type {
   ContextPhase,
   ContextPhaseInfo,
   ContextStats,
+  LoopInjection,
+  LoopTokenBreakdown,
   MentionedFileInfo,
   MentionedFileInjection,
   NewCountsByCategory,
@@ -43,6 +52,7 @@ import type {
   ToolOutputInjection,
   ToolTokenBreakdown,
   UserMessageInjection,
+  WaitLoopInjection,
 } from '../types/contextInjection';
 import type { ClaudeMdFileInfo } from '../types/data';
 import type {
@@ -118,6 +128,33 @@ function generateUserMessageId(turnIndex: number): string {
   return `user-msg-ai-${turnIndex}`;
 }
 
+/**
+ * Generate unique ID for loop injection.
+ */
+function generateLoopId(turnIndex: number): string {
+  return `loop-ai-${turnIndex}`;
+}
+
+/**
+ * Generate unique ID for wait-loop injection.
+ */
+function generateWaitLoopId(turnIndex: number): string {
+  return `wait-loop-ai-${turnIndex}`;
+}
+
+/**
+ * Loop streak state, threaded across AI groups: back-to-back identical calls
+ * (same identity the live loop detector uses) keep the streak alive.
+ */
+export interface LoopStreakState {
+  lastKey: string;
+  streak: number;
+}
+
+export function createLoopStreakState(): LoopStreakState {
+  return { lastKey: '', streak: 0 };
+}
+
 // =============================================================================
 // Injection Wrapping Functions
 // =============================================================================
@@ -177,19 +214,30 @@ function createMentionedFileInjection(
 // =============================================================================
 
 /**
- * Aggregate tool outputs from all linked tools in a turn.
- * Also includes tokens from user-invoked skills (via /skill-name commands).
- * Returns a ToolOutputInjection if there are any tool outputs with tokens.
+ * Aggregate tool outputs from all linked tools in a turn, splitting repeat
+ * calls (from the LOOP_MIN_STREAK-th of a back-to-back identical series —
+ * same key and threshold as the live loop detector) into the loop bucket;
+ * earlier calls of a streak stay in tool-output. Slash/skill items stay in
+ * tool-output. Advances loopState for every non-coordination call, even
+ * zero-token ones.
  */
 function aggregateToolOutputs(
   linkedTools: Map<string, LinkedToolItem>,
   turnIndex: number,
   aiGroupId: string,
-  displayItems?: AIGroupDisplayItem[]
-): ToolOutputInjection | null {
+  displayItems: AIGroupDisplayItem[] | undefined,
+  loopState: LoopStreakState
+): {
+  toolOutput: ToolOutputInjection | null;
+  loop: LoopInjection | null;
+  loopState: LoopStreakState;
+} {
   const toolBreakdown: ToolTokenBreakdown[] = [];
+  const loopBreakdown = new Map<string, LoopTokenBreakdown>();
   let totalTokens = 0;
-
+  let loopTokens = 0;
+  // copy — no-param-reassign; state is threaded back via the return value
+  const state = { ...loopState };
   for (const linkedTool of linkedTools.values()) {
     // Skip task coordination tools - they are tracked separately
     if (TASK_COORDINATION_TOOL_NAMES.has(linkedTool.name)) {
@@ -207,21 +255,49 @@ function aggregateToolOutputs(
     const skillTokens = linkedTool.skillInstructionsTokenCount ?? 0;
     const toolTokenCount = callTokens + resultTokens + skillTokens;
 
+    // Classify BEFORE the token check — the streak advances for every
+    // non-coordination call, even zero-token ones (same as live LoopDetector).
+    // A call is loop waste only from LOOP_MIN_STREAK on, matching the live
+    // bell's default cycleThreshold — Edit → fix → Edit stays legitimate.
+    const key = bashStem(normalizeCallKey(linkedTool.name, linkedTool.input ?? {}));
+    let repeat = false;
+    if (key === state.lastKey) {
+      state.streak += 1;
+      repeat = state.streak >= LOOP_MIN_STREAK;
+    } else {
+      state.lastKey = key;
+      state.streak = 1;
+    }
+
     if (toolTokenCount > 0) {
-      // Rename "Task" to "Task (Subagent)" for clarity in the UI
-      const displayName = linkedTool.name === 'Task' ? 'Task (Subagent)' : linkedTool.name;
-      toolBreakdown.push({
-        toolName: displayName,
-        tokenCount: toolTokenCount,
-        isError: linkedTool.result?.isError ?? false,
-        toolUseId: linkedTool.id,
-      });
-      totalTokens += toolTokenCount;
+      if (repeat) {
+        loopTokens += toolTokenCount;
+        const existing = loopBreakdown.get(key);
+        if (existing) {
+          existing.count += 1;
+          existing.tokenCount += toolTokenCount;
+          existing.toolUseId = linkedTool.id;
+        } else {
+          loopBreakdown.set(key, {
+            key,
+            count: 1,
+            tokenCount: toolTokenCount,
+            toolUseId: linkedTool.id,
+          });
+        }
+      } else {
+        // Rename "Task" to "Task (Subagent)" for clarity in the UI
+        const displayName = linkedTool.name === 'Task' ? 'Task (Subagent)' : linkedTool.name;
+        toolBreakdown.push({
+          toolName: displayName,
+          tokenCount: toolTokenCount,
+          isError: linkedTool.result?.isError ?? false,
+          toolUseId: linkedTool.id,
+        });
+        totalTokens += toolTokenCount;
+      }
     }
   }
-
-  // Include user-invoked slash tokens from display items
-  // These are slashes invoked via /xxx commands
   if (displayItems) {
     for (const item of displayItems) {
       if (item.type === 'slash' && item.slash.instructionsTokenCount) {
@@ -235,19 +311,77 @@ function aggregateToolOutputs(
     }
   }
 
-  // Return null if no tokens from tools
+  let loop: LoopInjection | null = null;
+  if (loopTokens > 0) {
+    loop = {
+      id: generateLoopId(turnIndex),
+      category: 'loop',
+      turnIndex,
+      aiGroupId,
+      estimatedTokens: loopTokens,
+      breakdown: [...loopBreakdown.values()],
+    };
+  }
+
   if (totalTokens === 0) {
-    return null;
+    return { toolOutput: null, loop, loopState: state };
   }
 
   return {
-    id: generateToolOutputId(turnIndex),
-    category: 'tool-output',
+    toolOutput: {
+      id: generateToolOutputId(turnIndex),
+      category: 'tool-output',
+      turnIndex,
+      aiGroupId,
+      estimatedTokens: totalTokens,
+      toolCount: toolBreakdown.length,
+      toolBreakdown,
+    },
+    loop,
+    loopState: state,
+  };
+}
+
+// =============================================================================
+// Wait-Loop Aggregation
+// =============================================================================
+
+/**
+ * Sum the billed input-side context of quiet rounds in this turn — rounds that
+ * re-read the whole window (>= WAIT_TICK_CONTEXT_TOKENS) while producing
+ * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion AND minimum
+ * round gate (WAIT_LOOP_MIN_ROUNDS) as the CLI's wait_loop findings — a lone
+ * quiet round is a normal short turn, not waste. Rounds without usage are
+ * skipped (provider ghosts).
+ */
+function aggregateWaitLoopRounds(
+  aiGroup: AIGroup,
+  turnIndex: number,
+  aiGroupId: string
+): WaitLoopInjection | null {
+  let tokens = 0;
+  let roundCount = 0;
+  for (const msg of aiGroup.responses ?? []) {
+    if (msg.type !== 'assistant' || !msg.usage) continue;
+    const contextSize =
+      (msg.usage.input_tokens ?? 0) +
+      (msg.usage.cache_read_input_tokens ?? 0) +
+      (msg.usage.cache_creation_input_tokens ?? 0);
+    const output = msg.usage.output_tokens ?? 0;
+    if (contextSize >= WAIT_TICK_CONTEXT_TOKENS && output <= WAIT_TICK_OUTPUT_TOKENS) {
+      tokens += contextSize;
+      roundCount += 1;
+    }
+  }
+  if (roundCount < WAIT_LOOP_MIN_ROUNDS) return null;
+
+  return {
+    id: generateWaitLoopId(turnIndex),
+    category: 'wait-loop',
     turnIndex,
     aiGroupId,
-    estimatedTokens: totalTokens,
-    toolCount: toolBreakdown.length,
-    toolBreakdown,
+    estimatedTokens: tokens,
+    roundCount,
   };
 }
 
@@ -438,6 +572,8 @@ interface ComputeContextStatsParams {
   previousInjections: ContextInjection[];
   /** Paths already seen in previous groups (threaded to avoid O(N) rebuild per group) */
   previousPaths: Set<string>;
+  /** Loop streak state threaded via return value — caller passes the updated state to the next group */
+  loopState: LoopStreakState;
   /** Project root path for resolving relative paths */
   projectRoot: string;
   /** Token data for CLAUDE.md files (global sources) */
@@ -452,6 +588,8 @@ interface ComputeContextStatsResult {
   stats: ContextStats;
   /** Updated previousPaths set — caller should thread this to the next group */
   previousPaths: Set<string>;
+  /** Updated loop streak state — caller should thread this to the next group */
+  loopState: LoopStreakState;
 }
 
 /**
@@ -606,6 +744,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     isFirstGroup,
     previousInjections,
     previousPaths,
+    loopState,
     projectRoot,
     claudeMdTokenData,
     mentionedFileTokenData,
@@ -758,16 +897,24 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     }
   }
 
-  // d) Aggregate tool outputs (includes user-invoked skill tokens from displayItems)
-  //    Task coordination tools are excluded here (tracked separately in step d2)
-  const toolOutputInjection = aggregateToolOutputs(
-    linkedTools,
-    aiGroup.turnIndex,
-    turnGroupId,
-    displayItems
-  );
+  // d) Aggregate tool outputs + loop classification (task coordination tools
+  //    are excluded here — tracked separately in step d2)
+  const {
+    toolOutput: toolOutputInjection,
+    loop: loopInjection,
+    loopState: updatedLoopState,
+  } = aggregateToolOutputs(linkedTools, aiGroup.turnIndex, turnGroupId, displayItems, loopState);
   if (toolOutputInjection) {
     newInjections.push(toolOutputInjection);
+  }
+  if (loopInjection) {
+    newInjections.push(loopInjection);
+  }
+
+  // d1) Aggregate quiet-round wait-loop burn (billed re-read, not content)
+  const waitLoopInjection = aggregateWaitLoopRounds(aiGroup, aiGroup.turnIndex, turnGroupId);
+  if (waitLoopInjection) {
+    newInjections.push(waitLoopInjection);
   }
 
   // d2) Aggregate task coordination tokens (SendMessage, TeamCreate, TaskCreate, etc.)
@@ -819,6 +966,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     thinkingText: 0,
     taskCoordination: 0,
     userMessages: 0,
+    loop: 0,
+    waitLoop: 0,
   };
 
   const newCounts: NewCountsByCategory = {
@@ -828,6 +977,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     thinkingText: 0,
     taskCoordination: 0,
     userMessages: 0,
+    loop: 0,
+    waitLoop: 0,
   };
 
   // Count new injections by category
@@ -851,6 +1002,12 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       case 'user-message':
         newCounts.userMessages++;
         break;
+      case 'loop':
+        newCounts.loop += injection.breakdown.length;
+        break;
+      case 'wait-loop':
+        newCounts.waitLoop += injection.roundCount;
+        break;
     }
   }
 
@@ -862,6 +1019,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     thinkingText: 0,
     taskCoordination: 0,
     userMessages: 0,
+    loop: 0,
+    waitLoop: 0,
   };
 
   for (const injection of accumulatedInjections) {
@@ -890,6 +1049,14 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
         tokensByCategory.userMessages += injection.estimatedTokens;
         accumulatedCounts.userMessages++;
         break;
+      case 'loop':
+        tokensByCategory.loop += injection.estimatedTokens;
+        accumulatedCounts.loop += injection.breakdown.length;
+        break;
+      case 'wait-loop':
+        tokensByCategory.waitLoop += injection.estimatedTokens;
+        accumulatedCounts.waitLoop += injection.roundCount;
+        break;
     }
   }
 
@@ -899,7 +1066,9 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     tokensByCategory.toolOutputs +
     tokensByCategory.thinkingText +
     tokensByCategory.taskCoordination +
-    tokensByCategory.userMessages;
+    tokensByCategory.userMessages +
+    tokensByCategory.loop +
+    tokensByCategory.waitLoop;
 
   return {
     stats: {
@@ -911,6 +1080,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       accumulatedCounts,
     },
     previousPaths,
+    loopState: updatedLoopState,
   };
 }
 
@@ -974,6 +1144,7 @@ export function processSessionContextWithPhases(
   let previousPaths = new Set<string>();
   let isFirstAiGroup = true;
   let previousUserGroup: UserGroup | null = null;
+  let loopState = createLoopStreakState();
 
   // Phase tracking state
   let currentPhaseNumber = 1;
@@ -1063,6 +1234,7 @@ export function processSessionContextWithPhases(
         isFirstGroup: isFirstAiGroup,
         previousInjections: accumulatedInjections,
         previousPaths,
+        loopState,
         projectRoot,
         claudeMdTokenData,
         mentionedFileTokenData,
@@ -1106,6 +1278,7 @@ export function processSessionContextWithPhases(
       // Update accumulated state for next iteration
       accumulatedInjections = stats.accumulatedInjections;
       previousPaths = result.previousPaths;
+      loopState = result.loopState;
       isFirstAiGroup = false;
       previousUserGroup = null;
     }

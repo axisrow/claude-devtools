@@ -10,7 +10,7 @@
  */
 
 import { type ParsedMessage } from '@main/types';
-import { bashStem, normalizeCallKey } from '@main/utils/callKey';
+import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 export interface LoopIncident {
   /** normalized key of the looping call */

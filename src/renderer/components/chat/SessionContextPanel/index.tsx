@@ -14,6 +14,7 @@ import {
 
 import { ClaudeMdFilesSection } from './components/ClaudeMdFilesSection';
 import { FlatInjectionList } from './components/FlatInjectionList';
+import { LoopSection } from './components/LoopSection';
 import { MentionedFilesSection } from './components/MentionedFilesSection';
 import { RankedInjectionList } from './components/RankedInjectionList';
 import { SessionContextHeader } from './components/SessionContextHeader';
@@ -21,23 +22,28 @@ import { TaskCoordinationSection } from './components/TaskCoordinationSection';
 import { ThinkingTextSection } from './components/ThinkingTextSection';
 import { ToolOutputsSection } from './components/ToolOutputsSection';
 import { UserMessagesSection } from './components/UserMessagesSection';
+import { WaitLoopSection } from './components/WaitLoopSection';
 import {
   SECTION_CLAUDE_MD,
+  SECTION_LOOP,
   SECTION_MENTIONED_FILES,
   SECTION_TASK_COORDINATION,
   SECTION_THINKING_TEXT,
   SECTION_TOOL_OUTPUTS,
   SECTION_USER_MESSAGES,
+  SECTION_WAIT_LOOP,
 } from './types';
 
 import type { ContextViewMode, SectionType, SessionContextPanelProps } from './types';
 import type {
   ClaudeMdContextInjection,
+  LoopInjection,
   MentionedFileInjection,
   TaskCoordinationInjection,
   ThinkingTextInjection,
   ToolOutputInjection,
   UserMessageInjection,
+  WaitLoopInjection,
 } from '@renderer/types/contextInjection';
 
 export const SessionContextPanel = ({
@@ -66,6 +72,8 @@ export const SessionContextPanel = ({
       SECTION_TOOL_OUTPUTS,
       SECTION_TASK_COORDINATION,
       SECTION_THINKING_TEXT,
+      SECTION_LOOP,
+      SECTION_WAIT_LOOP,
     ])
   );
 
@@ -77,6 +85,8 @@ export const SessionContextPanel = ({
     thinkingTextInjections,
     taskCoordinationInjections,
     userMessageInjections,
+    loopInjections,
+    waitLoopInjections,
   } = useMemo(() => {
     const claudeMd: ClaudeMdContextInjection[] = [];
     const mentionedFiles: MentionedFileInjection[] = [];
@@ -84,6 +94,8 @@ export const SessionContextPanel = ({
     const thinkingText: ThinkingTextInjection[] = [];
     const taskCoordination: TaskCoordinationInjection[] = [];
     const userMessages: UserMessageInjection[] = [];
+    const loop: LoopInjection[] = [];
+    const waitLoop: WaitLoopInjection[] = [];
 
     for (const injection of injections) {
       switch (injection.category) {
@@ -105,6 +117,12 @@ export const SessionContextPanel = ({
         case 'user-message':
           userMessages.push(injection);
           break;
+        case 'loop':
+          loop.push(injection);
+          break;
+        case 'wait-loop':
+          waitLoop.push(injection);
+          break;
       }
     }
 
@@ -117,6 +135,9 @@ export const SessionContextPanel = ({
     thinkingText.sort((a, b) => a.turnIndex - b.turnIndex);
     // Sort user messages by turn index ascending
     userMessages.sort((a, b) => a.turnIndex - b.turnIndex);
+    // Loops and wait-loops: biggest burn first
+    loop.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+    waitLoop.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
 
     return {
       claudeMdInjections: claudeMd,
@@ -125,6 +146,8 @@ export const SessionContextPanel = ({
       thinkingTextInjections: thinkingText,
       taskCoordinationInjections: taskCoordination,
       userMessageInjections: userMessages,
+      loopInjections: loop,
+      waitLoopInjections: waitLoop,
     };
   }, [injections]);
 
@@ -163,6 +186,16 @@ export const SessionContextPanel = ({
   const userMessagesTokens = useMemo(
     () => userMessageInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
     [userMessageInjections]
+  );
+
+  const loopTokens = useMemo(
+    () => loopInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [loopInjections]
+  );
+
+  const waitLoopTokens = useMemo(
+    () => waitLoopInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [waitLoopInjections]
   );
 
   // Toggle section expansion
@@ -256,6 +289,23 @@ export const SessionContextPanel = ({
               tokenCount={thinkingTextTokens}
               isExpanded={expandedSections.has(SECTION_THINKING_TEXT)}
               onToggle={() => toggleSection(SECTION_THINKING_TEXT)}
+              onNavigateToTurn={onNavigateToTurn}
+            />
+
+            <LoopSection
+              injections={loopInjections}
+              tokenCount={loopTokens}
+              isExpanded={expandedSections.has(SECTION_LOOP)}
+              onToggle={() => toggleSection(SECTION_LOOP)}
+              onNavigateToTool={onNavigateToTool}
+              onNavigateToTurn={onNavigateToTurn}
+            />
+
+            <WaitLoopSection
+              injections={waitLoopInjections}
+              tokenCount={waitLoopTokens}
+              isExpanded={expandedSections.has(SECTION_WAIT_LOOP)}
+              onToggle={() => toggleSection(SECTION_WAIT_LOOP)}
               onNavigateToTurn={onNavigateToTurn}
             />
           </>

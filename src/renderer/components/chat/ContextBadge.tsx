@@ -25,11 +25,13 @@ import type {
   ClaudeMdContextInjection,
   ContextInjection,
   ContextStats,
+  LoopInjection,
   MentionedFileInjection,
   TaskCoordinationInjection,
   ThinkingTextInjection,
   ToolOutputInjection,
   UserMessageInjection,
+  WaitLoopInjection,
 } from '@renderer/types/contextInjection';
 
 interface ContextBadgeProps {
@@ -77,6 +79,20 @@ function isTaskCoordinationInjection(inj: ContextInjection): inj is TaskCoordina
  */
 function isUserMessageInjection(inj: ContextInjection): inj is UserMessageInjection {
   return inj.category === 'user-message';
+}
+
+/**
+ * Type guard for LoopInjection.
+ */
+function isLoopInjection(inj: ContextInjection): inj is LoopInjection {
+  return inj.category === 'loop';
+}
+
+/**
+ * Type guard for WaitLoopInjection.
+ */
+function isWaitLoopInjection(inj: ContextInjection): inj is WaitLoopInjection {
+  return inj.category === 'wait-loop';
 }
 
 /**
@@ -148,7 +164,9 @@ export const ContextBadge = ({
       stats.newCounts.toolOutputs +
       stats.newCounts.thinkingText +
       stats.newCounts.taskCoordination +
-      stats.newCounts.userMessages,
+      stats.newCounts.userMessages +
+      stats.newCounts.loop +
+      stats.newCounts.waitLoop,
     [stats.newCounts]
   );
 
@@ -180,6 +198,16 @@ export const ContextBadge = ({
 
   const newUserMessageInjections = useMemo(
     () => stats.newInjections.filter(isUserMessageInjection),
+    [stats.newInjections]
+  );
+
+  const newLoopInjections = useMemo(
+    () => stats.newInjections.filter(isLoopInjection),
+    [stats.newInjections]
+  );
+
+  const newWaitLoopInjections = useMemo(
+    () => stats.newInjections.filter(isWaitLoopInjection),
     [stats.newInjections]
   );
 
@@ -229,6 +257,26 @@ export const ContextBadge = ({
   const userMessageTokens = useMemo(
     () => newUserMessageInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
     [newUserMessageInjections]
+  );
+
+  const loopTokens = useMemo(
+    () => newLoopInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [newLoopInjections]
+  );
+
+  const loopItemCount = useMemo(
+    () => newLoopInjections.reduce((sum, inj) => sum + inj.breakdown.length, 0),
+    [newLoopInjections]
+  );
+
+  const waitLoopTokens = useMemo(
+    () => newWaitLoopInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [newWaitLoopInjections]
+  );
+
+  const waitLoopRoundCount = useMemo(
+    () => newWaitLoopInjections.reduce((sum, inj) => sum + inj.roundCount, 0),
+    [newWaitLoopInjections]
   );
 
   // Linear-style neutral badge — uses theme-aware CSS variables
@@ -528,6 +576,47 @@ export const ContextBadge = ({
                       </div>
                     ))
                   )}
+                </PopoverSection>
+              )}
+
+              {/* Loop section */}
+              {newLoopInjections.length > 0 && (
+                <PopoverSection title="Loop" count={loopItemCount} tokenCount={loopTokens}>
+                  {newLoopInjections.map((injection) =>
+                    injection.breakdown.map((item) => (
+                      <div
+                        key={`${injection.id}-${item.key}`}
+                        className="flex items-center justify-between text-xs"
+                      >
+                        <span style={{ color: '#f87171' }}>
+                          {item.key} ×{item.count}
+                        </span>
+                        <span style={{ color: COLOR_TEXT_MUTED }}>
+                          ~{formatTokens(item.tokenCount)} tokens
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </PopoverSection>
+              )}
+
+              {/* Wait-loop section */}
+              {newWaitLoopInjections.length > 0 && (
+                <PopoverSection
+                  title="Wait-loop"
+                  count={waitLoopRoundCount}
+                  tokenCount={waitLoopTokens}
+                >
+                  {newWaitLoopInjections.map((injection) => (
+                    <div key={injection.id} className="flex items-center justify-between text-xs">
+                      <span style={{ color: '#f87171' }}>
+                        Turn {injection.turnIndex + 1} · {injection.roundCount} quiet rounds
+                      </span>
+                      <span style={{ color: COLOR_TEXT_MUTED }}>
+                        ~{formatTokens(injection.estimatedTokens)} tokens
+                      </span>
+                    </div>
+                  ))}
                 </PopoverSection>
               )}
 
