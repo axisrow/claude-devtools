@@ -230,7 +230,9 @@ describe('scanSessionFile tokensByModel', () => {
       await writeFile(file, lines.join('\n'));
       const entry = await scanSessionFile(file);
       // a1,a2,a3 share one stem back-to-back → one cycle of 3
-      expect(entry?.cycles).toEqual([{ key: 'Bash|git show abc', count: 3 }]);
+      expect(entry?.cycles).toEqual([
+        { key: 'Bash|git show abc', count: 3, startTs: '2026-09-20T10:00:00Z', toolUseId: 't3' },
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -398,7 +400,9 @@ describe('scanSessionFile tokensByModel', () => {
       await writeFile(file, lines.join('\n'));
       const entry = await scanSessionFile(file);
       // A appears 5 times total, but only its 3-run qualifies as a cycle
-      expect(entry?.cycles).toEqual([{ key: 'Bash|probe one', count: 3 }]);
+      expect(entry?.cycles).toEqual([
+        { key: 'Bash|probe one', count: 3, startTs: '2026-09-20T10:03:00Z', toolUseId: 'a6' },
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

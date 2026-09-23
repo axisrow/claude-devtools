@@ -378,6 +378,37 @@ describe('notificationSlice', () => {
         expect(store.getState().selectedSessionId).not.toBe('session-old');
         expect(store.getState().selectedSessionId).toBe('session-target');
       });
+
+      it('re-fetches session detail when navigating to an already-open tab', () => {
+        // First click: opens the tab; the mount fetch can have failed earlier
+        // (e.g. the session file did not exist yet) leaving a stale empty view
+        store.getState().navigateToError(createMockError());
+        const tabId = store.getState().openTabs[0]?.id;
+        expect(tabId).toBeTruthy();
+        mockAPI.getSessionDetail.mockClear();
+
+        // Second click: explicit navigation to an existing tab must refresh
+        // the session detail instead of reusing the stale empty state
+        store.getState().navigateToError(createMockError({ id: 'error-2' }));
+
+        expect(mockAPI.getSessionDetail).toHaveBeenCalled();
+        const last = mockAPI.getSessionDetail.mock.calls.at(-1);
+        expect(last?.[0]).toBe('project-1');
+        expect(last?.[1]).toBe('session-target');
+      });
+
+      it('fetches session detail when opening a brand-new tab', () => {
+        mockAPI.getSessionDetail.mockClear();
+
+        store.getState().navigateToError(createMockError());
+
+        // A notification-opened tab has no other fetch trigger (openTab does
+        // not load, SessionTabContent only refetches on the Retry button)
+        expect(mockAPI.getSessionDetail).toHaveBeenCalled();
+        const last = mockAPI.getSessionDetail.mock.calls.at(-1);
+        expect(last?.[0]).toBe('project-1');
+        expect(last?.[1]).toBe('session-target');
+      });
     });
 
     describe('grouped mode (viewMode === grouped)', () => {

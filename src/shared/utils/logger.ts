@@ -23,8 +23,14 @@ enum LogLevel {
 }
 
 class Logger {
-  private static level: LogLevel =
-    process.env.NODE_ENV === 'production' ? LogLevel.ERROR : LogLevel.WARN;
+  private static level: LogLevel = (() => {
+    // CLAUDE_DEVTOOLS_LOG_LEVEL=info|debug overrides the packaged default
+    // (ERROR) — the only way to see watcher/service flow in a release build.
+    const raw = process.env.CLAUDE_DEVTOOLS_LOG_LEVEL;
+    if (raw === 'debug') return LogLevel.DEBUG;
+    if (raw === 'info') return LogLevel.INFO;
+    return process.env.NODE_ENV === 'production' ? LogLevel.ERROR : LogLevel.WARN;
+  })();
 
   constructor(private namespace: string) {}
 

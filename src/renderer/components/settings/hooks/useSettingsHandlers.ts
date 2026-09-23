@@ -34,6 +34,7 @@ interface SettingsHandlers {
 
   // Notification handlers
   handleNotificationToggle: (key: keyof AppConfig['notifications'], value: boolean) => void;
+  handleLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
   handleSnooze: (minutes: number) => Promise<void>;
   handleClearSnooze: () => Promise<void>;
   handleAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -92,6 +93,14 @@ export function useSettingsHandlers({
   const handleNotificationToggle = useCallback(
     (key: keyof AppConfig['notifications'], value: boolean) => {
       void updateConfig('notifications', { [key]: value });
+    },
+    [updateConfig]
+  );
+
+  // Loop detection: nested config field — merge with the current subobject
+  const handleLoopDetectionChange = useCallback(
+    (value: { enabled: boolean; cycleThreshold: number }) => {
+      void updateConfig('notifications', { loopDetection: value });
     },
     [updateConfig]
   );
@@ -280,6 +289,7 @@ export function useSettingsHandlers({
           snoozeMinutes: 30,
           includeSubagentErrors: true,
           triggers: defaultTriggers,
+          loopDetection: { enabled: true, cycleThreshold: 4 },
         },
         general: {
           launchAtLogin: false,
@@ -377,6 +387,7 @@ export function useSettingsHandlers({
     handleThemeChange,
     handleDefaultTabChange,
     handleNotificationToggle,
+    handleLoopDetectionChange,
     handleSnooze,
     handleClearSnooze,
     handleAddIgnoredRepository,

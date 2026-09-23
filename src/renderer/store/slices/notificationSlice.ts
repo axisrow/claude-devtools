@@ -228,6 +228,10 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
       state.setActiveTab(existingTab.id);
       // Enqueue navigation request with fresh nonce
       state.enqueueTabNavigation(existingTab.id, navRequest);
+      // Re-navigation is explicit user intent: the tab may hold a stale empty
+      // view (session file appeared after a failed load) — refresh the detail
+      // so a bell click-through always shows the session.
+      void get().fetchSessionDetail(error.projectId, error.sessionId, existingTab.id);
     } else {
       // Open new session tab via openTab (properly adds to focused pane)
       state.openTab({

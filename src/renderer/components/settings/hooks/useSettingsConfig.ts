@@ -42,6 +42,7 @@ export interface SafeConfig {
     snoozeMinutes: number;
     includeSubagentErrors: boolean;
     triggers: AppConfig['notifications']['triggers'];
+    loopDetection: { enabled: boolean; cycleThreshold: number };
   };
   display: {
     showTimestamps: boolean;
@@ -168,6 +169,10 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
         snoozeMinutes: displayConfig?.notifications?.snoozeMinutes ?? 30,
         includeSubagentErrors: displayConfig?.notifications?.includeSubagentErrors ?? true,
         triggers: displayConfig?.notifications?.triggers ?? [],
+        loopDetection: {
+          enabled: displayConfig?.notifications?.loopDetection?.enabled ?? true,
+          cycleThreshold: displayConfig?.notifications?.loopDetection?.cycleThreshold ?? 4,
+        },
       },
       display: {
         showTimestamps: displayConfig?.display?.showTimestamps ?? true,

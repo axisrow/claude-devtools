@@ -38,6 +38,15 @@ import type { SessionConversation } from '@renderer/types/groups';
 import type { TabNavigationRequest } from '@renderer/types/tabs';
 import type { TriggerColor } from '@shared/constants/triggerColors';
 
+/**
+ * Error navigation highlights are alarm state, not a flash: they persist
+ * until the detection itself is revoked or another navigation replaces them.
+ * Search (and other kinds) keep the auto-clear flash.
+ */
+export function isPersistentHighlight(kind: TabNavigationRequest['kind']): boolean {
+  return kind === 'error';
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -392,18 +401,26 @@ export function useTabNavigationController(
         if (abortController.signal.aborted) return;
 
         if (success) {
-          // Schedule highlight end
-          highlightTimerRef.current = setTimeout(() => {
-            if (!abortController.signal.aborted) {
-              // Clear search state if it was a search navigation
-              if (request.kind === 'search') {
-                setSearchQuery('');
+          if (isPersistentHighlight(request.kind)) {
+            // Alarm semantics: keep the highlight until the detection is
+            // revoked or another navigation replaces it. Return to idle so
+            // auto-scroll keeps working in live sessions.
+            setPhase('idle');
+            activeRequestIdRef.current = null;
+          } else {
+            // Schedule highlight end
+            highlightTimerRef.current = setTimeout(() => {
+              if (!abortController.signal.aborted) {
+                // Clear search state if it was a search navigation
+                if (request.kind === 'search') {
+                  setSearchQuery('');
+                }
+                handleHighlightEnd();
               }
-              handleHighlightEnd();
-            }
-          }, highlightDuration);
+            }, highlightDuration);
 
-          setPhase('complete');
+            setPhase('complete');
+          }
         } else {
           // Navigation failed - reset
           setPhase('idle');

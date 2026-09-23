@@ -698,6 +698,12 @@ export class FileWatcher extends EventEmitter {
       // would re-notify loops that already ended (live detector, not a
       // report — the CLI analyzers cover the offline case).
       const loopCfg = ConfigManager.getInstance().getConfig().notifications.loopDetection;
+      logger.debug(
+        `loop gate ${path.basename(filePath)}: enabled=${loopCfg.enabled} ` +
+          `threshold=${loopCfg.cycleThreshold} ` +
+          `incremental=${canUseIncrementalAppend} newMessages=${newMessages.length} ` +
+          `notificationManager=${this.notificationManager ? 'set' : 'null'}`
+      );
       if (
         loopCfg.enabled &&
         canUseIncrementalAppend &&
@@ -705,6 +711,8 @@ export class FileWatcher extends EventEmitter {
         !path.basename(filePath).startsWith('agent-')
       ) {
         const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
+        const incidentText = incident ? `${incident.key} x${incident.count}` : 'none';
+        logger.debug(`loop feed ${path.basename(filePath)}: incident=${incidentText}`);
         if (incident) {
           await this.notificationManager.addError(
             createDetectedError({
@@ -955,11 +963,59 @@ export class FileWatcher extends EventEmitter {
    * Only checks files modified within the last hour.
    */
   private async runCatchUpScan(): Promise<void> {
-    if (!this.notificationManager || this.activeSessionFiles.size === 0) {
+    if (!this.notificationManager) {
       return;
     }
 
     const now = Date.now();
+
+    // Discovery sweep: fs.watch can drop events for brand-new files (macOS
+    // coalesces directory creation and may deliver a null filename, which is
+    // discarded), and only event-seen files ever enter activeSessionFiles.
+    // Walk the projects tree for untracked session files so nothing is missed;
+    // stale files are evicted by the mtime guard in the loop below.
+    try {
+      const dirs = await this.fsProvider.readdir(this.projectsPath);
+      for (const dir of dirs) {
+        if (!dir.isDirectory()) continue;
+        let entries: FsDirent[];
+        try {
+          entries = await this.fsProvider.readdir(path.join(this.projectsPath, dir.name));
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+          if (entry.name.startsWith('agent-')) continue;
+          const fullPath = path.join(this.projectsPath, dir.name, entry.name);
+          if (this.activeSessionFiles.has(fullPath)) continue;
+          this.activeSessionFiles.set(fullPath, {
+            projectId: dir.name,
+            sessionId: path.basename(entry.name, '.jsonl'),
+          });
+          // Baseline silently: the file's history predates this watcher, so
+          // the bell must only ring for calls that happen after discovery.
+          // Pin the size cursor; line count is a >0 placeholder — the byte
+          // offset is the real cursor for incremental appends.
+          try {
+            const observed =
+              typeof entry.size === 'number'
+                ? entry.size
+                : (await this.fsProvider.stat(fullPath)).size;
+            this.lastProcessedSize.set(fullPath, observed);
+            this.lastProcessedLineCount.set(fullPath, 1);
+          } catch {
+            this.activeSessionFiles.delete(fullPath);
+          }
+        }
+      }
+    } catch (err) {
+      logger.error('FileWatcher: Error discovering session files during catch-up:', err);
+    }
+
+    if (this.activeSessionFiles.size === 0) {
+      return;
+    }
 
     for (const [filePath, info] of this.activeSessionFiles) {
       try {
