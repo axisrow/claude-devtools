@@ -22,7 +22,11 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS } from '@shared/constants/loopPolicy';
+import {
+  WAIT_LOOP_MIN_ROUNDS,
+  WAIT_TICK_CONTEXT_TOKENS,
+  WAIT_TICK_OUTPUT_TOKENS,
+} from '@shared/constants/loopPolicy';
 import { asText, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -82,7 +86,8 @@ export const WASTE_THRESHOLDS = {
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
   loopStreakMin: 3,
-  waitLoopTicks: 5,
+  // shared with the renderer's wait-loop category so the round gate cannot drift
+  waitLoopTicks: WAIT_LOOP_MIN_ROUNDS,
 } as const;
 
 // gaps between a turn's rounds longer than this are idle, not work
