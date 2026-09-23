@@ -193,6 +193,68 @@ export interface TaskCoordinationInjection {
 }
 
 // =============================================================================
+// Loop Types
+// =============================================================================
+
+/**
+ * Breakdown of tokens contributed by a single looping tool-call series.
+ */
+export interface LoopTokenBreakdown {
+  /** Canonical call key (same identity the live loop detector uses) */
+  key: string;
+  /** How many times this repeat streak has fired so far */
+  count: number;
+  /** Estimated token count for this repeat call (call + result + skill) */
+  tokenCount: number;
+  /** Tool use ID for deep-link navigation to the specific repeat call */
+  toolUseId?: string;
+}
+
+/**
+ * Represents tokens burned by repeated back-to-back identical tool calls.
+ * Calls 2..N of a streak land here; the first call stays in tool-output.
+ */
+export interface LoopInjection {
+  /** Unique identifier (e.g., "loop-ai-0") */
+  id: string;
+  /** Discriminator for type narrowing */
+  category: 'loop';
+  /** Turn index where these repeats occurred */
+  turnIndex: number;
+  /** AI group ID for navigation (e.g., "ai-0") */
+  aiGroupId: string;
+  /** Total estimated tokens from repeat calls in this turn */
+  estimatedTokens: number;
+  /** Detailed breakdown of tokens by repeat series */
+  breakdown: LoopTokenBreakdown[];
+}
+
+// =============================================================================
+// Wait-Loop Types
+// =============================================================================
+
+/**
+ * Represents tokens burned by quiet rounds in a turn: rounds that billed a
+ * huge input-side context (>= WAIT_TICK_CONTEXT_TOKENS) while producing almost
+ * nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
+ * wait_loop findings.
+ */
+export interface WaitLoopInjection {
+  /** Unique identifier (e.g., "wait-loop-ai-0") */
+  id: string;
+  /** Discriminator for type narrowing */
+  category: 'wait-loop';
+  /** Turn index where these quiet rounds occurred */
+  turnIndex: number;
+  /** AI group ID for navigation (e.g., "ai-0") */
+  aiGroupId: string;
+  /** Total billed context re-read by quiet rounds in this turn */
+  estimatedTokens: number;
+  /** How many quiet rounds fired in this turn */
+  roundCount: number;
+}
+
+// =============================================================================
 // Union Types
 // =============================================================================
 
@@ -217,7 +279,9 @@ export type ContextInjection =
   | ToolOutputInjection
   | ThinkingTextInjection
   | TaskCoordinationInjection
-  | UserMessageInjection;
+  | UserMessageInjection
+  | LoopInjection
+  | WaitLoopInjection;
 
 // =============================================================================
 // Statistics Types
@@ -239,6 +303,10 @@ export interface TokensByCategory {
   taskCoordination: number;
   /** Tokens from user messages */
   userMessages: number;
+  /** Tokens from repeated back-to-back identical tool calls (loop waste) */
+  loop: number;
+  /** Tokens re-read by quiet wait-loop rounds */
+  waitLoop: number;
 }
 
 /**
@@ -257,6 +325,10 @@ export interface NewCountsByCategory {
   taskCoordination: number;
   /** Count of new user message injections */
   userMessages: number;
+  /** Count of new repeat-call entries */
+  loop: number;
+  /** Count of quiet wait-loop rounds */
+  waitLoop: number;
 }
 
 /**

@@ -1,6 +1,7 @@
 /**
  * Tool-call identity for loop/repeat detection, shared by the CLI analyzers
- * (analyzeSession, sessionInventory) and the live LoopDetector (FileWatcher).
+ * (analyzeSession, sessionInventory), the live LoopDetector (FileWatcher) and
+ * the renderer's Visible Context loop category (contextTracker).
  */
 
 /**

@@ -25,6 +25,8 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string 
   'thinking-text': { bg: 'rgba(167, 139, 250, 0.15)', text: '#a78bfa', label: 'Thinking' },
   'task-coordination': { bg: 'rgba(251, 146, 60, 0.15)', text: '#fb923c', label: 'Team' },
   'user-message': { bg: 'rgba(96, 165, 250, 0.15)', text: '#60a5fa', label: 'User' },
+  loop: { bg: 'rgba(239, 68, 68, 0.15)', text: '#f87171', label: 'Loop' },
+  'wait-loop': { bg: 'rgba(239, 68, 68, 0.15)', text: '#f87171', label: 'Wait' },
 };
 
 // =============================================================================
@@ -142,6 +144,33 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
         });
         break;
 
+      case 'loop':
+        for (const item of inj.breakdown) {
+          rows.push({
+            key: `${inj.id}-${item.key}`,
+            category: 'loop',
+            label: `${item.key} ×${item.count}`,
+            description: `Turn ${inj.turnIndex + 1}`,
+            tokens: item.tokenCount,
+            turnIndex: inj.turnIndex,
+            toolUseId: item.toolUseId,
+            navigationType: item.toolUseId ? 'tool' : 'turn',
+          });
+        }
+        break;
+
+      case 'wait-loop':
+        rows.push({
+          key: inj.id,
+          category: 'wait-loop',
+          label: `${inj.roundCount} quiet round${inj.roundCount !== 1 ? 's' : ''}`,
+          description: `Turn ${inj.turnIndex + 1}`,
+          tokens: inj.estimatedTokens,
+          turnIndex: inj.turnIndex,
+          navigationType: 'turn',
+        });
+        break;
+
       case 'user-message':
         rows.push({
           key: inj.id,
@@ -191,9 +220,7 @@ export const FlatInjectionList = ({
           }
         };
 
-        const displayText = row.description
-          ? `${row.label} \u2014 ${row.description}`
-          : row.label;
+        const displayText = row.description ? `${row.label} \u2014 ${row.description}` : row.label;
 
         return (
           <div key={row.key} className="flex items-center gap-0.5">

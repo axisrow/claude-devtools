@@ -43,6 +43,8 @@ export const SECTION_TOOL_OUTPUTS = 'tool-outputs' as const;
 export const SECTION_THINKING_TEXT = 'thinking-text' as const;
 export const SECTION_TASK_COORDINATION = 'task-coordination' as const;
 export const SECTION_USER_MESSAGES = 'user-messages' as const;
+export const SECTION_LOOP = 'loop' as const;
+export const SECTION_WAIT_LOOP = 'wait-loop' as const;
 
 /** Section identifiers for collapsible panels */
 export type SectionType =
@@ -51,7 +53,9 @@ export type SectionType =
   | typeof SECTION_TOOL_OUTPUTS
   | typeof SECTION_THINKING_TEXT
   | typeof SECTION_TASK_COORDINATION
-  | typeof SECTION_USER_MESSAGES;
+  | typeof SECTION_USER_MESSAGES
+  | typeof SECTION_LOOP
+  | typeof SECTION_WAIT_LOOP;
 
 /** View mode for the context panel */
 export type ContextViewMode = 'category' | 'ranked';

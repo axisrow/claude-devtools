@@ -20,9 +20,10 @@
 
 import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
-import { asText, normalizeCallKey } from '@main/utils/callKey';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
+import { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS } from '@shared/constants/loopPolicy';
+import { asText, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
   estimateTokens,
@@ -88,11 +89,9 @@ export const WASTE_THRESHOLDS = {
 // ponytail: calibration knob — tune after live runs
 export const TURN_IDLE_GAP_CAP_MINUTES = 10;
 
-// wait-loop tick: a round that billed a huge context and produced ~nothing
-// (self-waking night watches, poll cycles). Corpus-calibrated: such rounds are
-// 47.5% of all billed tokens across 1266 local sessions
-export const WAIT_TICK_CONTEXT_TOKENS = 50_000;
-export const WAIT_TICK_OUTPUT_TOKENS = 300;
+// wait-loop tick thresholds live in @shared/constants/loopPolicy — the
+// renderer's Visible Context wait-loop category uses the same numbers
+export { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS };
 
 // Tool results that look like errors but are normal flow (user said no / aborted)
 const REJECTION_PATTERNS = [
@@ -481,7 +480,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
 // Findings
 // =============================================================================
 
-export { bashStem, normalizeCallKey } from '@main/utils/callKey';
+export { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
