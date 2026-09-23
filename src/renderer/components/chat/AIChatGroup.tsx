@@ -6,7 +6,7 @@ import { useStore } from '@renderer/store';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
 import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
-import { estimateTokens } from '@shared/utils/tokenFormatting';
+import { estimateTokens, formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { format } from 'date-fns';
 import { Bot, ChevronDown, Clock } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -451,6 +451,9 @@ const AIChatGroupInner = ({
 
           {/* Right side: Context badge, Token usage, Timestamp (non-clickable) */}
           <div className="flex shrink-0 items-center gap-2">
+            {/* Burn pills: this turn's loop/wait-loop waste */}
+            {contextStats && <BurnPills stats={contextStats} />}
+
             {/* Context injection badge (CLAUDE.md, mentioned files, tool outputs) */}
             {contextStats && <ContextBadge stats={contextStats} projectRoot={projectRoot} />}
 
@@ -527,3 +530,45 @@ const AIChatGroupInner = ({
 };
 
 export const AIChatGroup = React.memo(AIChatGroupInner);
+
+/** Red waste pills for this turn: Wait-loop quiet-round re-read + Loop repeats. */
+const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactElement | null => {
+  let waitTokens = 0;
+  let waitRounds = 0;
+  let loopTokens = 0;
+  for (const inj of stats.newInjections) {
+    if (inj.category === 'wait-loop') {
+      waitTokens += inj.estimatedTokens;
+      waitRounds += inj.roundCount;
+    } else if (inj.category === 'loop') {
+      loopTokens += inj.estimatedTokens;
+    }
+  }
+  if (waitTokens === 0 && loopTokens === 0) return null;
+
+  const pillStyle: React.CSSProperties = {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#f87171',
+  };
+
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      {waitTokens > 0 && (
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={pillStyle}
+        >
+          Wait {formatTokensCompact(waitTokens)} · {waitRounds} rd
+        </span>
+      )}
+      {loopTokens > 0 && (
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={pillStyle}
+        >
+          Loop {formatTokensCompact(loopTokens)}
+        </span>
+      )}
+    </span>
+  );
+};

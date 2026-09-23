@@ -44,6 +44,8 @@ export interface NotificationConfig {
   triggers: NotificationTrigger[];
   /** Live tool-call loop detection (FileWatcher) */
   loopDetection: { enabled: boolean; cycleThreshold: number };
+  /** Per-turn input-token budget enforced by the PreToolUse hook */
+  turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
 }
 
 /**
@@ -246,6 +248,8 @@ const DEFAULT_CONFIG: AppConfig = {
     includeSubagentErrors: true,
     triggers: DEFAULT_TRIGGERS,
     loopDetection: { enabled: true, cycleThreshold: 4 },
+    // corpus-calibrated (pnpm turn-spend:stats, 10 080 turns): p95 = 12.56M
+    turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 },
   },
   general: {
     launchAtLogin: false,
@@ -438,6 +442,10 @@ export class ConfigManager {
       ...DEFAULT_CONFIG.notifications.loopDetection,
       ...(loadedNotifications.loopDetection ?? {}),
     };
+    const mergedTurnBudget = {
+      ...DEFAULT_CONFIG.notifications.turnBudget,
+      ...(loadedNotifications.turnBudget ?? {}),
+    };
     const mergedGeneral: GeneralConfig = {
       ...DEFAULT_CONFIG.general,
       ...(loaded.general ?? {}),
@@ -453,6 +461,7 @@ export class ConfigManager {
         ...loadedNotifications,
         triggers: mergedTriggers,
         loopDetection: mergedLoopDetection,
+        turnBudget: mergedTurnBudget,
       },
       general: mergedGeneral,
       display: {
