@@ -7,10 +7,21 @@
  * spent, so the agent wraps up and reports instead of looping on.
  *
  * Fail-open: any error exits 0 silently — a broken limiter must not break
- * sessions.
+ * sessions, and a spend counted without a found turn boundary allows too.
+ * Note: Claude Code writes the transcript asynchronously, so the very last
+ * round may be missing — the deny fires on the NEXT call based on rounds
+ * already on disk. Acceptable undercount.
  */
 
-import { openSync, readSync, closeSync, readFileSync, statSync, existsSync } from 'node:fs';
+import {
+  appendFileSync,
+  openSync,
+  readSync,
+  closeSync,
+  readFileSync,
+  statSync,
+  existsSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,7 +60,7 @@ export function isRealUserLine(m) {
 }
 
 /** Sum input-side tokens of the current turn, scanning lines newest-first. */
-export function analyzeTurn(linesNewestFirst, budget) {
+export function analyzeTurn(linesNewestFirst) {
   let spent = 0;
   let boundaryFound = false;
   for (const line of linesNewestFirst) {
@@ -59,7 +70,9 @@ export function analyzeTurn(linesNewestFirst, budget) {
     } catch {
       continue;
     }
-    if (isRealUserLine(m)) {
+    // turn boundary: a real user message — or a compaction marker (the
+    // post-compact context starts fresh, pre-compact spend must not count)
+    if (isRealUserLine(m) || m.isCompactSummary === true) {
       boundaryFound = true;
       break;
     }
@@ -129,21 +142,47 @@ export function main() {
 
   let fd;
   let spent = 0;
+  let boundaryFound = false;
   try {
     fd = openSync(transcript, 'r');
     const size = statSync(transcript).size;
     for (const line of linesBackward(fd, size)) {
-      const { spent: s, boundaryFound } = analyzeTurn([line], budget);
-      spent += s;
-      if (boundaryFound) break;
+      const r = analyzeTurn([line]);
+      spent += r.spent;
+      if (r.boundaryFound) {
+        boundaryFound = true;
+        break;
+      }
     }
   } catch {
     // fail-open
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+
+  if (!boundaryFound) {
+    // a spend counted without a turn boundary is not trustworthy (that was
+    // the 872M incident) — allow, but leave an anomaly line in the log
+    logDecision(hook.session_id, spent, budget, false, 'no-boundary');
+    return;
+  }
   if (spent >= budget) {
+    logDecision(hook.session_id, spent, budget, true, 'deny');
     deny(spent, budget);
+  }
+}
+
+const LOG_PATH = join(homedir(), '.claude', 'claude-devtools-turnbudget.log');
+
+/** Append deny/anomaly decisions only — routine allows stay silent. */
+function logDecision(sessionId, spent, budget, denied, kind) {
+  try {
+    appendFileSync(
+      LOG_PATH,
+      `${new Date().toISOString()} kind=${kind} session=${sessionId ?? '?'} spent=${spent} budget=${budget} denied=${denied}\n`
+    );
+  } catch {
+    // logging must never break the hook
   }
 }
 
@@ -155,7 +194,7 @@ function readConfigSafely() {
   }
 }
 
-function deny(spent, budget) {
+export function deny(spent, budget) {
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
