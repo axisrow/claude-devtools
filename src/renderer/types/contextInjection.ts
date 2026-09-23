@@ -202,7 +202,7 @@ export interface TaskCoordinationInjection {
 export interface LoopTokenBreakdown {
   /** Canonical call key (same identity the live loop detector uses) */
   key: string;
-  /** How many times this repeat streak has fired so far */
+  /** How many bucketed repeat calls this series contributed (streak length beyond the threshold) */
   count: number;
   /** Estimated token count for this repeat call (call + result + skill) */
   tokenCount: number;
@@ -212,7 +212,8 @@ export interface LoopTokenBreakdown {
 
 /**
  * Represents tokens burned by repeated back-to-back identical tool calls.
- * Calls 2..N of a streak land here; the first call stays in tool-output.
+ * Calls from LOOP_MIN_STREAK (the live bell's default cycleThreshold) onward
+ * land here; earlier calls of a streak stay in tool-output.
  */
 export interface LoopInjection {
   /** Unique identifier (e.g., "loop-ai-0") */
@@ -236,8 +237,8 @@ export interface LoopInjection {
 /**
  * Represents tokens burned by quiet rounds in a turn: rounds that billed a
  * huge input-side context (>= WAIT_TICK_CONTEXT_TOKENS) while producing almost
- * nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
- * wait_loop findings.
+ * nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion and minimum round
+ * gate (WAIT_LOOP_MIN_ROUNDS) as the CLI's wait_loop findings.
  */
 export interface WaitLoopInjection {
   /** Unique identifier (e.g., "wait-loop-ai-0") */

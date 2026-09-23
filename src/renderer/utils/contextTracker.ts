@@ -9,7 +9,12 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS } from '@shared/constants/loopPolicy';
+import {
+  LOOP_MIN_STREAK,
+  WAIT_LOOP_MIN_ROUNDS,
+  WAIT_TICK_CONTEXT_TOKENS,
+  WAIT_TICK_OUTPUT_TOKENS,
+} from '@shared/constants/loopPolicy';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -210,9 +215,11 @@ function createMentionedFileInjection(
 
 /**
  * Aggregate tool outputs from all linked tools in a turn, splitting repeat
- * calls (2..N of a back-to-back identical series, same key as the live loop
- * detector) into the loop bucket. Slash/skill items stay in tool-output.
- * Advances loopState for every non-coordination call, even zero-token ones.
+ * calls (from the LOOP_MIN_STREAK-th of a back-to-back identical series —
+ * same key and threshold as the live loop detector) into the loop bucket;
+ * earlier calls of a streak stay in tool-output. Slash/skill items stay in
+ * tool-output. Advances loopState for every non-coordination call, even
+ * zero-token ones.
  */
 function aggregateToolOutputs(
   linkedTools: Map<string, LinkedToolItem>,
@@ -249,12 +256,14 @@ function aggregateToolOutputs(
     const toolTokenCount = callTokens + resultTokens + skillTokens;
 
     // Classify BEFORE the token check — the streak advances for every
-    // non-coordination call, even zero-token ones (same as live LoopDetector)
+    // non-coordination call, even zero-token ones (same as live LoopDetector).
+    // A call is loop waste only from LOOP_MIN_STREAK on, matching the live
+    // bell's default cycleThreshold — Edit → fix → Edit stays legitimate.
     const key = bashStem(normalizeCallKey(linkedTool.name, linkedTool.input ?? {}));
     let repeat = false;
     if (key === state.lastKey) {
       state.streak += 1;
-      repeat = true;
+      repeat = state.streak >= LOOP_MIN_STREAK;
     } else {
       state.lastKey = key;
       state.streak = 1;
@@ -340,8 +349,10 @@ function aggregateToolOutputs(
 /**
  * Sum the billed input-side context of quiet rounds in this turn — rounds that
  * re-read the whole window (>= WAIT_TICK_CONTEXT_TOKENS) while producing
- * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
- * wait_loop findings; rounds without usage are skipped (provider ghosts).
+ * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion AND minimum
+ * round gate (WAIT_LOOP_MIN_ROUNDS) as the CLI's wait_loop findings — a lone
+ * quiet round is a normal short turn, not waste. Rounds without usage are
+ * skipped (provider ghosts).
  */
 function aggregateWaitLoopRounds(
   aiGroup: AIGroup,
@@ -362,7 +373,7 @@ function aggregateWaitLoopRounds(
       roundCount += 1;
     }
   }
-  if (roundCount === 0) return null;
+  if (roundCount < WAIT_LOOP_MIN_ROUNDS) return null;
 
   return {
     id: generateWaitLoopId(turnIndex),
@@ -561,7 +572,7 @@ interface ComputeContextStatsParams {
   previousInjections: ContextInjection[];
   /** Paths already seen in previous groups (threaded to avoid O(N) rebuild per group) */
   previousPaths: Set<string>;
-  /** Loop streak state threaded across groups (mutated in place) */
+  /** Loop streak state threaded via return value — caller passes the updated state to the next group */
   loopState: LoopStreakState;
   /** Project root path for resolving relative paths */
   projectRoot: string;
