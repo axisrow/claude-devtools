@@ -10,6 +10,18 @@ import type { Session, SessionSortMode } from '@renderer/types/data';
 import type { RepositoryGroup } from '@renderer/types/data';
 import type { StateCreator } from 'zustand';
 
+// Merge per-worktree session lists into one sidebar list: tag non-main
+// worktrees, newest-first by last activity.
+function mergeWorktreeSessions(perWorktree: Session[][]): Session[] {
+  return perWorktree
+    .flat()
+    .sort(
+      (a, b) =>
+        Math.max(b.updatedAt ?? b.createdAt, b.createdAt) -
+        Math.max(a.updatedAt ?? a.createdAt, a.createdAt)
+    );
+}
+
 const logger = createLogger('Store:session');
 
 /**
@@ -49,6 +61,8 @@ export interface SessionSlice {
   fetchSessionsInitial: (projectId: string) => Promise<void>;
   /** Whole-repository listing: sessions of every worktree, merged and sorted */
   fetchSessionsForRepository: (repo: RepositoryGroup) => Promise<void>;
+  /** Silent repo-wide refresh on file-change — no loading wipe, unlike fetchSessionsForRepository */
+  refreshRepositorySessionsInPlace: () => Promise<void>;
   fetchSessionsMore: () => Promise<void>;
   resetSessionsPagination: () => void;
   selectSession: (id: string) => void;
@@ -193,13 +207,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
           return sessions.map((s) => (tag ? { ...s, worktreeName: tag } : s));
         })
       );
-      const merged = perWorktree
-        .flat()
-        .sort(
-          (a, b) =>
-            Math.max(b.updatedAt ?? b.createdAt, b.createdAt) -
-            Math.max(a.updatedAt ?? a.createdAt, a.createdAt)
-        );
+      const merged = mergeWorktreeSessions(perWorktree);
       set({
         sessions: merged,
         sessionsLoading: false,
@@ -212,6 +220,32 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         sessionsError: error instanceof Error ? error.message : 'Failed to fetch sessions',
         sessionsLoading: false,
       });
+    }
+  },
+
+  // Silent repo-wide refresh for file-change: same merge as
+  // fetchSessionsForRepository, but without the loading wipe — otherwise the
+  // upstream single-worktree refreshSessionsInPlace would shrink the merged
+  // list back to one worktree on every session update.
+  refreshRepositorySessionsInPlace: async () => {
+    const currentState = get();
+    const repo = currentState.repositoryGroups.find(
+      (r) => r.id === currentState.selectedRepositoryId
+    );
+    if (!repo) return;
+
+    try {
+      const perWorktree = await Promise.all(
+        repo.worktrees.map(async (worktree) => {
+          const sessions = await api.getSessions(worktree.id);
+          const tag = worktree.isMainWorktree ? undefined : worktree.name;
+          return sessions.map((s) => (tag ? { ...s, worktreeName: tag } : s));
+        })
+      );
+      const merged = mergeWorktreeSessions(perWorktree);
+      set({ sessions: merged, sessionsTotalCount: merged.length });
+    } catch (error) {
+      logger.error('refreshRepositorySessionsInPlace error:', error);
     }
   },
 
