@@ -352,6 +352,8 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
+  /** Completed user→assistant exchanges (turns / AI groups) */
+  turnCount: number;
   hasDisplayableContent: boolean;
 }
 
@@ -370,6 +372,7 @@ export async function analyzeSessionFileMetadata(
       isOngoing: false,
       gitBranch: null,
       totalTokens: 0,
+      turnCount: 0,
       hasDisplayableContent: false,
     };
   }
@@ -386,6 +389,7 @@ export async function analyzeSessionFileMetadata(
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
   let awaitingAIGroup = false;
+  let turnCount = 0;
   let gitBranch: string | null = null;
 
   let activityIndex = 0;
@@ -439,6 +443,8 @@ export async function analyzeSessionFileMetadata(
       !parsed.isSidechain
     ) {
       messageCount++;
+      // one completed user→assistant exchange == one turn (AI group)
+      turnCount++;
       awaitingAIGroup = false;
     }
 
@@ -660,6 +666,7 @@ export async function analyzeSessionFileMetadata(
     compactionCount: compactionPhases.length > 0 ? compactionPhases.length : undefined,
     phaseBreakdown,
     totalTokens,
+    turnCount,
     hasDisplayableContent,
   };
 }

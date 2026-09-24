@@ -262,5 +262,61 @@ describe('jsonl', () => {
         }
       }
     });
+    it('counts turns — assistant replies that complete a user exchange', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-turns-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const userLine = (uuid: string): string =>
+          JSON.stringify({
+            type: 'user',
+            uuid,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: { role: 'user', content: 'go' },
+            isMeta: false,
+          });
+        const assistantLine = (uuid: string): string =>
+          JSON.stringify({
+            type: 'assistant',
+            uuid,
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: { input_tokens: 10, output_tokens: 2 },
+            },
+          });
+        const lines = [
+          userLine('u1'),
+          assistantLine('a1'),
+          assistantLine('a1-continuation'),
+          userLine('u2'),
+          // synthetic reply must NOT complete a turn
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'a2-synthetic',
+            timestamp: '2026-01-01T00:00:02.000Z',
+            message: { role: 'assistant', model: '<synthetic>', content: [] },
+          }),
+          assistantLine('a2-real'),
+        ];
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        expect(result.turnCount).toBe(2);
+      } finally {
+        try {
+          fs.rmSync(tempDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 200,
+          });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
   });
 });

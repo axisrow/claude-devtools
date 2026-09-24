@@ -416,6 +416,17 @@ const AIChatGroupInner = ({
               Claude
             </span>
 
+            {/* Turn number — matches the Visible Context panel's 1-based "Turn N" */}
+            <span
+              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+              style={{
+                backgroundColor: 'var(--color-surface-overlay)',
+                color: COLOR_TEXT_MUTED,
+              }}
+            >
+              Turn {aiGroup.turnIndex + 1}
+            </span>
+
             {/* Main agent model */}
             {enhanced.mainModel && (
               <span className={`shrink-0 text-xs ${getModelColorClass(enhanced.mainModel.family)}`}>

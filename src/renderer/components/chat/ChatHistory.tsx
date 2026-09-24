@@ -425,6 +425,8 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
       const run = async (): Promise<void> => {
         const groupId = targetItem.group.id;
+        // navigating to a turn means reading it — expand the collapsed group
+        expandAIGroup(groupId);
         // the header with burn pills must be on screen — align the group top
         await ensureGroupVisible(groupId, opts?.flashHeader ? 'start' : 'center');
         const element = aiGroupRefs.current.get(groupId);
@@ -455,7 +457,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, expandAIGroup, setHighlightedGroupId]
   );
 
   // Handler to navigate to a user message group (preceding the AI group at turnIndex)
