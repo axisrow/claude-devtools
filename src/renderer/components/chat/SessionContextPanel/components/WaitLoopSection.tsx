@@ -13,7 +13,7 @@ interface WaitLoopSectionProps {
   tokenCount: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
 }
 
 export const WaitLoopSection = ({
@@ -39,7 +39,7 @@ export const WaitLoopSection = ({
           type="button"
           onClick={() => {
             if (onNavigateToTurn) {
-              onNavigateToTurn(injection.turnIndex);
+              onNavigateToTurn(injection.turnIndex, { flashHeader: true });
             }
           }}
           className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5"

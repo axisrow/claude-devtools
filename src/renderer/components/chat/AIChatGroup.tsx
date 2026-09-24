@@ -4,6 +4,7 @@ import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssV
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
+import { TOOL_HIGHLIGHT_CLASSES, type TriggerColor } from '@shared/constants/triggerColors';
 import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
 import { estimateTokens, formatTokensCompact } from '@shared/utils/tokenFormatting';
@@ -24,7 +25,6 @@ import type {
   EnhancedAIGroup,
   UserGroup,
 } from '@renderer/types/groups';
-import type { TriggerColor } from '@shared/constants/triggerColors';
 
 /**
  * Extract slash info from a UserGroup's message content.
@@ -83,6 +83,8 @@ interface AIChatGroupProps {
   highlightToolUseId?: string;
   /** Custom highlight color from trigger */
   highlightColor?: TriggerColor;
+  /** Red alarm on the header row (burn pills): aggregate is the alarm target */
+  isHeaderHighlighted?: boolean;
   /** Register ref for individual tool items (for precise scroll targeting) */
   registerToolRef?: (toolId: string, el: HTMLElement | null) => void;
 }
@@ -124,6 +126,7 @@ const AIChatGroupInner = ({
   aiGroup,
   highlightToolUseId,
   highlightColor,
+  isHeaderHighlighted,
   registerToolRef,
 }: Readonly<AIChatGroupProps>): React.JSX.Element => {
   // Per-tab UI state for expansion (completely isolated per tab)
@@ -450,7 +453,11 @@ const AIChatGroupInner = ({
           </div>
 
           {/* Right side: Context badge, Token usage, Timestamp (non-clickable) */}
-          <div className="flex shrink-0 items-center gap-2">
+          <div
+            className={`flex shrink-0 items-center gap-2 ${
+              isHeaderHighlighted ? TOOL_HIGHLIGHT_CLASSES.red : ''
+            }`}
+          >
             {/* Burn pills: this turn's loop/wait-loop waste */}
             {contextStats && <BurnPills stats={contextStats} />}
 

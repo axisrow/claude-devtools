@@ -347,6 +347,25 @@ describe('notificationSlice', () => {
         expect(store.getState().openTabs[0].pendingNavigation?.kind).toBe('error');
       });
 
+      it('deep-links loop notifications to the turn, not one tool card', () => {
+        const error = createMockError({ source: 'loop' });
+
+        store.getState().navigateToError(error);
+
+        const nav = store.getState().openTabs[0].pendingNavigation;
+        expect(nav?.kind).toBe('error');
+        expect(nav?.payload.toolUseId).toBeUndefined();
+      });
+
+      it('keeps toolUseId deep-linking for non-loop errors — regression guard', () => {
+        const error = createMockError();
+
+        store.getState().navigateToError(error);
+
+        const nav = store.getState().openTabs[0].pendingNavigation;
+        expect(nav?.payload.toolUseId).toBe('tool-1');
+      });
+
       it('should set selectedSessionId even when switching from different project', () => {
         // Start with a different project selected
         store.setState({

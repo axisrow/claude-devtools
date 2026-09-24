@@ -14,7 +14,7 @@ interface LoopSectionProps {
   isExpanded: boolean;
   onToggle: () => void;
   onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
 }
 
 export const LoopSection = ({
@@ -44,7 +44,7 @@ export const LoopSection = ({
               if (item.toolUseId && onNavigateToTool) {
                 onNavigateToTool(injection.turnIndex, item.toolUseId);
               } else if (onNavigateToTurn) {
-                onNavigateToTurn(injection.turnIndex);
+                onNavigateToTurn(injection.turnIndex, { flashHeader: true });
               }
             }}
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5"

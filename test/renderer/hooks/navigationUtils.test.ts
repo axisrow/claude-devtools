@@ -4,9 +4,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { findAIGroupBySubagentId } from '@renderer/hooks/navigation/utils';
+import { findAIGroupBySubagentId, isGroupHeaderAlarm } from '@renderer/hooks/navigation/utils';
 
 import type { ChatItem } from '@renderer/types/groups';
+import type { TriggerColor } from '@shared/constants/triggerColors';
 import type { Process } from '@main/types';
 
 /** Minimal AI chat item factory for testing. */
@@ -64,5 +65,30 @@ describe('findAIGroupBySubagentId', () => {
       makeAIChatItem('ai-1', [{ id: 'agent-target' }]),
     ];
     expect(findAIGroupBySubagentId(items, 'agent-target')).toBe('ai-1');
+  });
+});
+
+describe('isGroupHeaderAlarm', () => {
+  const base = {
+    highlightedGroupId: 'ai-1' as string | null,
+    highlightColor: 'red' as TriggerColor | null,
+    highlightToolUseId: null as string | null,
+  };
+
+  it('red group-level error navigation lights the turn header — loop deep-links', () => {
+    expect(isGroupHeaderAlarm('ai-1', base)).toBe(true);
+  });
+
+  it('a tool-targeted navigation keeps the alarm on the tool card, not the header', () => {
+    expect(isGroupHeaderAlarm('ai-1', { ...base, highlightToolUseId: 'toolu-9' })).toBe(false);
+  });
+
+  it('non-red highlights are not header alarms', () => {
+    expect(isGroupHeaderAlarm('ai-1', { ...base, highlightColor: 'blue' })).toBe(false);
+  });
+
+  it('other groups and cleared navigation are not header alarms', () => {
+    expect(isGroupHeaderAlarm('ai-2', base)).toBe(false);
+    expect(isGroupHeaderAlarm('ai-1', { ...base, highlightedGroupId: null })).toBe(false);
   });
 });

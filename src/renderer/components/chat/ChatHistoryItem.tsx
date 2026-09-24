@@ -21,6 +21,8 @@ interface ChatHistoryItemProps {
   readonly isSearchHighlight: boolean;
   readonly isNavigationHighlight: boolean;
   readonly highlightColor?: TriggerColor;
+  /** Red alarm on the AI group header (burn pills): 2s panel flash or persistent loop alarm */
+  readonly isHeaderHighlighted?: boolean;
   readonly registerChatItemRef: (groupId: string) => (el: HTMLElement | null) => void;
   readonly registerAIGroupRef: (groupId: string) => (el: HTMLElement | null) => void;
   /** Register ref for individual tool items (for precise scroll targeting) */
@@ -54,6 +56,7 @@ const ChatHistoryItemInner = ({
   isSearchHighlight,
   isNavigationHighlight,
   highlightColor,
+  isHeaderHighlighted,
   registerChatItemRef,
   registerAIGroupRef,
   registerToolRef,
@@ -117,6 +120,7 @@ const ChatHistoryItemInner = ({
             aiGroup={item.group}
             highlightToolUseId={toolUseIdForGroup}
             highlightColor={highlightColor}
+            isHeaderHighlighted={isHeaderHighlighted}
             registerToolRef={registerToolRef}
           />
         </div>

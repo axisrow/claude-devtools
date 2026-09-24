@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { isGroupHeaderAlarm } from '@renderer/hooks/navigation/utils';
 import { isNearBottom, useAutoScrollBottom } from '@renderer/hooks/useAutoScrollBottom';
 import { useTabNavigationController } from '@renderer/hooks/useTabNavigationController';
 import { useTabUI } from '@renderer/hooks/useTabUI';
@@ -173,6 +174,10 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const [isNavigationHighlight, setIsNavigationHighlight] = useState(false);
   const navigationHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Red header flash (aggregate burn pills) — Loop/Wait-loop panel navigation
+  const [headerFlashGroupId, setHeaderFlashGroupId] = useState<string | null>(null);
+  const headerFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Refs map for AI groups, chat items, and individual tool items (for scrolling)
   const aiGroupRefs = useRef<Map<string, HTMLElement>>(new Map());
   const chatItemRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -212,7 +217,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   });
 
   const ensureGroupVisible = useCallback(
-    async (groupId: string) => {
+    async (groupId: string, align: 'start' | 'center' | 'end' | 'auto' = 'center') => {
       if (!shouldVirtualize) {
         return;
       }
@@ -220,7 +225,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       if (index === undefined) {
         return;
       }
-      rowVirtualizer.scrollToIndex(index, { align: 'center' });
+      rowVirtualizer.scrollToIndex(index, { align });
       // Wait 2 RAF frames so the virtualizer has time to render the target row
       await waitForDoubleRaf();
     },
@@ -264,6 +269,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const effectiveHighlightToolUseId = controllerToolUseId ?? contextNavToolUseId ?? undefined;
   // Use blue for context panel tool navigation, otherwise use controller's color
   const effectiveHighlightColor = contextNavToolUseId ? ('blue' as const) : highlightColor;
+
+  // Red alarm on the turn header: 2s panel flash or persistent loop-notification
+  // alarm (red group navigation without a tool target)
+  const isHeaderHighlightedFor = (groupId: string): boolean =>
+    headerFlashGroupId === groupId ||
+    isGroupHeaderAlarm(groupId, {
+      highlightedGroupId,
+      highlightColor,
+      highlightToolUseId: effectiveHighlightToolUseId,
+    });
 
   // Keep search match indices aligned with this tab's rendered conversation.
   // This avoids stale/global match lists after tab switches or in-place refreshes.
@@ -401,7 +416,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   // Handler to navigate to a specific turn (AI group) from CLAUDE.md panel
   const handleNavigateToTurn = useCallback(
-    (turnIndex: number) => {
+    (turnIndex: number, opts?: { flashHeader?: boolean }) => {
       if (!conversation) return;
       const targetItem = conversation.items.find(
         (item) => item.type === 'ai' && item.group.turnIndex === turnIndex
@@ -410,13 +425,25 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
       const run = async (): Promise<void> => {
         const groupId = targetItem.group.id;
-        await ensureGroupVisible(groupId);
+        // the header with burn pills must be on screen — align the group top
+        await ensureGroupVisible(groupId, opts?.flashHeader ? 'start' : 'center');
         const element = aiGroupRefs.current.get(groupId);
         if (!element) return;
 
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        element.scrollIntoView({
+          behavior: 'smooth',
+          block: opts?.flashHeader ? 'start' : 'center',
+        });
         setHighlightedGroupId(groupId);
         setIsNavigationHighlight(true);
+        if (opts?.flashHeader) {
+          setHeaderFlashGroupId(groupId);
+          if (headerFlashTimerRef.current) clearTimeout(headerFlashTimerRef.current);
+          headerFlashTimerRef.current = setTimeout(() => {
+            setHeaderFlashGroupId(null);
+            headerFlashTimerRef.current = null;
+          }, 2000);
+        }
         if (navigationHighlightTimerRef.current) {
           clearTimeout(navigationHighlightTimerRef.current);
         }
@@ -817,6 +844,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                           isSearchHighlight={isSearchHighlight}
                           isNavigationHighlight={isNavigationHighlight}
                           highlightColor={effectiveHighlightColor}
+                          isHeaderHighlighted={isHeaderHighlightedFor(item.group.id)}
                           registerChatItemRef={registerChatItemRef}
                           registerAIGroupRef={registerAIGroupRefCombined}
                           registerToolRef={registerToolRef}
@@ -835,6 +863,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                     isSearchHighlight={isSearchHighlight}
                     isNavigationHighlight={isNavigationHighlight}
                     highlightColor={effectiveHighlightColor}
+                    isHeaderHighlighted={isHeaderHighlightedFor(item.group.id)}
                     registerChatItemRef={registerChatItemRef}
                     registerAIGroupRef={registerAIGroupRefCombined}
                     registerToolRef={registerToolRef}

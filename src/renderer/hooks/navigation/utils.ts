@@ -6,6 +6,25 @@
  */
 
 import type { ChatItem } from '@renderer/types/groups';
+import type { TriggerColor } from '@shared/constants/triggerColors';
+
+/**
+ * Header-level alarm policy: a red error-kind navigation WITHOUT a tool
+ * target (e.g. a loop-notification deep link) is a group-level defect —
+ * light the turn header (where the burn pills live), not one tool card.
+ */
+export function isGroupHeaderAlarm(
+  groupId: string,
+  nav: {
+    highlightedGroupId: string | null;
+    highlightColor?: TriggerColor | null;
+    highlightToolUseId?: string | null;
+  }
+): boolean {
+  return (
+    nav.highlightedGroupId === groupId && nav.highlightColor === 'red' && !nav.highlightToolUseId
+  );
+}
 
 // =============================================================================
 // Target Resolution
