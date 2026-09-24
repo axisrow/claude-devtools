@@ -284,7 +284,10 @@ export const SessionItem = React.memo(function SessionItem({
           {session.turnCount != null && session.turnCount > 0 && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
-              <span className="tabular-nums" title="Turns — completed prompt→response exchanges">
+              <span
+                className="tabular-nums"
+                title="Turns — AI response groups (same count as Turn chips in the transcript)"
+              >
                 {formatTokensCompact(session.turnCount)} turns
               </span>
             </>

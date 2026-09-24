@@ -5,10 +5,13 @@
  * LOOP_MIN_STREAK, the live bell's default cycleThreshold — keyed via
  * bashStem(normalizeCallKey)) are bucketed into the loop category; earlier
  * calls of a streak stay in tool-output. The streak threads across AI groups.
+ * Loop tokens are the billed usage (in + cache + out) of rounds carrying
+ * repeat calls, each round counted once — rounds without usage contribute 0.
  *
  * Wait-loop: quiet rounds (contextSize >= 50k, output <= 300) contribute their
- * billed input-side context once a turn has >= 5 of them (WAIT_LOOP_MIN_ROUNDS,
- * same criterion and gate as the CLI's wait_loop findings).
+ * billed input-side context + output once a turn has >= 5 of them
+ * (WAIT_LOOP_MIN_ROUNDS, same criterion and gate as the CLI's wait_loop
+ * findings).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -21,12 +24,15 @@ import type { ParsedMessage } from '@renderer/types/data';
 import type { SemanticStep } from '@main/types/chunks';
 import type { ContextStats } from '@renderer/types/contextInjection';
 
-// Minimal assistant message with usage for wait-loop accounting
-function assistantMsg(usage: {
-  input?: number;
-  cacheRead?: number;
-  output?: number;
-}): ParsedMessage {
+// Minimal assistant message with usage for loop/wait-loop round billing
+function assistantMsg(
+  usage: {
+    input?: number;
+    cacheRead?: number;
+    output?: number;
+  },
+  toolUseIds: string[] = []
+): ParsedMessage {
   return {
     type: 'assistant',
     usage: {
@@ -35,6 +41,7 @@ function assistantMsg(usage: {
       cache_creation_input_tokens: 0,
       output_tokens: usage.output ?? 0,
     },
+    content: toolUseIds.map((id) => ({ type: 'tool_use', id, name: 'Read', input: {} })),
   } as unknown as ParsedMessage;
 }
 
@@ -126,15 +133,17 @@ describe('contextTracker loop category', () => {
           ...toolCall('t3', '/src/a.ts', 5000),
           ...toolCall('t4', '/src/a.ts', 5000),
         ],
-        []
+        // the round carrying the first bucketed repeat bills the loop once
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t4'])]
       ),
     ];
 
     const stats = lastStats(items).get('ai-0');
     expect(stats).toBeDefined();
     // only t4 (streak 4) is bucketed; t1..t3 stay legitimate
-    expect(stats!.tokensByCategory.loop).toBeGreaterThan(0);
-    expect(stats!.tokensByCategory.toolOutputs).toBe(stats!.tokensByCategory.loop * 3);
+    expect(stats!.tokensByCategory.loop).toBe(60200);
+    expect(stats!.accumulatedCounts.loop).toBe(1);
+    expect(stats!.tokensByCategory.toolOutputs).toBe(15000);
 
     const loopInj = stats!.newInjections.find((inj) => inj.category === 'loop');
     expect(loopInj).toBeDefined();
@@ -143,6 +152,7 @@ describe('contextTracker loop category', () => {
       expect(loopInj.breakdown[0].key).toBe('Read|/src/a.ts');
       expect(loopInj.breakdown[0].count).toBe(1);
       expect(loopInj.breakdown[0].toolUseId).toBe('t4');
+      expect(loopInj.breakdown[0].tokenCount).toBe(60200);
     }
   });
 
@@ -160,7 +170,7 @@ describe('contextTracker loop category', () => {
           ...toolCall('t5', '/src/a.ts', 1000),
           ...toolCall('t6', '/src/a.ts', 1000),
         ],
-        []
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t6'])]
       ),
     ];
 
@@ -169,7 +179,8 @@ describe('contextTracker loop category', () => {
     // only t6 is a bucketed repeat (t1→t2 breaks the series; a-streak restarts
     // at t3, so t6 is the 4th consecutive a-call, not the 6th)
     expect(stats!.accumulatedCounts.loop).toBe(1);
-    expect(stats!.tokensByCategory.toolOutputs).toBe(stats!.tokensByCategory.loop * 5);
+    expect(stats!.tokensByCategory.loop).toBe(60200);
+    expect(stats!.tokensByCategory.toolOutputs).toBe(5000);
   });
 
   it('threads the streak across AI groups', () => {
@@ -184,7 +195,7 @@ describe('contextTracker loop category', () => {
           ...toolCall('t3', '/src/a.ts', 1000),
           ...toolCall('t4', '/src/a.ts', 1000),
         ],
-        []
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t4'])]
       ),
     ];
 
@@ -193,7 +204,7 @@ describe('contextTracker loop category', () => {
     const second = statsMap.get('ai-1');
     expect(first!.tokensByCategory.loop).toBe(0);
     // streak continues into the second group and reaches 4 on t4
-    expect(second!.tokensByCategory.loop).toBeGreaterThan(0);
+    expect(second!.tokensByCategory.loop).toBe(60200);
     expect(second!.accumulatedCounts.loop).toBe(1);
   });
 });
@@ -201,7 +212,7 @@ describe('contextTracker loop category', () => {
 describe('contextTracker wait-loop category', () => {
   it('counts quiet rounds (>=50k context, <=300 out) from the 5th on and skips active rounds', () => {
     const quiet = (): ParsedMessage =>
-      assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }); // quiet: 60k
+      assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }); // quiet: 60k + 200 out
     const items = [
       userGroup(),
       aiGroup(
@@ -221,11 +232,11 @@ describe('contextTracker wait-loop category', () => {
 
     const stats = lastStats(items).get('ai-0');
     expect(stats).toBeDefined();
-    expect(stats!.tokensByCategory.waitLoop).toBe(5 * 60000);
+    expect(stats!.tokensByCategory.waitLoop).toBe(5 * 60200);
     expect(stats!.accumulatedCounts.waitLoop).toBe(5);
     // total also carries the real global CLAUDE.md injections picked up on the
     // first group — assert the wait-loop burn is included, not the exact total
-    expect(stats!.totalEstimatedTokens).toBeGreaterThanOrEqual(5 * 60000);
+    expect(stats!.totalEstimatedTokens).toBeGreaterThanOrEqual(5 * 60200);
   });
 
   it('ignores turns with fewer than 5 quiet rounds', () => {

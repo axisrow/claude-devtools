@@ -38,8 +38,10 @@ export function classifyMessages(messages: ParsedMessage[]): ClassifiedMessage[]
 
 /**
  * Categorize a single message into one of five categories.
+ * Exported so lightweight scanners (e.g. analyzeSessionFileMetadata) apply
+ * the exact same rules as chunk building — counts must not drift.
  */
-function categorizeMessage(message: ParsedMessage): MessageCategory {
+export function categorizeMessage(message: ParsedMessage): MessageCategory {
   // Check hard noise first (filtered out)
   if (isParsedHardNoiseMessage(message)) {
     return 'hardNoise';

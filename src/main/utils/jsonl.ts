@@ -13,6 +13,7 @@ import * as readline from 'readline';
 
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
 import { LocalFileSystemProvider } from '../services/infrastructure/LocalFileSystemProvider';
+import { categorizeMessage } from '../services/parsing/MessageClassifier';
 import {
   type ChatHistoryEntry,
   type ContentBlock,
@@ -352,7 +353,7 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** Completed user→assistant exchanges (turns / AI groups) */
+  /** AI response groups — same count as the "Turn N" chips in the chat */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
@@ -389,6 +390,9 @@ export async function analyzeSessionFileMetadata(
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
   let awaitingAIGroup = false;
+  // Turn counting mirrors ChunkBuilder.buildChunks exactly: an AI run closed by
+  // a user/system/compact boundary (or EOF) == one AI group == one "Turn N".
+  let aiRunOpen = false;
   let turnCount = 0;
   let gitBranch: string | null = null;
 
@@ -443,9 +447,20 @@ export async function analyzeSessionFileMetadata(
       !parsed.isSidechain
     ) {
       messageCount++;
-      // one completed user→assistant exchange == one turn (AI group)
-      turnCount++;
       awaitingAIGroup = false;
+    }
+
+    // Same rules as the chunk pipeline: sidechain never reaches the main
+    // thread (SessionParser splits it out), hardNoise is skipped entirely,
+    // a user/system/compact boundary closes the current AI run.
+    if (!parsed.isSidechain) {
+      const category = categorizeMessage(parsed);
+      if (category === 'ai') {
+        aiRunOpen = true;
+      } else if (category !== 'hardNoise' && aiRunOpen) {
+        turnCount++;
+        aiRunOpen = false;
+      }
     }
 
     if (!gitBranch && 'gitBranch' in entry && entry.gitBranch) {
@@ -655,6 +670,10 @@ export async function analyzeSessionFileMetadata(
 
       contextConsumption = total;
     }
+  }
+
+  if (aiRunOpen) {
+    turnCount++;
   }
 
   return {

@@ -54,7 +54,7 @@ import type {
   UserMessageInjection,
   WaitLoopInjection,
 } from '../types/contextInjection';
-import type { ClaudeMdFileInfo } from '../types/data';
+import type { ClaudeMdFileInfo, ParsedMessage } from '../types/data';
 import type {
   AIGroup,
   AIGroupDisplayItem,
@@ -226,7 +226,8 @@ function aggregateToolOutputs(
   turnIndex: number,
   aiGroupId: string,
   displayItems: AIGroupDisplayItem[] | undefined,
-  loopState: LoopStreakState
+  loopState: LoopStreakState,
+  responses: ParsedMessage[]
 ): {
   toolOutput: ToolOutputInjection | null;
   loop: LoopInjection | null;
@@ -236,6 +237,8 @@ function aggregateToolOutputs(
   const loopBreakdown = new Map<string, LoopTokenBreakdown>();
   let totalTokens = 0;
   let loopTokens = 0;
+  // tool-use id → repeat-call key; membership defines the repeat set
+  const keyByToolId = new Map<string, string>();
   // copy — no-param-reassign; state is threaded back via the return value
   const state = { ...loopState };
   for (const linkedTool of linkedTools.values()) {
@@ -271,17 +274,17 @@ function aggregateToolOutputs(
 
     if (toolTokenCount > 0) {
       if (repeat) {
-        loopTokens += toolTokenCount;
+        keyByToolId.set(linkedTool.id, key);
         const existing = loopBreakdown.get(key);
         if (existing) {
           existing.count += 1;
-          existing.tokenCount += toolTokenCount;
+          // per-key tokens are filled by round billing below
           existing.toolUseId = linkedTool.id;
         } else {
           loopBreakdown.set(key, {
             key,
             count: 1,
-            tokenCount: toolTokenCount,
+            tokenCount: 0,
             toolUseId: linkedTool.id,
           });
         }
@@ -308,6 +311,30 @@ function aggregateToolOutputs(
         });
         totalTokens += item.slash.instructionsTokenCount;
       }
+    }
+  }
+
+  // Loop tokens = billed usage (in + cache_read + cache_creation + output) of
+  // rounds carrying repeat calls, each round counted once. Rounds without
+  // usage contribute nothing. A round shared by two different repeat keys
+  // bills both breakdowns but the turn total counts it once.
+  for (const msg of responses) {
+    if (msg.type !== 'assistant' || !msg.usage) continue;
+    const roundToolIds = Array.isArray(msg.content)
+      ? msg.content.filter((b) => b.type === 'tool_use').map((b) => b.id)
+      : [];
+    const roundRepeats = roundToolIds.filter((id) => keyByToolId.has(id));
+    if (roundRepeats.length === 0) continue;
+    const roundBilling =
+      (msg.usage.input_tokens ?? 0) +
+      (msg.usage.cache_read_input_tokens ?? 0) +
+      (msg.usage.cache_creation_input_tokens ?? 0) +
+      (msg.usage.output_tokens ?? 0);
+    loopTokens += roundBilling;
+    for (const id of roundRepeats) {
+      const k = keyByToolId.get(id);
+      const entry = k ? loopBreakdown.get(k) : undefined;
+      if (entry) entry.tokenCount += roundBilling;
     }
   }
 
@@ -369,7 +396,7 @@ function aggregateWaitLoopRounds(
       (msg.usage.cache_creation_input_tokens ?? 0);
     const output = msg.usage.output_tokens ?? 0;
     if (contextSize >= WAIT_TICK_CONTEXT_TOKENS && output <= WAIT_TICK_OUTPUT_TOKENS) {
-      tokens += contextSize;
+      tokens += contextSize + output;
       roundCount += 1;
     }
   }
@@ -903,7 +930,14 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     toolOutput: toolOutputInjection,
     loop: loopInjection,
     loopState: updatedLoopState,
-  } = aggregateToolOutputs(linkedTools, aiGroup.turnIndex, turnGroupId, displayItems, loopState);
+  } = aggregateToolOutputs(
+    linkedTools,
+    aiGroup.turnIndex,
+    turnGroupId,
+    displayItems,
+    loopState,
+    aiGroup.responses ?? []
+  );
   if (toolOutputInjection) {
     newInjections.push(toolOutputInjection);
   }
