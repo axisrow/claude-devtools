@@ -9,12 +9,7 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import {
-  LOOP_MIN_STREAK,
-  WAIT_LOOP_MIN_ROUNDS,
-  WAIT_TICK_CONTEXT_TOKENS,
-  WAIT_TICK_OUTPUT_TOKENS,
-} from '@shared/constants/loopPolicy';
+import { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS } from '@shared/constants/loopPolicy';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -40,10 +35,12 @@ import type {
   ContextPhaseInfo,
   ContextStats,
   LoopInjection,
+  LoopRoundInfo,
   LoopTokenBreakdown,
   MentionedFileInfo,
   MentionedFileInjection,
   NewCountsByCategory,
+  RoundFlag,
   TaskCoordinationBreakdown,
   TaskCoordinationInjection,
   ThinkingTextBreakdown,
@@ -53,6 +50,7 @@ import type {
   ToolTokenBreakdown,
   UserMessageInjection,
   WaitLoopInjection,
+  WaitRoundInfo,
 } from '../types/contextInjection';
 import type { ClaudeMdFileInfo, ParsedMessage } from '../types/data';
 import type {
@@ -215,11 +213,9 @@ function createMentionedFileInjection(
 
 /**
  * Aggregate tool outputs from all linked tools in a turn, splitting repeat
- * calls (from the LOOP_MIN_STREAK-th of a back-to-back identical series —
- * same key and threshold as the live loop detector) into the loop bucket;
- * earlier calls of a streak stay in tool-output. Slash/skill items stay in
- * tool-output. Advances loopState for every non-coordination call, even
- * zero-token ones.
+ * calls (2..N of a back-to-back identical series, same key as the live loop
+ * detector) into the loop bucket. Slash/skill items stay in tool-output.
+ * Advances loopState for every non-coordination call, even zero-token ones.
  */
 function aggregateToolOutputs(
   linkedTools: Map<string, LinkedToolItem>,
@@ -232,6 +228,7 @@ function aggregateToolOutputs(
   toolOutput: ToolOutputInjection | null;
   loop: LoopInjection | null;
   loopState: LoopStreakState;
+  repeatKeys: Map<string, string>;
 } {
   const toolBreakdown: ToolTokenBreakdown[] = [];
   const loopBreakdown = new Map<string, LoopTokenBreakdown>();
@@ -259,14 +256,12 @@ function aggregateToolOutputs(
     const toolTokenCount = callTokens + resultTokens + skillTokens;
 
     // Classify BEFORE the token check — the streak advances for every
-    // non-coordination call, even zero-token ones (same as live LoopDetector).
-    // A call is loop waste only from LOOP_MIN_STREAK on, matching the live
-    // bell's default cycleThreshold — Edit → fix → Edit stays legitimate.
+    // non-coordination call, even zero-token ones (same as live LoopDetector)
     const key = bashStem(normalizeCallKey(linkedTool.name, linkedTool.input ?? {}));
     let repeat = false;
     if (key === state.lastKey) {
       state.streak += 1;
-      repeat = state.streak >= LOOP_MIN_STREAK;
+      repeat = true;
     } else {
       state.lastKey = key;
       state.streak = 1;
@@ -314,27 +309,22 @@ function aggregateToolOutputs(
     }
   }
 
-  // Loop tokens = billed usage (in + cache_read + cache_creation + output) of
-  // rounds carrying repeat calls, each round counted once. Rounds without
-  // usage contribute nothing. A round shared by two different repeat keys
-  // bills both breakdowns but the turn total counts it once.
-  for (const msg of responses) {
-    if (msg.type !== 'assistant' || !msg.usage) continue;
-    const roundToolIds = Array.isArray(msg.content)
-      ? msg.content.filter((b) => b.type === 'tool_use').map((b) => b.id)
-      : [];
-    const roundRepeats = roundToolIds.filter((id) => keyByToolId.has(id));
-    if (roundRepeats.length === 0) continue;
-    const roundBilling =
-      (msg.usage.input_tokens ?? 0) +
-      (msg.usage.cache_read_input_tokens ?? 0) +
-      (msg.usage.cache_creation_input_tokens ?? 0) +
-      (msg.usage.output_tokens ?? 0);
-    loopTokens += roundBilling;
-    for (const id of roundRepeats) {
-      const k = keyByToolId.get(id);
-      const entry = k ? loopBreakdown.get(k) : undefined;
-      if (entry) entry.tokenCount += roundBilling;
+  // Loop tokens = billed usage of rounds carrying repeat calls, each round
+  // counted once. A round shared by two different repeat keys bills both
+  // breakdowns, but the turn total counts it once.
+  const loopRounds: LoopRoundInfo[] = [];
+  for (const round of classifyRounds(responses, keyByToolId)) {
+    if (!round.repeat) continue;
+    loopTokens += round.billed;
+    loopRounds.push({
+      uuid: round.uuid,
+      index: round.index,
+      billed: round.billed,
+      keys: round.keys,
+    });
+    for (const key of round.keys) {
+      const entry = loopBreakdown.get(key);
+      if (entry) entry.tokenCount += round.billed;
     }
   }
 
@@ -347,11 +337,12 @@ function aggregateToolOutputs(
       aiGroupId,
       estimatedTokens: loopTokens,
       breakdown: [...loopBreakdown.values()],
+      rounds: loopRounds,
     };
   }
 
   if (totalTokens === 0) {
-    return { toolOutput: null, loop, loopState: state };
+    return { toolOutput: null, loop, loopState: state, repeatKeys: keyByToolId };
   }
 
   return {
@@ -366,7 +357,69 @@ function aggregateToolOutputs(
     },
     loop,
     loopState: state,
+    repeatKeys: keyByToolId,
   };
+}
+
+// =============================================================================
+// Round Classification
+// =============================================================================
+
+/** One assistant round (response) of a turn, classified for accounting and stream markers */
+export interface ClassifiedRound {
+  uuid: string;
+  /** 1-based round number within the turn */
+  index: number;
+  quiet: boolean;
+  repeat: boolean;
+  /** Full billed usage (in + cache_read + cache_creation + output) */
+  billed: number;
+  outputTokens: number;
+  /** Repeat call keys present in this round (empty for non-repeat rounds) */
+  keys: string[];
+}
+
+/**
+ * Classify every assistant round of a turn: quiet (billed context >=
+ * WAIT_TICK_CONTEXT_TOKENS while producing <= WAIT_TICK_OUTPUT_TOKENS) and
+ * repeat (carries a call whose id maps to a repeat key). The same
+ * classification feeds the wait-loop/loop aggregates and the stream round
+ * markers — one source, no drift.
+ */
+export function classifyRounds(
+  responses: ParsedMessage[],
+  keyByToolId?: Map<string, string>
+): ClassifiedRound[] {
+  return (responses ?? []).map((msg, i) => {
+    const usage = msg.usage;
+    const input = usage?.input_tokens ?? 0;
+    const cacheRead = usage?.cache_read_input_tokens ?? 0;
+    const cacheCreation = usage?.cache_creation_input_tokens ?? 0;
+    const output = usage?.output_tokens ?? 0;
+    const roundToolIds = Array.isArray(msg.content)
+      ? msg.content.filter((b) => b.type === 'tool_use').map((b) => b.id)
+      : [];
+    const keys = keyByToolId
+      ? [
+          ...new Set(
+            roundToolIds
+              .map((id) => keyByToolId.get(id))
+              .filter((k): k is string => k !== undefined)
+          ),
+        ]
+      : [];
+    return {
+      uuid: msg.uuid ?? `round-${i + 1}`,
+      index: i + 1,
+      quiet:
+        input + cacheRead + cacheCreation >= WAIT_TICK_CONTEXT_TOKENS &&
+        output <= WAIT_TICK_OUTPUT_TOKENS,
+      repeat: keys.length > 0,
+      billed: input + cacheRead + cacheCreation + output,
+      outputTokens: output,
+      keys,
+    };
+  });
 }
 
 // =============================================================================
@@ -376,39 +429,32 @@ function aggregateToolOutputs(
 /**
  * Sum the billed input-side context of quiet rounds in this turn — rounds that
  * re-read the whole window (>= WAIT_TICK_CONTEXT_TOKENS) while producing
- * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion AND minimum
- * round gate (WAIT_LOOP_MIN_ROUNDS) as the CLI's wait_loop findings — a lone
- * quiet round is a normal short turn, not waste. Rounds without usage are
- * skipped (provider ghosts).
+ * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
+ * wait_loop findings; rounds without usage are skipped (provider ghosts).
  */
 function aggregateWaitLoopRounds(
   aiGroup: AIGroup,
   turnIndex: number,
   aiGroupId: string
 ): WaitLoopInjection | null {
-  let tokens = 0;
-  let roundCount = 0;
-  for (const msg of aiGroup.responses ?? []) {
-    if (msg.type !== 'assistant' || !msg.usage) continue;
-    const contextSize =
-      (msg.usage.input_tokens ?? 0) +
-      (msg.usage.cache_read_input_tokens ?? 0) +
-      (msg.usage.cache_creation_input_tokens ?? 0);
-    const output = msg.usage.output_tokens ?? 0;
-    if (contextSize >= WAIT_TICK_CONTEXT_TOKENS && output <= WAIT_TICK_OUTPUT_TOKENS) {
-      tokens += contextSize + output;
-      roundCount += 1;
-    }
-  }
-  if (roundCount < WAIT_LOOP_MIN_ROUNDS) return null;
+  const rounds: WaitRoundInfo[] = classifyRounds(aiGroup.responses ?? [])
+    .filter((round) => round.quiet)
+    .map((round) => ({
+      uuid: round.uuid,
+      index: round.index,
+      outputTokens: round.outputTokens,
+      billed: round.billed,
+    }));
+  if (rounds.length === 0) return null;
 
   return {
     id: generateWaitLoopId(turnIndex),
     category: 'wait-loop',
     turnIndex,
     aiGroupId,
-    estimatedTokens: tokens,
-    roundCount,
+    estimatedTokens: rounds.reduce((sum, round) => sum + round.billed, 0),
+    roundCount: rounds.length,
+    rounds,
   };
 }
 
@@ -599,7 +645,7 @@ interface ComputeContextStatsParams {
   previousInjections: ContextInjection[];
   /** Paths already seen in previous groups (threaded to avoid O(N) rebuild per group) */
   previousPaths: Set<string>;
-  /** Loop streak state threaded via return value — caller passes the updated state to the next group */
+  /** Loop streak state threaded across groups (mutated in place) */
   loopState: LoopStreakState;
   /** Project root path for resolving relative paths */
   projectRoot: string;
@@ -930,6 +976,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     toolOutput: toolOutputInjection,
     loop: loopInjection,
     loopState: updatedLoopState,
+    repeatKeys,
   } = aggregateToolOutputs(
     linkedTools,
     aiGroup.turnIndex,
@@ -1104,6 +1151,18 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     tokensByCategory.loop +
     tokensByCategory.waitLoop;
 
+  // Per-round flags for the stream markers (quiet / repeat / billed), same
+  // classification the aggregates above use
+  const roundFlags = new Map<string, RoundFlag>();
+  for (const round of classifyRounds(aiGroup.responses ?? [], repeatKeys)) {
+    roundFlags.set(round.uuid, {
+      index: round.index,
+      quiet: round.quiet,
+      repeat: round.repeat,
+      billed: round.billed,
+    });
+  }
+
   return {
     stats: {
       newInjections,
@@ -1112,6 +1171,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       tokensByCategory,
       newCounts,
       accumulatedCounts,
+      roundFlags,
     },
     previousPaths,
     loopState: updatedLoopState,

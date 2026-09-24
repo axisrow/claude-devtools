@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { processSessionContextWithPhases } from '@renderer/utils/contextTracker';
+import { processSessionContextWithPhases, classifyRounds } from '@renderer/utils/contextTracker';
 
 import type { AIGroup, UserGroup } from '@renderer/types/groups';
 import type { ChatItem } from '@renderer/types/groups';
@@ -206,6 +206,32 @@ describe('contextTracker loop category', () => {
     // streak continues into the second group and reaches 4 on t4
     expect(second!.tokensByCategory.loop).toBe(60200);
     expect(second!.accumulatedCounts.loop).toBe(1);
+  });
+});
+
+describe('classifyRounds', () => {
+  it('marks quiet, repeat and normal rounds with 4-component billing', () => {
+    const responses = [
+      assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1']), // quiet + repeat
+      assistantMsg({ input: 10000, cacheRead: 50000, output: 5000 }), // active — not quiet
+      assistantMsg({ input: 500, cacheRead: 500, output: 100 }), // normal small round
+    ];
+    const keyByToolId = new Map([['t1', 'Read|/src/a.ts']]);
+
+    const rounds = classifyRounds(responses, keyByToolId);
+
+    expect(rounds).toHaveLength(3);
+    expect(rounds[0]).toMatchObject({
+      uuid: 'round-1',
+      index: 1,
+      quiet: true,
+      repeat: true,
+      billed: 60200,
+    });
+    expect(rounds[0].keys).toEqual(['Read|/src/a.ts']);
+    expect(rounds[1].quiet).toBe(false);
+    expect(rounds[1].repeat).toBe(false);
+    expect(rounds[2]).toMatchObject({ index: 3, quiet: false, repeat: false, billed: 1100 });
   });
 });
 

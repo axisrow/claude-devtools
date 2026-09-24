@@ -22,6 +22,7 @@ const waitInjection = {
   aiGroupId: 'ai-0',
   estimatedTokens: 4_284_616,
   roundCount: 58,
+  rounds: [{ uuid: 'r1', index: 7, outputTokens: 118, billed: 4_284_616 }],
 } as WaitLoopInjection;
 
 const loopInjection = {
@@ -31,6 +32,7 @@ const loopInjection = {
   aiGroupId: 'ai-0',
   estimatedTokens: 2300,
   breakdown: [{ key: 'Edit|/Users/x/prompt_test.go', count: 3, tokenCount: 938 }],
+  rounds: [{ uuid: 'r2', index: 9, billed: 2300, keys: ['Edit|/Users/x/prompt_test.go'] }],
 } as LoopInjection;
 
 const loopInjectionWithTool: LoopInjection = {

@@ -228,6 +228,20 @@ export interface LoopInjection {
   estimatedTokens: number;
   /** Detailed breakdown of tokens by repeat series */
   breakdown: LoopTokenBreakdown[];
+  /** Rounds carrying repeat calls, one row each (billed usage) */
+  rounds: LoopRoundInfo[];
+}
+
+/** One assistant round (response) inside a turn, for round-level displays */
+export interface LoopRoundInfo {
+  /** Response message uuid (matches SemanticStep.sourceMessageId) */
+  uuid: string;
+  /** 1-based round number within the turn */
+  index: number;
+  /** Billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
+  /** Repeat call key(s) present in this round */
+  keys: string[];
 }
 
 // =============================================================================
@@ -253,6 +267,20 @@ export interface WaitLoopInjection {
   estimatedTokens: number;
   /** How many quiet rounds fired in this turn */
   roundCount: number;
+  /** The quiet rounds themselves (for round-level expansion) */
+  rounds: WaitRoundInfo[];
+}
+
+/** One quiet round: when it fired and what it billed */
+export interface WaitRoundInfo {
+  /** Response message uuid (matches SemanticStep.sourceMessageId) */
+  uuid: string;
+  /** 1-based round number within the turn */
+  index: number;
+  /** Output tokens of the round (always <= WAIT_TICK_OUTPUT_TOKENS) */
+  outputTokens: number;
+  /** Full billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
 }
 
 // =============================================================================
@@ -356,6 +384,20 @@ export interface ContextStats {
   accumulatedCounts: NewCountsByCategory;
   /** Which context phase this stats belongs to (1-based) */
   phaseNumber?: number;
+  /** Per-round classification for the group's stream (keyed by response uuid) */
+  roundFlags?: Map<string, RoundFlag>;
+}
+
+/** Stream-level flag of one assistant round inside a turn */
+export interface RoundFlag {
+  /** 1-based round number within the turn */
+  index: number;
+  /** Quiet round: billed a big context while producing almost nothing */
+  quiet: boolean;
+  /** Round carries repeat tool calls */
+  repeat: boolean;
+  /** Full billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
 }
 
 // =============================================================================

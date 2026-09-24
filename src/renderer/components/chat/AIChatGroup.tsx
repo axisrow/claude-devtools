@@ -536,6 +536,7 @@ const AIChatGroupInner = ({
             highlightColor={highlightColor}
             notificationColorMap={notificationColorMap}
             registerToolRef={registerToolRef}
+            roundFlags={contextStats?.roundFlags}
           />
         </div>
       )}
