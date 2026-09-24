@@ -350,6 +350,8 @@ export interface SessionFileMetadata {
   compactionCount?: number;
   /** Per-phase token breakdown */
   phaseBreakdown?: PhaseTokenBreakdown[];
+  /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
+  totalTokens: number;
   hasDisplayableContent: boolean;
 }
 
@@ -367,6 +369,7 @@ export async function analyzeSessionFileMetadata(
       messageCount: 0,
       isOngoing: false,
       gitBranch: null,
+      totalTokens: 0,
       hasDisplayableContent: false,
     };
   }
@@ -398,6 +401,9 @@ export async function analyzeSessionFileMetadata(
   const compactionPhases: { pre: number; post: number }[] = [];
 
   let awaitingPostCompaction = false;
+
+  // Total spend: every assistant round in this transcript (input + cache + output)
+  let totalTokens = 0;
 
   for await (const line of rl) {
     const trimmed = line.trim();
@@ -569,6 +575,16 @@ export async function analyzeSessionFileMetadata(
       }
     }
 
+    // Total spend: sum every assistant usage block (sidechain included — this
+    // is the cost of the transcript), synthetic lines carry no usage
+    if (parsed.type === 'assistant' && parsed.usage) {
+      totalTokens +=
+        (parsed.usage.input_tokens ?? 0) +
+        (parsed.usage.cache_read_input_tokens ?? 0) +
+        (parsed.usage.cache_creation_input_tokens ?? 0) +
+        (parsed.usage.output_tokens ?? 0);
+    }
+
     // Context consumption: detect compaction events
     if (parsed.isCompactSummary) {
       compactionPhases.push({ pre: lastMainAssistantInputTokens, post: 0 });
@@ -643,6 +659,7 @@ export async function analyzeSessionFileMetadata(
     contextConsumption,
     compactionCount: compactionPhases.length > 0 ? compactionPhases.length : undefined,
     phaseBreakdown,
+    totalTokens,
     hasDisplayableContent,
   };
 }

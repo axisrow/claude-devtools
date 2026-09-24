@@ -182,5 +182,85 @@ describe('jsonl', () => {
         }
       }
     });
+
+    it('sums total spend across all assistant usage in one pass', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-spend-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const lines = [
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: { role: 'user', content: 'go' },
+            isMeta: false,
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'a1',
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: {
+                input_tokens: 100,
+                cache_read_input_tokens: 5000,
+                cache_creation_input_tokens: 200,
+                output_tokens: 50,
+              },
+            },
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'a2',
+            timestamp: '2026-01-01T00:00:02.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [{ type: 'text', text: 'done' }],
+              usage: { input_tokens: 10, output_tokens: 5 },
+            },
+          }),
+          // sidechain counts too — this file's transcript cost
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'a3',
+            isSidechain: true,
+            timestamp: '2026-01-01T00:00:03.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [],
+              usage: { input_tokens: 7, output_tokens: 3 },
+            },
+          }),
+          // synthetic / no-usage lines contribute nothing
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'a4',
+            timestamp: '2026-01-01T00:00:04.000Z',
+            message: { role: 'assistant', model: '<synthetic>', content: [] },
+          }),
+        ];
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        // 100+5000+200+50 + 10+5 + 7+3 = 5375
+        expect(result.totalTokens).toBe(5375);
+      } finally {
+        try {
+          fs.rmSync(tempDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 200,
+          });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
   });
 });

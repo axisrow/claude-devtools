@@ -284,6 +284,14 @@ export const SessionItem = React.memo(function SessionItem({
             <MessageSquare className="size-2.5" />
             {session.messageCount}
           </span>
+          {session.totalTokens != null && session.totalTokens > 0 && (
+            <>
+              <span style={{ opacity: 0.5 }}>·</span>
+              <span className="tabular-nums" title="Total spend (input + cache + output)">
+                {formatTokensCompact(session.totalTokens)}
+              </span>
+            </>
+          )}
           <span style={{ opacity: 0.5 }}>·</span>
           <span className="tabular-nums">
             {formatShortTime(
@@ -297,6 +305,18 @@ export const SessionItem = React.memo(function SessionItem({
                 contextConsumption={session.contextConsumption}
                 phaseBreakdown={session.phaseBreakdown}
               />
+            </>
+          )}
+          {session.worktreeName && (
+            <>
+              <span style={{ opacity: 0.5 }}>·</span>
+              <span
+                className="max-w-[110px] truncate"
+                title={`Worktree: ${session.worktreeName}`}
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {session.worktreeName}
+              </span>
             </>
           )}
         </div>

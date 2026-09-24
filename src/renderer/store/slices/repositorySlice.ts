@@ -24,10 +24,14 @@ export interface RepositorySlice {
   selectedWorktreeId: string | null;
   repositoryGroupsLoading: boolean;
   repositoryGroupsError: string | null;
+  /** Repo-id -> total spend summed over all worktrees' sessions (best-effort) */
+  repositorySpend: Record<string, number>;
   viewMode: 'flat' | 'grouped';
 
   // Actions
   fetchRepositoryGroups: () => Promise<void>;
+  /** Background per-repo spend aggregation (memoized main-side) */
+  fetchRepositorySpend: () => void;
   selectRepository: (repositoryId: string) => void;
   selectWorktree: (worktreeId: string) => void;
   setViewMode: (mode: 'flat' | 'grouped') => void;
@@ -47,6 +51,7 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
   selectedWorktreeId: null,
   repositoryGroupsLoading: false,
   repositoryGroupsError: null,
+  repositorySpend: {},
   viewMode: 'grouped', // Default to grouped view
 
   // Fetch all repository groups (projects grouped by git repo)
@@ -56,12 +61,34 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
       const groups = await api.getRepositoryGroups();
       // Already sorted by most recent session in the scanner
       set({ repositoryGroups: groups, repositoryGroupsLoading: false });
+      // best-effort background aggregation — card totals appear as they land
+      get().fetchRepositorySpend();
     } catch (error) {
       set({
         repositoryGroupsError:
           error instanceof Error ? error.message : 'Failed to fetch repository groups',
         repositoryGroupsLoading: false,
       });
+    }
+  },
+
+  // Repo totals: sum session spend over all worktrees. getSessions is memoized
+  // main-side (mtime-keyed), so repeated opens are cheap.
+  fetchRepositorySpend: () => {
+    for (const repo of get().repositoryGroups) {
+      void (async () => {
+        try {
+          const perWorktree = await Promise.all(
+            repo.worktrees.map((worktree) => api.getSessions(worktree.id))
+          );
+          const total = perWorktree.flat().reduce((sum, s) => sum + (s.totalTokens ?? 0), 0);
+          set((state) => ({
+            repositorySpend: { ...state.repositorySpend, [repo.id]: total },
+          }));
+        } catch {
+          // leave this repo's total absent — the card just omits it
+        }
+      })();
     }
   },
 
@@ -90,8 +117,8 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
         sidebarCollapsed: false, // Ensure session list is visible when a project is selected
         ...getSessionResetState(),
       });
-      // Fetch sessions for this worktree
-      void get().fetchSessionsInitial(worktreeToSelect.id);
+      // Show ALL worktrees' sessions — the card advertised them
+      void get().fetchSessionsForRepository(repo);
     } else {
       // No worktrees available (shouldn't happen normally)
       set({

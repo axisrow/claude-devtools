@@ -7,6 +7,7 @@ import { createLogger } from '@shared/utils/logger';
 
 import type { AppState } from '../types';
 import type { Session, SessionSortMode } from '@renderer/types/data';
+import type { RepositoryGroup } from '@renderer/types/data';
 import type { StateCreator } from 'zustand';
 
 const logger = createLogger('Store:session');
@@ -46,6 +47,8 @@ export interface SessionSlice {
   // Actions
   fetchSessions: (projectId: string) => Promise<void>;
   fetchSessionsInitial: (projectId: string) => Promise<void>;
+  /** Whole-repository listing: sessions of every worktree, merged and sorted */
+  fetchSessionsForRepository: (repo: RepositoryGroup) => Promise<void>;
   fetchSessionsMore: () => Promise<void>;
   resetSessionsPagination: () => void;
   selectSession: (id: string) => void;
@@ -160,6 +163,48 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       }
 
       // Load pinned and hidden sessions after fetching session list
+      void get().loadPinnedSessions();
+      void get().loadHiddenSessions();
+    } catch (error) {
+      set({
+        sessionsError: error instanceof Error ? error.message : 'Failed to fetch sessions',
+        sessionsLoading: false,
+      });
+    }
+  },
+
+  // Whole-repository listing: sessions of every worktree, merged and sorted.
+  // Non-main worktree rows carry a worktreeName tag so the sidebar can show origin.
+  fetchSessionsForRepository: async (repo) => {
+    set({
+      sessionsLoading: true,
+      sessionsError: null,
+      sessions: [],
+      sessionsCursor: null,
+      sessionsHasMore: false,
+      sessionsTotalCount: 0,
+    });
+    try {
+      const perWorktree = await Promise.all(
+        repo.worktrees.map(async (worktree) => {
+          const sessions = await api.getSessions(worktree.id);
+          // tag only non-default worktrees — untagged rows read as "main"
+          const tag = worktree.isMainWorktree ? undefined : worktree.name;
+          return sessions.map((s) => (tag ? { ...s, worktreeName: tag } : s));
+        })
+      );
+      const merged = perWorktree
+        .flat()
+        .sort(
+          (a, b) =>
+            Math.max(b.updatedAt ?? b.createdAt, b.createdAt) -
+            Math.max(a.updatedAt ?? a.createdAt, a.createdAt)
+        );
+      set({
+        sessions: merged,
+        sessionsLoading: false,
+        sessionsTotalCount: merged.length,
+      });
       void get().loadPinnedSessions();
       void get().loadHiddenSessions();
     } catch (error) {

@@ -111,6 +111,10 @@ export interface Session {
   compactionCount?: number;
   /** Per-phase token breakdown for tooltip display */
   phaseBreakdown?: PhaseTokenBreakdown[];
+  /** Total spend: sum of all assistant usage in the transcript (in+cache+out) */
+  totalTokens?: number;
+  /** Worktree name tag set by the renderer when listing a whole repository */
+  worktreeName?: string;
 }
 
 /**
