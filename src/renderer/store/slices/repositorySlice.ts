@@ -26,12 +26,14 @@ export interface RepositorySlice {
   repositoryGroupsError: string | null;
   /** Repo-id -> total spend summed over all worktrees' sessions (best-effort) */
   repositorySpend: Record<string, number>;
+  /** Repo-id -> total turns summed over all worktrees' sessions (best-effort) */
+  repositoryTurns: Record<string, number>;
   viewMode: 'flat' | 'grouped';
 
   // Actions
   fetchRepositoryGroups: () => Promise<void>;
-  /** Background per-repo spend aggregation (memoized main-side) */
-  fetchRepositorySpend: () => void;
+  /** Background per-repo spend + turns aggregation (memoized main-side) */
+  fetchRepositoryStats: () => void;
   selectRepository: (repositoryId: string) => void;
   selectWorktree: (worktreeId: string) => void;
   setViewMode: (mode: 'flat' | 'grouped') => void;
@@ -52,6 +54,7 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
   repositoryGroupsLoading: false,
   repositoryGroupsError: null,
   repositorySpend: {},
+  repositoryTurns: {},
   viewMode: 'grouped', // Default to grouped view
 
   // Fetch all repository groups (projects grouped by git repo)
@@ -62,7 +65,7 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
       // Already sorted by most recent session in the scanner
       set({ repositoryGroups: groups, repositoryGroupsLoading: false });
       // best-effort background aggregation — card totals appear as they land
-      get().fetchRepositorySpend();
+      get().fetchRepositoryStats();
     } catch (error) {
       set({
         repositoryGroupsError:
@@ -72,18 +75,21 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
     }
   },
 
-  // Repo totals: sum session spend over all worktrees. getSessions is memoized
-  // main-side (mtime-keyed), so repeated opens are cheap.
-  fetchRepositorySpend: () => {
+  // Repo totals: sum session spend and turns over all worktrees. getSessions is
+  // memoized main-side (mtime-keyed), so repeated opens are cheap.
+  fetchRepositoryStats: () => {
     for (const repo of get().repositoryGroups) {
       void (async () => {
         try {
           const perWorktree = await Promise.all(
             repo.worktrees.map((worktree) => api.getSessions(worktree.id))
           );
-          const total = perWorktree.flat().reduce((sum, s) => sum + (s.totalTokens ?? 0), 0);
+          const sessions = perWorktree.flat();
+          const total = sessions.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0);
+          const turns = sessions.reduce((sum, s) => sum + (s.turnCount ?? 0), 0);
           set((state) => ({
             repositorySpend: { ...state.repositorySpend, [repo.id]: total },
+            repositoryTurns: { ...state.repositoryTurns, [repo.id]: turns },
           }));
         } catch {
           // leave this repo's total absent — the card just omits it

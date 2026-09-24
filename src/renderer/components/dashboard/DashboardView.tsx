@@ -103,6 +103,8 @@ interface RepositoryCardProps {
   repo: RepositoryGroup;
   /** Total spend summed over all worktrees' sessions (undefined until computed) */
   spend?: number;
+  /** Total turns summed over all worktrees' sessions (undefined until computed) */
+  turns?: number;
   onClick: () => void;
   isHighlighted?: boolean;
 }
@@ -147,6 +149,7 @@ function isWindowsUserPath(input: string): boolean {
 const RepositoryCard = ({
   repo,
   spend,
+  turns,
   onClick,
   isHighlighted,
 }: Readonly<RepositoryCardProps>): React.JSX.Element => {
@@ -192,6 +195,17 @@ const RepositoryCard = ({
           </span>
         )}
         <span className="text-[10px] text-text-secondary">{repo.totalSessions} sessions</span>
+        {turns !== undefined && turns > 0 && (
+          <>
+            <span className="text-text-muted">·</span>
+            <span
+              className="text-[10px] tabular-nums text-text-secondary"
+              title="Total turns across all worktrees' sessions (completed prompt→response exchanges)"
+            >
+              {formatTokensCompact(turns)} turns
+            </span>
+          </>
+        )}
         {spend !== undefined && spend > 0 && (
           <>
             <span className="text-text-muted">·</span>
@@ -284,6 +298,7 @@ const ProjectsGrid = ({
     repositoryGroups,
     repositoryGroupsLoading,
     repositorySpend,
+    repositoryTurns,
     fetchRepositoryGroups,
     selectRepository,
   } = useStore(
@@ -291,6 +306,7 @@ const ProjectsGrid = ({
       repositoryGroups: s.repositoryGroups,
       repositoryGroupsLoading: s.repositoryGroupsLoading,
       repositorySpend: s.repositorySpend,
+      repositoryTurns: s.repositoryTurns,
       fetchRepositoryGroups: s.fetchRepositoryGroups,
       selectRepository: s.selectRepository,
     }))
@@ -406,6 +422,7 @@ const ProjectsGrid = ({
           key={repo.id}
           repo={repo}
           spend={repositorySpend[repo.id]}
+          turns={repositoryTurns[repo.id]}
           onClick={() => selectRepository(repo.id)}
           isHighlighted={!!searchQuery.trim()}
         />

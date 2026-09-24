@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '@renderer/store';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { EyeOff, MessageSquare, Pin, Repeat } from 'lucide-react';
+import { EyeOff, Pin } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { OngoingIndicator } from '../common/OngoingIndicator';
@@ -275,21 +275,17 @@ export const SessionItem = React.memo(function SessionItem({
           </span>
         </div>
 
-        {/* Second line: message count + time + context consumption */}
+        {/* Second line: messages · turns · spend · time · context · worktree — units as text, icon-only metrics proved unreadable */}
         <div
           className="mt-0.5 flex items-center gap-2 text-[10px] leading-tight"
           style={{ color: 'var(--color-text-muted)' }}
         >
-          <span className="flex items-center gap-0.5">
-            <MessageSquare className="size-2.5" />
-            {session.messageCount}
-          </span>
+          <span className="tabular-nums">{session.messageCount} msg</span>
           {session.turnCount != null && session.turnCount > 0 && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
-              <span className="flex items-center gap-0.5" title="Turns (AI responses)">
-                <Repeat className="size-2.5" />
-                {session.turnCount}
+              <span className="tabular-nums" title="Turns — completed prompt→response exchanges">
+                {formatTokensCompact(session.turnCount)} turns
               </span>
             </>
           )}
