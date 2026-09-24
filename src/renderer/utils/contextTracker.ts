@@ -9,7 +9,7 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS } from '@shared/constants/loopPolicy';
+import { isQuietTick } from '@shared/constants/loopPolicy';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -380,8 +380,10 @@ export interface ClassifiedRound {
 }
 
 /**
- * Classify every assistant round of a turn: quiet (billed context >=
- * WAIT_TICK_CONTEXT_TOKENS while producing <= WAIT_TICK_OUTPUT_TOKENS) and
+ * Classify every assistant round of a turn: quiet (no tool call while the
+ * billed context >= WAIT_TICK_CONTEXT_TOKENS and output <=
+ * WAIT_TICK_OUTPUT_TOKENS — an idle tick, not a working round: with a large
+ * baseline context every ordinary tool round would otherwise qualify) and
  * repeat (carries a call whose id maps to a repeat key). The same
  * classification feeds the wait-loop/loop aggregates and the stream round
  * markers — one source, no drift.
@@ -411,9 +413,7 @@ export function classifyRounds(
     return {
       uuid: msg.uuid ?? `round-${i + 1}`,
       index: i + 1,
-      quiet:
-        input + cacheRead + cacheCreation >= WAIT_TICK_CONTEXT_TOKENS &&
-        output <= WAIT_TICK_OUTPUT_TOKENS,
+      quiet: isQuietTick(input + cacheRead + cacheCreation, output, roundToolIds.length),
       repeat: keys.length > 0,
       billed: input + cacheRead + cacheCreation + output,
       outputTokens: output,

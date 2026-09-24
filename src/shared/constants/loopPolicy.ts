@@ -1,10 +1,6 @@
 /**
- * Loop policy shared by the CLI analyzer (analyzeSession findings), the live
- * LoopDetector's defaults and the renderer's Visible Context burn categories
- * (contextTracker).
- */
-
-/**
+ * Wait-loop policy shared by the CLI analyzer (analyzeSession findings) and the
+ * renderer's Visible Context wait-loop category (contextTracker).
  * A "quiet round" re-reads the whole window (>= CONTEXT tokens billed on the
  * input side) while producing almost nothing (<= OUTPUT tokens out).
  */
@@ -15,12 +11,21 @@ export const WAIT_TICK_CONTEXT_TOKENS = 50_000;
 /** Maximum output tokens for a round to qualify as quiet */
 export const WAIT_TICK_OUTPUT_TOKENS = 300;
 
-/** Quiet rounds required before a turn counts as wait-loop — same gate as the CLI's `waitLoopTicks` */
-export const WAIT_LOOP_MIN_ROUNDS = 5;
-
 /**
- * Streak length from which back-to-back identical calls count as loop waste —
- * aligned with the live bell's default `cycleThreshold` (ConfigManager), so a
- * normal Edit → fix → Edit or double Read never lands in the red category.
+ * The one quiet-tick criterion, shared verbatim by both consumers so it
+ * cannot drift: a quiet round produces almost nothing out while re-reading
+ * a large context AND makes no tool call at all — with a large baseline
+ * context, ordinary working rounds (short tool calls) would otherwise
+ * satisfy the token thresholds too.
  */
-export const LOOP_MIN_STREAK = 4;
+export function isQuietTick(
+  billedContextTokens: number,
+  outputTokens: number,
+  toolCallCount: number
+): boolean {
+  return (
+    toolCallCount === 0 &&
+    billedContextTokens >= WAIT_TICK_CONTEXT_TOKENS &&
+    outputTokens <= WAIT_TICK_OUTPUT_TOKENS
+  );
+}

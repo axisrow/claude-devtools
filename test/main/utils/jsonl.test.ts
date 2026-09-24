@@ -3,7 +3,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
-import { analyzeSessionFileMetadata, calculateMetrics } from '../../../src/main/utils/jsonl';
+import {
+  analyzeSessionFileMetadata,
+  calculateMetrics,
+  mergeAssistantFragments,
+  parseJsonlFile,
+} from '../../../src/main/utils/jsonl';
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
 import { isAIChunk } from '../../../src/main/types';
 import type { ParsedMessage } from '../../../src/main/types';
@@ -135,6 +140,132 @@ describe('jsonl', () => {
       const result = calculateMetrics(messages);
       expect(result.inputTokens).toBe(0);
       expect(result.outputTokens).toBe(50);
+    });
+  });
+
+  describe('streaming fragments (one request split across JSONL lines)', () => {
+    const usageA = { input_tokens: 1000, output_tokens: 100 };
+
+    it('mergeAssistantFragments joins lines sharing a message.id into one request', () => {
+      const messages = [
+        createMessage({
+          uuid: 'a1',
+          messageId: 'msg_1',
+          usage: usageA,
+          content: [{ type: 'text', text: 'hi' }],
+        }),
+        createMessage({
+          uuid: 'a2',
+          messageId: 'msg_1',
+          usage: usageA,
+          content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+          toolCalls: [{ id: 't1', name: 'Read', input: {}, isTask: false }],
+        }),
+      ];
+
+      const merged = mergeAssistantFragments(messages);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].uuid).toBe('a1'); // first fragment anchors the round
+      expect(merged[0].usage).toEqual(usageA);
+      expect(merged[0].content).toHaveLength(2); // text + tool_use
+      expect(merged[0].toolCalls).toHaveLength(1);
+    });
+
+    it('keeps requestId-bearing snapshot lines untouched (dedupe path handles them)', () => {
+      const messages = [
+        createMessage({
+          uuid: 'a1',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          content: [{ type: 'text', text: 'partial' }],
+        }),
+        createMessage({
+          uuid: 'a2',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          content: [{ type: 'text', text: 'full' }],
+        }),
+      ];
+
+      expect(mergeAssistantFragments(messages)).toHaveLength(2);
+    });
+
+    it('calculateMetrics bills a fragmented request once', () => {
+      const messages = [
+        createMessage({
+          uuid: 'a1',
+          messageId: 'msg_1',
+          usage: usageA,
+          content: [{ type: 'text', text: 'x' }],
+        }),
+        createMessage({
+          uuid: 'a2',
+          messageId: 'msg_1',
+          usage: usageA,
+          content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+        }),
+      ];
+
+      // one request = one usage count (1100), not two (2200)
+      expect(calculateMetrics(messages).totalTokens).toBe(1100);
+    });
+
+    it('parseJsonlFile merges fragment lines before any consumer sees them', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devtools-frag-'));
+      const file = path.join(dir, 'session.jsonl');
+      const entry = (uuid: string, parentUuid: string | null, content: unknown[]) => ({
+        type: 'assistant' as const,
+        uuid,
+        parentUuid,
+        timestamp: '2024-01-01T10:00:00Z',
+        isSidechain: false,
+        isMeta: false,
+        message: {
+          role: 'assistant' as const,
+          id: 'msg_1',
+          model: 'glm-4.6',
+          content,
+          usage: { input_tokens: 1000, output_tokens: 100 },
+        },
+      });
+      fs.writeFileSync(
+        file,
+        [
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u1',
+            parentUuid: null,
+            timestamp: '2024-01-01T10:00:00Z',
+            isSidechain: false,
+            isMeta: false,
+            message: { role: 'user', content: 'go' },
+          }),
+          JSON.stringify(entry('a1', 'u1', [{ type: 'text', text: 'hi' }])),
+          JSON.stringify(
+            entry('a2', 'a1', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }])
+          ),
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u2',
+            parentUuid: 'a2',
+            timestamp: '2024-01-01T10:00:03Z',
+            isSidechain: false,
+            isMeta: false,
+            message: { role: 'user', content: 'ok' },
+          }),
+        ].join('\n')
+      );
+
+      const messages = await parseJsonlFile(file);
+      // two fragment lines with the same message.id arrive as ONE message
+      expect(messages.filter((m) => m.type === 'assistant')).toHaveLength(1);
+
+      const chunks = new ChunkBuilder().buildChunks(messages);
+      const ai = chunks.filter(isAIChunk);
+      expect(ai).toHaveLength(1);
+      expect(ai[0].responses).toHaveLength(1);
+      expect(ai[0].responses[0].content).toHaveLength(2);
+      fs.rmSync(dir, { recursive: true, force: true });
     });
   });
 

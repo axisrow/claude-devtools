@@ -22,11 +22,7 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import {
-  WAIT_LOOP_MIN_ROUNDS,
-  WAIT_TICK_CONTEXT_TOKENS,
-  WAIT_TICK_OUTPUT_TOKENS,
-} from '@shared/constants/loopPolicy';
+import { isQuietTick } from '@shared/constants/loopPolicy';
 import { asText, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -86,8 +82,7 @@ export const WASTE_THRESHOLDS = {
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
   loopStreakMin: 3,
-  // shared with the renderer's wait-loop category so the round gate cannot drift
-  waitLoopTicks: WAIT_LOOP_MIN_ROUNDS,
+  waitLoopTicks: 5,
 } as const;
 
 // gaps between a turn's rounds longer than this are idle, not work
@@ -96,7 +91,7 @@ export const TURN_IDLE_GAP_CAP_MINUTES = 10;
 
 // wait-loop tick thresholds live in @shared/constants/loopPolicy — the
 // renderer's Visible Context wait-loop category uses the same numbers
-export { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS };
+export { isQuietTick };
 
 // Tool results that look like errors but are normal flow (user said no / aborted)
 const REJECTION_PATTERNS = [
@@ -674,11 +669,11 @@ export function computeFindings(
         summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
       });
     }
+    // A tick is an IDLE round (no tool call) — see isQuietTick in loopPolicy:
+    // with a large baseline context, ordinary working rounds (short tool
+    // calls) would otherwise satisfy the context/output thresholds too
     const ticks = rs.filter(
-      (r) =>
-        !r.isRetryCopy &&
-        r.contextSize >= WAIT_TICK_CONTEXT_TOKENS &&
-        r.outputTokens <= WAIT_TICK_OUTPUT_TOKENS
+      (r) => !r.isRetryCopy && isQuietTick(r.contextSize, r.outputTokens, r.tools.length)
     );
     if (ticks.length >= th.waitLoopTicks) {
       const wasted = ticks.reduce((s, r) => s + r.contextSize, 0);

@@ -105,6 +105,8 @@ export interface ParsedMessage {
   isCompactSummary?: boolean;
   /** API request ID for deduplicating streaming entries */
   requestId?: string;
+  /** API message ID (one request = one id, even when the proxy streams it as several lines) */
+  messageId?: string;
 }
 
 // =============================================================================

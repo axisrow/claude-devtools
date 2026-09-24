@@ -76,11 +76,13 @@ export class ChunkBuilder {
    * All chunk types are INDEPENDENT - no pairing between User and AI.
    */
   buildChunks(messages: ParsedMessage[], subagents: Process[] = []): EnhancedChunk[] {
+    // Note: streaming fragment lines are merged at parse time
+    // (parseJsonlFile -> mergeAssistantFragments) — one request arrives as
+    // one message everywhere downstream
     const chunks: EnhancedChunk[] = [];
 
     // Filter to main thread messages (non-sidechain)
     const mainMessages = messages.filter((m) => !m.isSidechain);
-    logger.debug(`Total messages: ${messages.length}, Main thread: ${mainMessages.length}`);
 
     // Classify each message into categories using MessageClassifier
     const classified = classifyMessages(mainMessages);
