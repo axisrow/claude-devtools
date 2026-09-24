@@ -196,7 +196,7 @@ const RepositoryCard = ({
         )}
         <span className="text-[10px] text-text-secondary">{repo.totalSessions} sessions</span>
         {turns !== undefined && turns > 0 && (
-          <>
+          <span className="inline-flex items-center gap-2">
             <span className="text-text-muted">·</span>
             <span
               className="text-[10px] tabular-nums text-text-secondary"
@@ -204,10 +204,10 @@ const RepositoryCard = ({
             >
               {formatTokensCompact(turns)} turns
             </span>
-          </>
+          </span>
         )}
         {spend !== undefined && spend > 0 && (
-          <>
+          <span className="inline-flex items-center gap-2">
             <span className="text-text-muted">·</span>
             <span
               className="text-[10px] tabular-nums text-text-secondary"
@@ -215,10 +215,12 @@ const RepositoryCard = ({
             >
               {formatTokensCompact(spend)}
             </span>
-          </>
+          </span>
         )}
-        <span className="text-text-muted">·</span>
-        <span className="text-[10px] text-text-muted">{lastActivity}</span>
+        <span className="inline-flex items-center gap-2">
+          <span className="text-text-muted">·</span>
+          <span className="text-[10px] text-text-muted">{lastActivity}</span>
+        </span>
       </div>
     </button>
   );

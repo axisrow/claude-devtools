@@ -277,7 +277,7 @@ export const SessionItem = React.memo(function SessionItem({
 
         {/* Second line: messages · turns · spend · time · context · worktree — units as text, icon-only metrics proved unreadable */}
         <div
-          className="mt-0.5 flex items-center gap-2 text-[10px] leading-tight"
+          className="mt-0.5 flex items-center gap-2 overflow-hidden whitespace-nowrap text-[10px] leading-tight"
           style={{ color: 'var(--color-text-muted)' }}
         >
           <span className="tabular-nums">{session.messageCount} msg</span>
@@ -316,7 +316,7 @@ export const SessionItem = React.memo(function SessionItem({
             <>
               <span style={{ opacity: 0.5 }}>·</span>
               <span
-                className="max-w-[110px] truncate"
+                className="min-w-0 truncate"
                 title={`Worktree: ${session.worktreeName}`}
                 style={{ color: 'var(--color-text-muted)' }}
               >
