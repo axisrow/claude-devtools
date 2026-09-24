@@ -85,6 +85,8 @@ interface AIChatGroupProps {
   highlightColor?: TriggerColor;
   /** Red alarm on the header row (burn pills): aggregate is the alarm target */
   isHeaderHighlighted?: boolean;
+  /** Red tint on the whole turn's stream: this group is the red navigation target */
+  isBodyHighlighted?: boolean;
   /** Register ref for individual tool items (for precise scroll targeting) */
   registerToolRef?: (toolId: string, el: HTMLElement | null) => void;
 }
@@ -127,6 +129,7 @@ const AIChatGroupInner = ({
   highlightToolUseId,
   highlightColor,
   isHeaderHighlighted,
+  isBodyHighlighted,
   registerToolRef,
 }: Readonly<AIChatGroupProps>): React.JSX.Element => {
   // Per-tab UI state for expansion (completely isolated per tab)
@@ -391,7 +394,10 @@ const AIChatGroupInner = ({
   };
 
   return (
-    <div className="space-y-3 border-l-2 pl-3" style={{ borderColor: 'var(--chat-ai-border)' }}>
+    <div
+      className={`space-y-3 border-l-2 pl-3 ${isBodyHighlighted ? 'bg-red-500/5' : ''}`}
+      style={{ borderColor: isBodyHighlighted ? '#ef4444' : 'var(--chat-ai-border)' }}
+    >
       {/* Header Row */}
       {hasToggleContent && (
         <div className="flex items-center gap-2">
