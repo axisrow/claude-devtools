@@ -34,7 +34,7 @@ app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${heapMB}`);
 
 // Single instance: a dockless (UIElement) app gives no way to discover zombie
 // duplicates — a second launch must summon the existing window instead.
-const appReady = false;
+let appReady = false;
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -628,7 +628,6 @@ void app.whenReady().then(async () => {
 
     // Then create window
     createWindow();
-    appReady = true;
 
     // Listen for notification click events
     notificationManager.on('notification-clicked', (_error) => {
