@@ -411,6 +411,8 @@ export function getTaskCalls(messages: ParsedMessage[]): ToolCall[] {
 
 export interface SessionFileMetadata {
   firstUserMessage: { text: string; timestamp: string } | null;
+  /** /name session name — last agent-name wins, ai-title as fallback; null if unnamed */
+  name?: string | null;
   messageCount: number;
   isOngoing: boolean;
   gitBranch: string | null;
@@ -455,6 +457,9 @@ export async function analyzeSessionFileMetadata(
 
   let firstUserMessage: { text: string; timestamp: string } | null = null;
   let firstCommandMessage: { text: string; timestamp: string } | null = null;
+  // /name session name: last agent-name wins, ai-title as fallback
+  let lastName: string | null = null;
+  const lastAiTitle: string | null = null;
   let messageCount = 0;
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
@@ -497,6 +502,13 @@ export async function analyzeSessionFileMetadata(
       entry = JSON.parse(trimmed) as ChatHistoryEntry;
     } catch {
       continue;
+    }
+
+    // /name session name — non-conversational lines the entry parser drops,
+    // so capture from the raw entry before that parser sees it
+    const entryName = sessionNameFromEntry(entry);
+    if (entryName) {
+      lastName = entryName;
     }
 
     const parsed = parseChatHistoryEntry(entry);
@@ -755,6 +767,7 @@ export async function analyzeSessionFileMetadata(
 
   return {
     firstUserMessage: firstUserMessage ?? firstCommandMessage,
+    name: lastName ?? lastAiTitle,
     messageCount,
     isOngoing: lastEndingIndex === -1 ? hasAnyOngoingActivity : hasActivityAfterLastEnding,
     gitBranch,
@@ -765,4 +778,38 @@ export async function analyzeSessionFileMetadata(
     turnCount,
     hasDisplayableContent,
   };
+}
+
+/** /name session name from a raw entry — agent-name wins over ai-title. */
+function sessionNameFromEntry(entry: ChatHistoryEntry): string | null {
+  if (entry.type === 'agent-name') return entry.agentName;
+  if (entry.type === 'ai-title') return entry.aiTitle;
+  return null;
+}
+
+/**
+ * Read a session's /name (last agent-name, ai-title as fallback) in one
+ * streaming pass. The LAST name line wins, so the file is scanned to EOF —
+ * callers should cache the result (search caches it via SearchTextCache).
+ */
+export async function readSessionName(
+  filePath: string,
+  fsProvider: FileSystemProvider = defaultProvider
+): Promise<string | null> {
+  let name: string | null = null;
+  const fileStream = fsProvider.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry: ChatHistoryEntry;
+    try {
+      entry = JSON.parse(trimmed) as ChatHistoryEntry;
+    } catch {
+      continue;
+    }
+    const entryName = sessionNameFromEntry(entry);
+    if (entryName) name = entryName;
+  }
+  return name;
 }

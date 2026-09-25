@@ -93,6 +93,8 @@ export interface Session {
   updatedAt?: number;
   /** First user message text (for preview) */
   firstMessage?: string;
+  /** Session name from /name (last agent-name line; ai-title fallback) */
+  name?: string;
   /** Timestamp of first user message (RFC3339) */
   messageTimestamp?: string;
   /** Whether this session has subagents */

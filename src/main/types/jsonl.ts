@@ -18,7 +18,9 @@ type EntryType =
   | 'system'
   | 'summary'
   | 'file-history-snapshot'
-  | 'queue-operation';
+  | 'queue-operation'
+  | 'agent-name'
+  | 'ai-title';
 
 type ContentType = 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image';
 
@@ -209,13 +211,29 @@ export interface QueueOperationEntry extends BaseEntry {
   operation: string;
 }
 
+/** Session name set via /name — rewritten (last wins) as the session evolves. */
+export interface AgentNameEntry extends BaseEntry {
+  type: 'agent-name';
+  agentName: string;
+  sessionId: string;
+}
+
+/** Auto-generated session title — fallback display name when /name is unset. */
+export interface AiTitleEntry extends BaseEntry {
+  type: 'ai-title';
+  aiTitle: string;
+  sessionId: string;
+}
+
 export type ChatHistoryEntry =
   | UserEntry
   | AssistantEntry
   | SystemEntry
   | SummaryEntry
   | FileHistorySnapshotEntry
-  | QueueOperationEntry;
+  | QueueOperationEntry
+  | AgentNameEntry
+  | AiTitleEntry;
 
 /**
  * Conversational entries - entries that represent chat messages.

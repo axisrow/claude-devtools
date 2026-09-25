@@ -12,7 +12,7 @@
  */
 
 import { LocalFileSystemProvider } from '@main/services/infrastructure/LocalFileSystemProvider';
-import { parseJsonlFile } from '@main/utils/jsonl';
+import { parseJsonlFile, readSessionName } from '@main/utils/jsonl';
 import { extractBaseDir, extractSessionId } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import * as path from 'path';
@@ -219,6 +219,20 @@ export class SessionSearcher {
       // Cache miss — parse and extract
       const messages = await parseJsonlFile(filePath, this.fsProvider);
       const extracted = extractSearchableEntries(messages);
+      // /name: the real session name becomes every result's title and a
+      // searchable entry itself, so a name query finds the session
+      const name = await readSessionName(filePath, this.fsProvider);
+      if (name) {
+        extracted.entries.unshift({
+          text: name,
+          groupId: 'session-name',
+          messageType: 'user',
+          itemType: 'user',
+          timestamp: mtimeMs,
+          messageUuid: 'session-name',
+        });
+        extracted.sessionTitle = name;
+      }
       this.searchCache.set(filePath, mtimeMs, extracted.entries, extracted.sessionTitle);
       cached = extracted;
     }

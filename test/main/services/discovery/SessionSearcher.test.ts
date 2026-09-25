@@ -117,4 +117,39 @@ describe('SessionSearcher', () => {
     expect(userResults).toHaveLength(1);
     expect(aiResults).toHaveLength(1);
   });
+
+  it('finds a session by its /name and shows the name as the result title', async () => {
+    const projectsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-searcher-name-'));
+    tempDirs.push(projectsDir);
+
+    const projectId = 'project-3';
+    const sessionId = 'session-3';
+    const projectPath = path.join(projectsDir, projectId);
+    fs.mkdirSync(projectPath, { recursive: true });
+
+    const sessionPath = path.join(projectPath, `${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        uuid: 'user-3',
+        type: 'user',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        message: { role: 'user', content: 'completely unrelated text' },
+        isMeta: false,
+      }),
+      JSON.stringify({
+        type: 'agent-name',
+        agentName: 'profile-tiles-env-leak',
+        sessionId,
+      }),
+    ];
+    fs.writeFileSync(sessionPath, `${lines.join('\n')}\n`, 'utf8');
+
+    const searcher = new SessionSearcher(projectsDir);
+    const result = await searcher.searchSessions(projectId, 'profile-tiles-env-leak', 50);
+
+    expect(result.totalMatches).toBe(1);
+    expect(result.results[0].sessionId).toBe(sessionId);
+    expect(result.results[0].sessionTitle).toBe('profile-tiles-env-leak');
+    expect(result.results[0].context).toContain('profile-tiles-env-leak');
+  });
 });
