@@ -29,3 +29,29 @@ export function isQuietTick(
     outputTokens <= WAIT_TICK_OUTPUT_TOKENS
   );
 }
+
+/** Maximum round-to-round context growth for a round to qualify as stalled */
+export const STALL_CONTEXT_DELTA_TOKENS = 300;
+
+/**
+ * The one stall criterion, shared verbatim by all consumers (CLI findings,
+ * renderer round flags, main-process bell): a stalled round MAKES a tool
+ * call but the context stops growing (marker loops like `echo w/v/u` —
+ * distinct args, so the repeat-key walk sees no streak) and the output is
+ * tiny. Quiet ticks (isQuietTick) are the no-tool-call counterpart.
+ */
+export function isStalledRound(
+  prevContextTokens: number,
+  contextTokens: number,
+  outputTokens: number,
+  toolCallCount: number
+): boolean {
+  const delta = contextTokens - prevContextTokens;
+  return (
+    toolCallCount > 0 &&
+    prevContextTokens > 0 && // first round / ghost baseline — nothing to compare
+    delta >= 0 && // a shrinking window (compaction) is not a stall
+    delta <= STALL_CONTEXT_DELTA_TOKENS &&
+    outputTokens <= WAIT_TICK_OUTPUT_TOKENS
+  );
+}

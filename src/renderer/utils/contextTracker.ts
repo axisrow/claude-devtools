@@ -9,7 +9,7 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import { isQuietTick } from '@shared/constants/loopPolicy';
+import { isQuietTick, isStalledRound } from '@shared/constants/loopPolicy';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -372,6 +372,8 @@ export interface ClassifiedRound {
   index: number;
   quiet: boolean;
   repeat: boolean;
+  /** Tool round that stopped growing the context (echo-marker loop shape) */
+  stalled: boolean;
   /** Full billed usage (in + cache_read + cache_creation + output) */
   billed: number;
   outputTokens: number;
@@ -383,8 +385,9 @@ export interface ClassifiedRound {
  * Classify every assistant round of a turn: quiet (no tool call while the
  * billed context >= WAIT_TICK_CONTEXT_TOKENS and output <=
  * WAIT_TICK_OUTPUT_TOKENS — an idle tick, not a working round: with a large
- * baseline context every ordinary tool round would otherwise qualify) and
- * repeat (carries a call whose id maps to a repeat key). The same
+ * baseline context every ordinary tool round would otherwise qualify), repeat
+ * (carries a call whose id maps to a repeat key) and stalled (makes a tool
+ * call while the context stops growing — isStalledRound). The same
  * classification feeds the wait-loop/loop aggregates and the stream round
  * markers — one source, no drift.
  */
@@ -392,12 +395,15 @@ export function classifyRounds(
   responses: ParsedMessage[],
   keyByToolId?: Map<string, string>
 ): ClassifiedRound[] {
-  return (responses ?? []).map((msg, i) => {
+  const rounds: ClassifiedRound[] = [];
+  let prevContext = 0;
+  (responses ?? []).forEach((msg, i) => {
     const usage = msg.usage;
     const input = usage?.input_tokens ?? 0;
     const cacheRead = usage?.cache_read_input_tokens ?? 0;
     const cacheCreation = usage?.cache_creation_input_tokens ?? 0;
     const output = usage?.output_tokens ?? 0;
+    const context = input + cacheRead + cacheCreation;
     const roundToolIds = Array.isArray(msg.content)
       ? msg.content.filter((b) => b.type === 'tool_use').map((b) => b.id)
       : [];
@@ -410,16 +416,20 @@ export function classifyRounds(
           ),
         ]
       : [];
-    return {
+    rounds.push({
       uuid: msg.uuid ?? `round-${i + 1}`,
       index: i + 1,
-      quiet: isQuietTick(input + cacheRead + cacheCreation, output, roundToolIds.length),
+      quiet: isQuietTick(context, output, roundToolIds.length),
       repeat: keys.length > 0,
-      billed: input + cacheRead + cacheCreation + output,
+      stalled: isStalledRound(prevContext, context, output, roundToolIds.length),
+      billed: context + output,
       outputTokens: output,
       keys,
-    };
+    });
+    // ghost rounds (no usage) must not drag the baseline — same rule as buildLedger
+    if (context > 0) prevContext = context;
   });
+  return rounds;
 }
 
 // =============================================================================
@@ -1159,6 +1169,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       index: round.index,
       quiet: round.quiet,
       repeat: round.repeat,
+      stalled: round.stalled,
       billed: round.billed,
     });
   }

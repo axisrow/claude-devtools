@@ -197,6 +197,38 @@ describe('classifyRounds', () => {
     expect(rounds[2].quiet).toBe(false);
     expect(rounds[3]).toMatchObject({ index: 4, quiet: false, repeat: false, billed: 1100 });
   });
+
+  it('marks echo-marker rounds (tool call, no context growth) as stalled', () => {
+    const responses = [
+      // baseline work round: context jumps to ~134k, loud output — not stalled
+      assistantMsg({ input: 200, cacheRead: 134_000, output: 2_000 }, ['t0']),
+      // the live 0779a2bc shape: tool call each round, context grows by the
+      // tiny tool result only (+24), output ~19 tok — `echo w/v/u` markers
+      assistantMsg({ input: 100, cacheRead: 134_124, output: 19 }, ['t1']),
+      assistantMsg({ input: 101, cacheRead: 134_148, output: 20 }, ['t2']),
+      assistantMsg({ input: 102, cacheRead: 134_172, output: 21 }, ['t3']),
+    ];
+
+    const rounds = classifyRounds(responses);
+
+    expect(rounds[0].stalled).toBe(false); // loud output — real work
+    expect(rounds[1].stalled).toBe(true);
+    expect(rounds[2].stalled).toBe(true);
+    expect(rounds[3].stalled).toBe(true);
+  });
+
+  it('a shrinking window (compaction) is not stalled; the first round never is', () => {
+    const responses = [
+      assistantMsg({ input: 100, cacheRead: 134_000, output: 100 }, ['t1']),
+      // context collapse — compaction, progress of a kind, not a stall
+      assistantMsg({ input: 100, cacheRead: 50_000, output: 100 }, ['t2']),
+    ];
+
+    const rounds = classifyRounds(responses);
+
+    expect(rounds[0].stalled).toBe(false); // first round: no baseline yet
+    expect(rounds[1].stalled).toBe(false); // negative delta
+  });
 });
 
 describe('contextTracker wait-loop category', () => {

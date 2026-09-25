@@ -100,20 +100,22 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   }
 
   // Round dividers: the first item of each round (roundId) emits a divider
-  // chip between line segments — red for burn rounds (quiet/repeat), neutral
-  // for normal rounds. Precomputed once per render — no render-time mutation.
+  // chip between line segments — red for burn rounds (quiet/repeat/stall),
+  // neutral for normal rounds. Precomputed once per render — no render-time mutation.
   const roundDividers = new Map<string, React.ReactNode>();
   for (const item of items) {
     const rid = 'roundId' in item ? (item.roundId ?? null) : null;
     if (!rid || roundDividers.has(rid)) continue;
     const flag = roundFlags?.get(rid);
     if (!flag) continue;
-    const isBurn = flag.quiet || flag.repeat;
+    const isBurn = flag.quiet || flag.repeat || flag.stalled;
     const label = flag.quiet
       ? `R${flag.index} · quiet · ${formatTokensCompact(flag.billed)}`
       : flag.repeat
         ? `R${flag.index} · repeat`
-        : `R${flag.index}`;
+        : flag.stalled
+          ? `R${flag.index} · stall · ${formatTokensCompact(flag.billed)}`
+          : `R${flag.index}`;
     roundDividers.set(
       rid,
       <div key={`round-${rid}`} className="flex items-center gap-2 py-1">

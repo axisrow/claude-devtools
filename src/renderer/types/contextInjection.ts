@@ -395,6 +395,8 @@ export interface RoundFlag {
   quiet: boolean;
   /** Round carries repeat tool calls */
   repeat: boolean;
+  /** Tool round that stopped growing the context (echo-marker loop shape) */
+  stalled: boolean;
   /** Full billed usage of the round (in + cache_read + cache_creation + output) */
   billed: number;
 }
