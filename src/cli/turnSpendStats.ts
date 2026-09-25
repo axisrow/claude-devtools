@@ -8,11 +8,13 @@
  * not guesswork. Flags: --p N (percentile to highlight, default 99).
  */
 
-import { isParsedUserChunkMessage } from '@main/types';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
+
+// same turn-boundary predicate the hook enforces — one definition, no drift
+import { isTurnBoundary } from '../../scripts/turn-budget-hook.mjs';
 
 import { wantsHelp } from './args';
 
@@ -37,7 +39,6 @@ export function feedLine(
         cache_read_input_tokens?: number;
         cache_creation_input_tokens?: number;
       };
-      content?: unknown;
     };
   };
   try {
@@ -48,14 +49,9 @@ export function feedLine(
   // raw lines wrap content/usage in .message (ParsedMessage flattens it)
   const inner = msg.message ?? {};
 
-  // real user message = turn boundary — same predicate as analyzeSession
-  if (
-    isParsedUserChunkMessage({
-      type: msg.type,
-      isMeta: msg.isMeta,
-      content: inner.content,
-    } as never)
-  ) {
+  // turn boundary — the hook's own predicate: real user message OR compaction
+  // marker, so calibration measures exactly the turns the hook enforces
+  if (isTurnBoundary(msg)) {
     if (state.current && state.current.rounds > 0) state.spends.push(state.current);
     state.current = { file: state.file, turnIndex: state.spends.length, inputSide: 0, rounds: 0 };
     return;

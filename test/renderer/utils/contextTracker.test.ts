@@ -232,7 +232,8 @@ describe('classifyRounds', () => {
 });
 
 describe('contextTracker wait-loop category', () => {
-  it('counts quiet rounds (>=50k context, <=300 out) and skips active rounds', () => {
+  // same minimum-round gate as the CLI's wait_loop finding (WAIT_LOOP_MIN_TICKS)
+  it('counts quiet rounds (>=50k context, <=300 out) once the 5-round gate is met', () => {
     const items = [
       userGroup(),
       aiGroup(
@@ -240,19 +241,41 @@ describe('contextTracker wait-loop category', () => {
         0,
         [],
         [
-          assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }), // quiet: 60k + 200 out
-          assistantMsg({ input: 10000, cacheRead: 50000, output: 5000 }), // active
+          ...Array.from(
+            { length: 5 },
+            () => assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }) // quiet: 60k + 200 out
+          ),
+          assistantMsg({ input: 10000, cacheRead: 50000, output: 5000 }), // active — not a tick
         ]
       ),
     ];
 
     const stats = lastStats(items).get('ai-0');
     expect(stats).toBeDefined();
-    expect(stats!.tokensByCategory.waitLoop).toBe(60200);
-    expect(stats!.accumulatedCounts.waitLoop).toBe(1);
+    expect(stats!.tokensByCategory.waitLoop).toBe(5 * 60200);
+    // accumulatedCounts.waitLoop counts quiet rounds (roundCount), not injections
+    expect(stats!.accumulatedCounts.waitLoop).toBe(5);
     // total also carries the real global CLAUDE.md injections picked up on the
     // first group — assert the wait-loop burn is included, not the exact total
-    expect(stats!.totalEstimatedTokens).toBeGreaterThanOrEqual(60000);
+    expect(stats!.totalEstimatedTokens).toBeGreaterThanOrEqual(300000);
+  });
+
+  it('below the gate: 4 quiet rounds produce no wait-loop burn', () => {
+    const items = [
+      userGroup(),
+      aiGroup(
+        'ai-0',
+        0,
+        [],
+        Array.from({ length: 4 }, () =>
+          assistantMsg({ input: 10000, cacheRead: 50000, output: 200 })
+        )
+      ),
+    ];
+
+    const stats = lastStats(items).get('ai-0');
+    expect(stats!.tokensByCategory.waitLoop).toBe(0);
+    expect(stats!.accumulatedCounts.waitLoop).toBe(0);
   });
 
   it('ignores rounds below the context threshold', () => {

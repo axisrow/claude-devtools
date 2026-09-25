@@ -12,6 +12,13 @@ export const WAIT_TICK_CONTEXT_TOKENS = 50_000;
 export const WAIT_TICK_OUTPUT_TOKENS = 300;
 
 /**
+ * Minimum quiet ticks in one turn before the run is flagged a wait-loop —
+ * the one gate for both the CLI findings and the renderer's Visible Context
+ * category, so the panel never shows burn the CLI would not flag.
+ */
+export const WAIT_LOOP_MIN_TICKS = 5;
+
+/**
  * The one quiet-tick criterion, shared verbatim by both consumers so it
  * cannot drift: a quiet round produces almost nothing out while re-reading
  * a large context AND makes no tool call at all — with a large baseline

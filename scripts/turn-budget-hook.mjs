@@ -59,6 +59,14 @@ export function isRealUserLine(m) {
   return false;
 }
 
+/** Turn boundary: a real user message — or a compaction marker (the
+ * post-compact context starts fresh, pre-compact spend must not count).
+ * The calibration CLI (src/cli/turnSpendStats.ts) imports this exact
+ * predicate so both accountings cannot drift. */
+export function isTurnBoundary(m) {
+  return isRealUserLine(m) || m.isCompactSummary === true;
+}
+
 /** Sum input-side tokens of the current turn, scanning lines newest-first. */
 export function analyzeTurn(linesNewestFirst) {
   let spent = 0;
@@ -74,9 +82,8 @@ export function analyzeTurn(linesNewestFirst) {
     } catch {
       continue;
     }
-    // turn boundary: a real user message — or a compaction marker (the
-    // post-compact context starts fresh, pre-compact spend must not count)
-    if (isRealUserLine(m) || m.isCompactSummary === true) {
+    // turn boundary: see isTurnBoundary above
+    if (isTurnBoundary(m)) {
       boundaryFound = true;
       break;
     }
