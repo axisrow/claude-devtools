@@ -99,23 +99,24 @@ export const DisplayItemList = React.memo(function DisplayItemList({
     );
   }
 
-  // Round dividers: when the item's source response (roundId) changes, emit a
-  // divider chip between line segments — red for burn rounds (quiet/repeat),
-  // neutral for normal rounds.
-  let prevRoundId: string | null = null;
-  const roundDividerFor = (roundId: string): React.ReactNode => {
-    if (roundId === prevRoundId) return null;
-    prevRoundId = roundId;
-    const flag = roundFlags?.get(roundId);
-    if (!flag) return null;
+  // Round dividers: the first item of each round (roundId) emits a divider
+  // chip between line segments — red for burn rounds (quiet/repeat), neutral
+  // for normal rounds. Precomputed once per render — no render-time mutation.
+  const roundDividers = new Map<string, React.ReactNode>();
+  for (const item of items) {
+    const rid = 'roundId' in item ? (item.roundId ?? null) : null;
+    if (!rid || roundDividers.has(rid)) continue;
+    const flag = roundFlags?.get(rid);
+    if (!flag) continue;
     const isBurn = flag.quiet || flag.repeat;
     const label = flag.quiet
       ? `R${flag.index} · quiet · ${formatTokensCompact(flag.billed)}`
       : flag.repeat
         ? `R${flag.index} · repeat`
         : `R${flag.index}`;
-    return (
-      <div key={`round-${roundId}`} className="flex items-center gap-2 py-1">
+    roundDividers.set(
+      rid,
+      <div key={`round-${rid}`} className="flex items-center gap-2 py-1">
         <div
           className="h-px flex-1"
           style={{ backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.35)' : 'var(--color-border)' }}
@@ -135,13 +136,13 @@ export const DisplayItemList = React.memo(function DisplayItemList({
         />
       </div>
     );
-  };
+  }
 
   return (
     <div className="space-y-2">
       {items.map((item, index) => {
         const rid = 'roundId' in item ? (item.roundId ?? null) : null;
-        const divider = rid ? roundDividerFor(rid) : null;
+        const divider = rid ? (roundDividers.get(rid) ?? null) : null;
         let itemKey = '';
         let element: React.ReactNode = null;
 
