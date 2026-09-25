@@ -32,9 +32,8 @@ import {
 } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 
-import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
+import { inDateRange, isDirectRun, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
 import type { ParsedMessage, Process } from '@main/types';
 
@@ -1135,7 +1134,7 @@ async function main(): Promise<void> {
 
 // run only when executed directly: sessionInventory imports this module for
 // helpers, vitest imports it for the pure functions — neither may trigger main
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectRun(import.meta.url)) {
   void main().catch((err) => {
     console.error(err);
     process.exitCode = 1;

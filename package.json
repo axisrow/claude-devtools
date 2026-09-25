@@ -17,7 +17,16 @@
     "url": "https://github.com/matt1398/claude-devtools/issues"
   },
   "main": "dist-electron/main/index.cjs",
+  "bin": {
+    "session-audit": "dist-cli/session-audit.js",
+    "session-inventory": "dist-cli/session-inventory.js"
+  },
+  "files": [
+    "dist-cli"
+  ],
   "scripts": {
+    "build:cli": "vite build --config vite.cli.config.ts",
+    "prepack": "pnpm build:cli",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "dist": "electron-builder --mac --win --linux",

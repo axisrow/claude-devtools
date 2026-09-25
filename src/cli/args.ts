@@ -1,8 +1,12 @@
 /**
  * Shared CLI plumbing for the analyze:* commands — flag-value scanning,
- * ccusage-style date bounds (--since/--until/--last N), range checks.
+ * ccusage-style date bounds (--since/--until/--last N), range checks,
+ * direct-run detection.
  * No dependencies; pure functions so tests import them directly.
  */
+
+import * as fs from 'fs';
+import { pathToFileURL } from 'url';
 
 // the next token is a flag's value unless missing or itself a flag
 // (--rounds --json must not swallow --json)
@@ -10,6 +14,21 @@ export function takeFlagValue(argv: string[], i: number): { value: string; next:
   const hasArg = i + 1 < argv.length;
   const isValue = hasArg && !argv[i + 1].startsWith('--');
   return isValue ? { value: argv[i + 1], next: i + 2 } : { value: '', next: i + 1 };
+}
+
+// true when the calling module is the entry script. The caller passes its own
+// `import.meta.url` (lexical — a helper's import.meta.url is the helper's file,
+// wrong for bundled chunks shared between bins). realpath resolves the .bin
+// symlinks npm installs (node_modules/.bin/x → package file), so a plain
+// argv[1] string compare never fires there.
+export function isDirectRun(selfUrl: string): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return selfUrl === pathToFileURL(fs.realpathSync(argv1)).href;
+  } catch {
+    return false; // argv[1] vanished or is unreadable — not a direct run
+  }
 }
 
 export const wantsHelp = (argv: string[]): boolean =>
