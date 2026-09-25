@@ -63,6 +63,10 @@ export function isRealUserLine(m) {
 export function analyzeTurn(linesNewestFirst) {
   let spent = 0;
   let boundaryFound = false;
+  // streaming writes several JSONL lines per API request, each carrying usage —
+  // billed once per request (same key as main/utils/jsonl.ts billedRequestKey).
+  // Scanning newest-first, the first line seen per key has the final counts.
+  const billed = new Set();
   for (const line of linesNewestFirst) {
     let m;
     try {
@@ -77,6 +81,11 @@ export function analyzeTurn(linesNewestFirst) {
       break;
     }
     if (m.type === 'assistant' && m.message?.usage) {
+      const key = m.message.requestId ?? m.message.id;
+      if (key) {
+        if (billed.has(key)) continue;
+        billed.add(key);
+      }
       const u = m.message.usage;
       spent += (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
     }
