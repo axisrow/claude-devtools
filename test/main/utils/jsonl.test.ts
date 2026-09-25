@@ -212,7 +212,9 @@ describe('jsonl', () => {
       const merged = mergeAssistantFragments(messages);
       expect(merged).toHaveLength(1);
       expect(merged[0].uuid).toBe('g1');
-      expect(merged[0].usage).toEqual(billedUsage); // billed fragment wins over the 0/0 ghosts
+      // merge keeps the LAST fragment's usage (no billed-selection); the GLM
+      // format guarantees the billed totals land on the final fragment
+      expect(merged[0].usage).toEqual(billedUsage);
       expect(merged[0].content).toHaveLength(3);
       expect(merged[0].toolCalls).toHaveLength(1);
     });
