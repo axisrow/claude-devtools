@@ -211,7 +211,8 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
       {
         errorId: error.id,
         errorTimestamp: error.timestamp,
-        toolUseId: error.toolUseId,
+        // a loop alarm is a group-level defect: light the turn, not one call
+        toolUseId: error.source === 'loop' ? undefined : error.toolUseId,
         subagentId: error.subagentId,
         lineNumber: error.lineNumber,
       },

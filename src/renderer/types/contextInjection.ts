@@ -202,7 +202,7 @@ export interface TaskCoordinationInjection {
 export interface LoopTokenBreakdown {
   /** Canonical call key (same identity the live loop detector uses) */
   key: string;
-  /** How many bucketed repeat calls this series contributed (streak length beyond the threshold) */
+  /** How many times this repeat streak has fired so far */
   count: number;
   /** Estimated token count for this repeat call (call + result + skill) */
   tokenCount: number;
@@ -212,8 +212,7 @@ export interface LoopTokenBreakdown {
 
 /**
  * Represents tokens burned by repeated back-to-back identical tool calls.
- * Calls from LOOP_MIN_STREAK (the live bell's default cycleThreshold) onward
- * land here; earlier calls of a streak stay in tool-output.
+ * Calls 2..N of a streak land here; the first call stays in tool-output.
  */
 export interface LoopInjection {
   /** Unique identifier (e.g., "loop-ai-0") */
@@ -228,6 +227,20 @@ export interface LoopInjection {
   estimatedTokens: number;
   /** Detailed breakdown of tokens by repeat series */
   breakdown: LoopTokenBreakdown[];
+  /** Rounds carrying repeat calls, one row each (billed usage) */
+  rounds: LoopRoundInfo[];
+}
+
+/** One assistant round (response) inside a turn, for round-level displays */
+export interface LoopRoundInfo {
+  /** Response message uuid (matches SemanticStep.sourceMessageId) */
+  uuid: string;
+  /** 1-based round number within the turn */
+  index: number;
+  /** Billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
+  /** Repeat call key(s) present in this round */
+  keys: string[];
 }
 
 // =============================================================================
@@ -237,8 +250,8 @@ export interface LoopInjection {
 /**
  * Represents tokens burned by quiet rounds in a turn: rounds that billed a
  * huge input-side context (>= WAIT_TICK_CONTEXT_TOKENS) while producing almost
- * nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion and minimum round
- * gate (WAIT_LOOP_MIN_ROUNDS) as the CLI's wait_loop findings.
+ * nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
+ * wait_loop findings.
  */
 export interface WaitLoopInjection {
   /** Unique identifier (e.g., "wait-loop-ai-0") */
@@ -253,6 +266,20 @@ export interface WaitLoopInjection {
   estimatedTokens: number;
   /** How many quiet rounds fired in this turn */
   roundCount: number;
+  /** The quiet rounds themselves (for round-level expansion) */
+  rounds: WaitRoundInfo[];
+}
+
+/** One quiet round: when it fired and what it billed */
+export interface WaitRoundInfo {
+  /** Response message uuid (matches SemanticStep.sourceMessageId) */
+  uuid: string;
+  /** 1-based round number within the turn */
+  index: number;
+  /** Output tokens of the round (always <= WAIT_TICK_OUTPUT_TOKENS) */
+  outputTokens: number;
+  /** Full billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
 }
 
 // =============================================================================
@@ -356,6 +383,22 @@ export interface ContextStats {
   accumulatedCounts: NewCountsByCategory;
   /** Which context phase this stats belongs to (1-based) */
   phaseNumber?: number;
+  /** Per-round classification for the group's stream (keyed by response uuid) */
+  roundFlags?: Map<string, RoundFlag>;
+}
+
+/** Stream-level flag of one assistant round inside a turn */
+export interface RoundFlag {
+  /** 1-based round number within the turn */
+  index: number;
+  /** Quiet round: billed a big context while producing almost nothing */
+  quiet: boolean;
+  /** Round carries repeat tool calls */
+  repeat: boolean;
+  /** Tool round that stopped growing the context (echo-marker loop shape) */
+  stalled: boolean;
+  /** Full billed usage of the round (in + cache_read + cache_creation + output) */
+  billed: number;
 }
 
 // =============================================================================

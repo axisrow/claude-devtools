@@ -122,6 +122,12 @@ export function initializeNotificationListeners(): () => void {
     const timer = setTimeout(() => {
       pendingProjectRefreshTimers.delete(projectId);
       const state = useStore.getState();
+      // Repo-wide sidebar: refresh the merged all-worktrees list in place —
+      // the single-worktree refresh would drop the other worktrees' sessions
+      if (state.selectedRepositoryId) {
+        void state.refreshRepositorySessionsInPlace();
+        return;
+      }
       void state.refreshSessionsInPlace(projectId);
     }, PROJECT_REFRESH_DEBOUNCE_MS);
     pendingProjectRefreshTimers.set(projectId, timer);

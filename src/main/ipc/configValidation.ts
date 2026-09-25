@@ -111,6 +111,7 @@ function validateNotificationsSection(
     'snoozeMinutes',
     'triggers',
     'loopDetection',
+    'turnBudget',
   ];
 
   const result: Partial<NotificationConfig> = {};
@@ -203,6 +204,30 @@ function validateNotificationsSection(
           };
         }
         result.loopDetection = { enabled, cycleThreshold };
+        break;
+      }
+      case 'turnBudget': {
+        if (!isPlainObject(value)) {
+          return { valid: false, error: 'notifications.turnBudget must be an object' };
+        }
+        const { enabled, maxInputTokensPerTurn } = value as {
+          enabled?: unknown;
+          maxInputTokensPerTurn?: unknown;
+        };
+        if (typeof enabled !== 'boolean') {
+          return { valid: false, error: 'notifications.turnBudget.enabled must be a boolean' };
+        }
+        if (
+          !isFiniteNumber(maxInputTokensPerTurn) ||
+          !Number.isInteger(maxInputTokensPerTurn) ||
+          maxInputTokensPerTurn < 100_000
+        ) {
+          return {
+            valid: false,
+            error: 'notifications.turnBudget.maxInputTokensPerTurn must be an integer >= 100000',
+          };
+        }
+        result.turnBudget = { enabled, maxInputTokensPerTurn };
         break;
       }
       default:

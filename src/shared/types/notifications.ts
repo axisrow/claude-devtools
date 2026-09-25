@@ -251,6 +251,8 @@ export interface AppConfig {
     triggers: NotificationTrigger[];
     /** Live tool-call loop detection (FileWatcher) */
     loopDetection: { enabled: boolean; cycleThreshold: number };
+    /** Per-turn input-token budget enforced by the PreToolUse hook */
+    turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
   };
   /** General application settings */
   general: {

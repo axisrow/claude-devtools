@@ -34,6 +34,7 @@ interface NotificationsSectionProps {
     value: boolean
   ) => void;
   readonly onLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
+  readonly onTurnBudgetChange: (value: { enabled: boolean; maxInputTokensPerTurn: number }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
   readonly onAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -54,6 +55,7 @@ export const NotificationsSection = ({
   excludedRepositoryIds,
   onNotificationToggle,
   onLoopDetectionChange,
+  onTurnBudgetChange,
   onSnooze,
   onClearSnooze,
   onAddIgnoredRepository,
@@ -147,6 +149,49 @@ export const NotificationsSection = ({
           />
         </div>
       </SettingRow>
+
+      {/* Per-turn input budget (PreToolUse hook) */}
+      <SettingsSectionHeader title="Turn Budget" />
+      <SettingRow
+        label="Limit per-turn re-read spend"
+        description="A Claude Code hook denies tool calls once a turn re-reads more than the budget; the agent wraps up and reports"
+      >
+        <SettingsToggle
+          enabled={safeConfig.notifications.turnBudget.enabled}
+          onChange={(v) =>
+            onTurnBudgetChange({
+              ...safeConfig.notifications.turnBudget,
+              enabled: v,
+            })
+          }
+          disabled={saving || !safeConfig.notifications.enabled}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Input tokens per turn"
+        description="Corpus-calibrated default: your historical p95 is ~12.6M"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={100000}
+            step={500000}
+            value={safeConfig.notifications.turnBudget.maxInputTokensPerTurn}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              if (Number.isInteger(n) && n >= 100000) {
+                onTurnBudgetChange({
+                  ...safeConfig.notifications.turnBudget,
+                  maxInputTokensPerTurn: n,
+                });
+              }
+            }}
+            disabled={saving || !safeConfig.notifications.turnBudget.enabled}
+            className="w-32 rounded-md border border-claude-dark-border bg-surface px-2 py-1 text-sm text-claude-dark-text"
+          />
+        </div>
+      </SettingRow>
+
       <SettingRow
         label="Snooze notifications"
         description={

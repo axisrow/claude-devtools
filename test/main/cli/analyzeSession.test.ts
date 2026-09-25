@@ -744,4 +744,57 @@ describe('long turns and loop streaks', () => {
     const findings = computeFindings(messages, buildLedger(messages));
     expect(findings.some((f) => f.type === 'wait_loop')).toBe(false);
   });
+
+  // live regression: session 0779a2bc — a reviewer emitted Bash(echo w), Bash(echo v),
+  // Bash(echo u)... every round re-read ~134k context and grew it by the ~24-tok
+  // tool result only; distinct args mean the repeat-key walk sees no streak
+  it('flags a stall streak: tool rounds with no context growth (echo-marker loop)', () => {
+    const base = 134_200;
+    // context grows by exactly the tool result (+24) each round; inputs/outputs
+    // differ so the router retry-copy filter does not swallow rounds
+    const echoUsage = (i: number) => usage(100 + i, base + 24 * (i + 1) - (100 + i), 0, 19 + i);
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      // baseline round: real work — context jumps to `base`, loud output
+      makeMsg({
+        type: 'assistant',
+        model: 'glm-5.3-flash',
+        usage: usage(200, 134_000, 0, 2_000),
+        toolCalls: [call('e0', 'cat plan.md')],
+      }),
+      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('e0')] }),
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeMsg({
+          type: 'assistant',
+          model: 'glm-5.3-flash',
+          usage: echoUsage(i),
+          toolCalls: [call(`e${i + 1}`, `echo ${String.fromCharCode(119 + i)}`)],
+        })
+      ),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    const stall = findings.find((f) => f.type === 'stall_streak');
+    expect(stall).toBeDefined();
+    expect(stall?.severity).toBe('medium'); // x4 — not yet a hang
+    expect(stall?.turnIndex).toBe(1);
+    // each stalled round re-read its full context — that is the burn
+    const stalledContexts = [1, 2, 3, 4].map((k) => base + 24 * k);
+    expect(stall?.tokensWasted).toBe(stalledContexts.reduce((s, c) => s + c, 0));
+  });
+
+  it('working rounds with real context growth are not a stall streak', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeMsg({
+          type: 'assistant',
+          model: 'glm-5.3-flash',
+          usage: usage(500, 100_000 + 2_000 * i, 0, 150 + i), // +2k context per round
+          toolCalls: [call(`w${i}`, `edit file${i}.ts`)],
+        })
+      ),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.some((f) => f.type === 'stall_streak')).toBe(false);
+  });
 });

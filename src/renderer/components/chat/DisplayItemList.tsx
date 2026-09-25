@@ -21,6 +21,7 @@ import { TextItem } from './items/TextItem';
 import { ThinkingItem } from './items/ThinkingItem';
 import { MarkdownViewer } from './viewers/MarkdownViewer';
 
+import type { RoundFlag } from '@renderer/types/contextInjection';
 import type { AIGroupDisplayItem } from '@renderer/types/groups';
 import type { TriggerColor } from '@shared/constants/triggerColors';
 
@@ -37,6 +38,8 @@ interface DisplayItemListProps {
   notificationColorMap?: Map<string, TriggerColor>;
   /** Optional callback to register tool element refs for scroll targeting */
   registerToolRef?: (toolId: string, el: HTMLDivElement | null) => void;
+  /** Per-round flags (quiet/repeat/billed) keyed by response uuid — drives round dividers */
+  roundFlags?: Map<string, RoundFlag>;
 }
 
 /**
@@ -70,6 +73,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   highlightColor,
   notificationColorMap,
   registerToolRef,
+  roundFlags,
 }: Readonly<DisplayItemListProps>): React.JSX.Element {
   // Reply-link highlight: when hovering a reply badge, dim everything except the linked pair
   const [replyLinkToolId, setReplyLinkToolId] = useState<string | null>(null);
@@ -95,9 +99,52 @@ export const DisplayItemList = React.memo(function DisplayItemList({
     );
   }
 
+  // Round dividers: the first item of each round (roundId) emits a divider
+  // chip between line segments — red for burn rounds (quiet/repeat/stall),
+  // neutral for normal rounds. Precomputed once per render — no render-time mutation.
+  const roundDividers = new Map<string, React.ReactNode>();
+  for (const item of items) {
+    const rid = 'roundId' in item ? (item.roundId ?? null) : null;
+    if (!rid || roundDividers.has(rid)) continue;
+    const flag = roundFlags?.get(rid);
+    if (!flag) continue;
+    const isBurn = flag.quiet || flag.repeat || flag.stalled;
+    const label = flag.quiet
+      ? `R${flag.index} · quiet · ${formatTokensCompact(flag.billed)}`
+      : flag.repeat
+        ? `R${flag.index} · repeat`
+        : flag.stalled
+          ? `R${flag.index} · stall · ${formatTokensCompact(flag.billed)}`
+          : `R${flag.index}`;
+    roundDividers.set(
+      rid,
+      <div key={`round-${rid}`} className="flex items-center gap-2 py-1">
+        <div
+          className="h-px flex-1"
+          style={{ backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.35)' : 'var(--color-border)' }}
+        />
+        <span
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={{
+            backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.15)' : 'var(--color-surface-overlay)',
+            color: isBurn ? '#f87171' : COLOR_TEXT_MUTED,
+          }}
+        >
+          {label}
+        </span>
+        <div
+          className="h-px flex-1"
+          style={{ backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.35)' : 'var(--color-border)' }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
       {items.map((item, index) => {
+        const rid = 'roundId' in item ? (item.roundId ?? null) : null;
+        const divider = rid ? (roundDividers.get(rid) ?? null) : null;
         let itemKey = '';
         let element: React.ReactNode = null;
 
@@ -326,16 +373,18 @@ export const DisplayItemList = React.memo(function DisplayItemList({
         // Apply reply-link spotlight: dim items not in the highlighted pair
         const isDimmed = replyLinkToolId !== null && !isItemInReplyLink(item);
         return (
-          <div
-            key={itemKey}
-            style={
-              replyLinkToolId !== null
-                ? { opacity: isDimmed ? 0.2 : 1, transition: 'opacity 150ms ease' }
-                : undefined
-            }
-          >
-            {element}
-          </div>
+          <React.Fragment key={itemKey}>
+            {divider}
+            <div
+              style={
+                replyLinkToolId !== null
+                  ? { opacity: isDimmed ? 0.2 : 1, transition: 'opacity 150ms ease' }
+                  : undefined
+              }
+            >
+              {element}
+            </div>
+          </React.Fragment>
         );
       })}
     </div>

@@ -4,9 +4,10 @@ import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssV
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
+import { TOOL_HIGHLIGHT_CLASSES, type TriggerColor } from '@shared/constants/triggerColors';
 import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
-import { estimateTokens } from '@shared/utils/tokenFormatting';
+import { estimateTokens, formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { format } from 'date-fns';
 import { Bot, ChevronDown, Clock } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -24,7 +25,6 @@ import type {
   EnhancedAIGroup,
   UserGroup,
 } from '@renderer/types/groups';
-import type { TriggerColor } from '@shared/constants/triggerColors';
 
 /**
  * Extract slash info from a UserGroup's message content.
@@ -83,6 +83,10 @@ interface AIChatGroupProps {
   highlightToolUseId?: string;
   /** Custom highlight color from trigger */
   highlightColor?: TriggerColor;
+  /** Red alarm on the header row (burn pills): aggregate is the alarm target */
+  isHeaderHighlighted?: boolean;
+  /** Red tint on the whole turn's stream: this group is the red navigation target */
+  isBodyHighlighted?: boolean;
   /** Register ref for individual tool items (for precise scroll targeting) */
   registerToolRef?: (toolId: string, el: HTMLElement | null) => void;
 }
@@ -124,6 +128,8 @@ const AIChatGroupInner = ({
   aiGroup,
   highlightToolUseId,
   highlightColor,
+  isHeaderHighlighted,
+  isBodyHighlighted,
   registerToolRef,
 }: Readonly<AIChatGroupProps>): React.JSX.Element => {
   // Per-tab UI state for expansion (completely isolated per tab)
@@ -388,7 +394,10 @@ const AIChatGroupInner = ({
   };
 
   return (
-    <div className="space-y-3 border-l-2 pl-3" style={{ borderColor: 'var(--chat-ai-border)' }}>
+    <div
+      className={`space-y-3 border-l-2 pl-3 ${isBodyHighlighted ? 'bg-red-500/5' : ''}`}
+      style={{ borderColor: isBodyHighlighted ? '#ef4444' : 'var(--chat-ai-border)' }}
+    >
       {/* Header Row */}
       {hasToggleContent && (
         <div className="flex items-center gap-2">
@@ -411,6 +420,17 @@ const AIChatGroupInner = ({
               style={{ color: COLOR_TEXT_SECONDARY }}
             >
               Claude
+            </span>
+
+            {/* Turn number — matches the Visible Context panel's 1-based "Turn N" */}
+            <span
+              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+              style={{
+                backgroundColor: 'var(--color-surface-overlay)',
+                color: COLOR_TEXT_MUTED,
+              }}
+            >
+              Turn {aiGroup.turnIndex + 1}
             </span>
 
             {/* Main agent model */}
@@ -450,7 +470,14 @@ const AIChatGroupInner = ({
           </div>
 
           {/* Right side: Context badge, Token usage, Timestamp (non-clickable) */}
-          <div className="flex shrink-0 items-center gap-2">
+          <div
+            className={`flex shrink-0 items-center gap-2 ${
+              isHeaderHighlighted ? TOOL_HIGHLIGHT_CLASSES.red : ''
+            }`}
+          >
+            {/* Burn pills: this turn's loop/wait-loop waste */}
+            {contextStats && <BurnPills stats={contextStats} />}
+
             {/* Context injection badge (CLAUDE.md, mentioned files, tool outputs) */}
             {contextStats && <ContextBadge stats={contextStats} projectRoot={projectRoot} />}
 
@@ -509,6 +536,7 @@ const AIChatGroupInner = ({
             highlightColor={highlightColor}
             notificationColorMap={notificationColorMap}
             registerToolRef={registerToolRef}
+            roundFlags={contextStats?.roundFlags}
           />
         </div>
       )}
@@ -527,3 +555,45 @@ const AIChatGroupInner = ({
 };
 
 export const AIChatGroup = React.memo(AIChatGroupInner);
+
+/** Red waste pills for this turn: Wait-loop quiet-round re-read + Loop repeats. */
+const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactElement | null => {
+  let waitTokens = 0;
+  let waitRounds = 0;
+  let loopTokens = 0;
+  for (const inj of stats.newInjections) {
+    if (inj.category === 'wait-loop') {
+      waitTokens += inj.estimatedTokens;
+      waitRounds += inj.roundCount;
+    } else if (inj.category === 'loop') {
+      loopTokens += inj.estimatedTokens;
+    }
+  }
+  if (waitTokens === 0 && loopTokens === 0) return null;
+
+  const pillStyle: React.CSSProperties = {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#f87171',
+  };
+
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      {waitTokens > 0 && (
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={pillStyle}
+        >
+          Wait {formatTokensCompact(waitTokens)} · {waitRounds} rd
+        </span>
+      )}
+      {loopTokens > 0 && (
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={pillStyle}
+        >
+          Loop {formatTokensCompact(loopTokens)}
+        </span>
+      )}
+    </span>
+  );
+};

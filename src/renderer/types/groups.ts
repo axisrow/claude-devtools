@@ -248,13 +248,19 @@ export interface TeammateMessage {
  * These are flattened and shown in chronological order.
  */
 export type AIGroupDisplayItem =
-  | { type: 'thinking'; content: string; timestamp: Date; tokenCount?: number }
-  | { type: 'tool'; tool: LinkedToolItem }
+  | { type: 'thinking'; content: string; timestamp: Date; tokenCount?: number; roundId?: string }
+  | { type: 'tool'; tool: LinkedToolItem; roundId?: string }
   | { type: 'subagent'; subagent: Process }
-  | { type: 'output'; content: string; timestamp: Date; tokenCount?: number }
-  | { type: 'slash'; slash: SlashItem }
+  | { type: 'output'; content: string; timestamp: Date; tokenCount?: number; roundId?: string }
+  | { type: 'slash'; slash: SlashItem; roundId?: string }
   | { type: 'teammate_message'; teammateMessage: TeammateMessage }
-  | { type: 'subagent_input'; content: string; timestamp: Date; tokenCount?: number }
+  | {
+      type: 'subagent_input';
+      content: string;
+      timestamp: Date;
+      tokenCount?: number;
+      roundId?: string;
+    }
   | {
       type: 'compact_boundary';
       content: string;

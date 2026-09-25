@@ -22,11 +22,7 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import {
-  WAIT_LOOP_MIN_ROUNDS,
-  WAIT_TICK_CONTEXT_TOKENS,
-  WAIT_TICK_OUTPUT_TOKENS,
-} from '@shared/constants/loopPolicy';
+import { isQuietTick, isStalledRound } from '@shared/constants/loopPolicy';
 import { asText, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -86,8 +82,7 @@ export const WASTE_THRESHOLDS = {
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
   loopStreakMin: 3,
-  // shared with the renderer's wait-loop category so the round gate cannot drift
-  waitLoopTicks: WAIT_LOOP_MIN_ROUNDS,
+  waitLoopTicks: 5,
 } as const;
 
 // gaps between a turn's rounds longer than this are idle, not work
@@ -96,7 +91,7 @@ export const TURN_IDLE_GAP_CAP_MINUTES = 10;
 
 // wait-loop tick thresholds live in @shared/constants/loopPolicy — the
 // renderer's Visible Context wait-loop category uses the same numbers
-export { WAIT_TICK_CONTEXT_TOKENS, WAIT_TICK_OUTPUT_TOKENS };
+export { isQuietTick };
 
 // Tool results that look like errors but are normal flow (user said no / aborted)
 const REJECTION_PATTERNS = [
@@ -113,6 +108,7 @@ export type FindingType =
   | 'thinking_heavy'
   | 'long_turn'
   | 'loop_streak'
+  | 'stall_streak'
   | 'wait_loop';
 
 export interface Finding {
@@ -674,11 +670,11 @@ export function computeFindings(
         summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
       });
     }
+    // A tick is an IDLE round (no tool call) — see isQuietTick in loopPolicy:
+    // with a large baseline context, ordinary working rounds (short tool
+    // calls) would otherwise satisfy the context/output thresholds too
     const ticks = rs.filter(
-      (r) =>
-        !r.isRetryCopy &&
-        r.contextSize >= WAIT_TICK_CONTEXT_TOKENS &&
-        r.outputTokens <= WAIT_TICK_OUTPUT_TOKENS
+      (r) => !r.isRetryCopy && isQuietTick(r.contextSize, r.outputTokens, r.tools.length)
     );
     if (ticks.length >= th.waitLoopTicks) {
       const wasted = ticks.reduce((s, r) => s + r.contextSize, 0);
@@ -690,6 +686,45 @@ export function computeFindings(
         summary: `wait-loop: ${ticks.length} quiet rounds re-read ~${formatTokensCompact(wasted)} tok (≤300 tok of output each)`,
       });
     }
+
+    // A stall is the tool-call counterpart of a quiet tick: rounds that MAKE
+    // calls yet stop growing the context (echo-marker loops like `echo w/v/u`
+    // — distinct args, so the repeat-key walk above sees no streak). See
+    // isStalledRound in loopPolicy.
+    let stallStart: RoundRow | null = null;
+    let stallEnd: RoundRow | null = null;
+    let stallCount = 0;
+    let stallWasted = 0;
+    const flushStall = (): void => {
+      if (stallCount >= th.loopStreakMin && stallStart && stallEnd) {
+        findings.push({
+          type: 'stall_streak',
+          severity: stallCount >= 5 ? 'high' : 'medium',
+          tokensWasted: stallWasted,
+          turnIndex: turn.index,
+          summary: `stall: ${stallCount} rounds with no context growth re-read ~${formatTokensCompact(stallWasted)} tok (${short(stallStart.tools.join(', ') || 'tool calls', 40)}) ${hhmm(stallStart.timestamp)}–${hhmm(stallEnd.timestamp)}`,
+        });
+      }
+      stallStart = null;
+      stallEnd = null;
+      stallCount = 0;
+      stallWasted = 0;
+    };
+    let stallPrev = 0;
+    for (const r of rs) {
+      if (r.isRetryCopy) continue; // copies already walked with their original
+      if (isStalledRound(stallPrev, r.contextSize, r.outputTokens, r.tools.length)) {
+        if (stallCount === 0) stallStart = r;
+        stallCount += 1;
+        stallWasted += r.contextSize;
+        stallEnd = r;
+      } else {
+        flushStall();
+      }
+      // ghost rounds must not drag the baseline (same rule as buildLedger)
+      if (r.contextSize > 0) stallPrev = r.contextSize;
+    }
+    flushStall();
   }
 
   const order = { high: 0, medium: 1, low: 2 } as const;

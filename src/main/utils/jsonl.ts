@@ -13,6 +13,7 @@ import * as readline from 'readline';
 
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
 import { LocalFileSystemProvider } from '../services/infrastructure/LocalFileSystemProvider';
+import { categorizeMessage } from '../services/parsing/MessageClassifier';
 import {
   type ChatHistoryEntry,
   type ContentBlock,
@@ -78,7 +79,11 @@ export async function parseJsonlFile(
     }
   }
 
-  return messages;
+  // One API request = one message: a proxy streaming one line per content
+  // block produces fragments (same message.id, no requestId) that must not
+  // reach any consumer as separate messages — they would inflate every
+  // accounting surface (rounds, spend, wait-loop ticks, search hits)
+  return mergeAssistantFragments(messages);
 }
 
 /**
@@ -118,6 +123,7 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
   let usage: TokenUsage | undefined;
   let model: string | undefined;
   let requestId: string | undefined;
+  let messageId: string | undefined;
   let cwd: string | undefined;
   let gitBranch: string | undefined;
   let agentId: string | undefined;
@@ -157,6 +163,7 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
       model = entry.message.model;
       agentId = entry.agentId;
       requestId = entry.requestId;
+      messageId = entry.message.id;
     } else if (entry.type === 'system') {
       isMeta = entry.isMeta ?? false;
     }
@@ -190,6 +197,7 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
     sourceToolAssistantUUID,
     toolUseResult,
     requestId,
+    messageId,
   };
 }
 
@@ -221,6 +229,16 @@ function parseMessageType(type?: string): MessageType | null {
 // =============================================================================
 
 /**
+ * Which key identifies one billed request on this transcript: the backend's
+ * requestId when present, else the API message.id (proxies that stream one
+ * line per content block omit requestId but repeat message.id). Every
+ * once-per-request accounting site keys on this.
+ */
+export function billedRequestKey(msg: ParsedMessage): string | undefined {
+  return msg.requestId ?? msg.messageId;
+}
+
+/**
  * Deduplicate streaming assistant entries by requestId.
  *
  * Claude Code writes multiple JSONL entries per API response during streaming,
@@ -231,10 +249,10 @@ function parseMessageType(type?: string): MessageType | null {
  * Returns a new array with only the last entry per requestId kept.
  */
 export function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage[] {
-  // Map from requestId -> index of last occurrence
+  // Map from billedRequestKey -> index of last occurrence
   const lastIndexByRequestId = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
-    const rid = messages[i].requestId;
+    const rid = billedRequestKey(messages[i]);
     if (rid) {
       lastIndexByRequestId.set(rid, i);
     }
@@ -246,9 +264,61 @@ export function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage
   }
 
   return messages.filter((msg, i) => {
-    if (!msg.requestId) return true;
-    return lastIndexByRequestId.get(msg.requestId) === i;
+    const key = billedRequestKey(msg);
+    if (!key) return true;
+    return lastIndexByRequestId.get(key) === i;
   });
+}
+
+/** Fragment content concat: block arrays concatenate, strings join directly
+ * (proxy fragment lines partition one response's text); a string beside a
+ * block array becomes a text block, so neither side is dropped. */
+// eslint-disable-next-line sonarjs/function-return-type -- preserves the input shape by contract: string fragments stay string
+function concatContent(
+  a: ParsedMessage['content'],
+  b: ParsedMessage['content']
+): ParsedMessage['content'] {
+  const aBlocks = typeof a === 'string' ? [{ type: 'text' as const, text: a }] : (a ?? []);
+  const bBlocks = typeof b === 'string' ? [{ type: 'text' as const, text: b }] : (b ?? []);
+  return typeof a === 'string' && typeof b === 'string' ? a + b : [...aBlocks, ...bBlocks];
+}
+
+/**
+ * Merge assistant streaming fragment lines into one message per API request.
+ *
+ * Some backends (OpenAI-compatible proxies) write one JSONL line per content
+ * block of a response, each line carrying the same message.id and the same
+ * full usage — the lines PARTITION the response. Lines without requestId that
+ * share a messageId are therefore concatenated here: one request becomes one
+ * message, one accounting round, one stream divider. Lines with requestId are
+ * streaming snapshots (the last line holds the final state) and stay on the
+ * keep-last dedupe path of deduplicateByRequestId.
+ */
+export function mergeAssistantFragments(messages: ParsedMessage[]): ParsedMessage[] {
+  const firstIndexByMessageId = new Map<string, number>();
+  const result: ParsedMessage[] = [];
+  for (const msg of messages) {
+    if (msg.type !== 'assistant' || msg.requestId || !msg.messageId) {
+      result.push(msg);
+      continue;
+    }
+    const messageId = msg.messageId;
+    const firstIdx = firstIndexByMessageId.get(messageId);
+    if (firstIdx === undefined) {
+      firstIndexByMessageId.set(messageId, result.length);
+      result.push(msg);
+      continue;
+    }
+    const first = result[firstIdx];
+    result[firstIdx] = {
+      ...first,
+      content: concatContent(first.content, msg.content),
+      toolCalls: [...first.toolCalls, ...msg.toolCalls],
+      toolResults: [...first.toolResults, ...msg.toolResults],
+      usage: msg.usage ?? first.usage,
+    };
+  }
+  return result;
 }
 
 // =============================================================================
@@ -350,6 +420,10 @@ export interface SessionFileMetadata {
   compactionCount?: number;
   /** Per-phase token breakdown */
   phaseBreakdown?: PhaseTokenBreakdown[];
+  /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
+  totalTokens: number;
+  /** AI response groups — same count as the "Turn N" chips in the chat */
+  turnCount: number;
   hasDisplayableContent: boolean;
 }
 
@@ -367,6 +441,8 @@ export async function analyzeSessionFileMetadata(
       messageCount: 0,
       isOngoing: false,
       gitBranch: null,
+      totalTokens: 0,
+      turnCount: 0,
       hasDisplayableContent: false,
     };
   }
@@ -383,6 +459,10 @@ export async function analyzeSessionFileMetadata(
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
   let awaitingAIGroup = false;
+  // Turn counting mirrors ChunkBuilder.buildChunks exactly: an AI run closed by
+  // a user/system/compact boundary (or EOF) == one AI group == one "Turn N".
+  let aiRunOpen = false;
+  let turnCount = 0;
   let gitBranch: string | null = null;
 
   let activityIndex = 0;
@@ -398,6 +478,13 @@ export async function analyzeSessionFileMetadata(
   const compactionPhases: { pre: number; post: number }[] = [];
 
   let awaitingPostCompaction = false;
+
+  // Total spend: every assistant round in this transcript (input + cache + output),
+  // billed once per request — streaming writes several lines per request,
+  // each carrying the full usage (requestId when the backend provides one,
+  // otherwise the API message.id)
+  let totalTokens = 0;
+  const billedRequests = new Set<string>();
 
   for await (const line of rl) {
     const trimmed = line.trim();
@@ -434,6 +521,19 @@ export async function analyzeSessionFileMetadata(
     ) {
       messageCount++;
       awaitingAIGroup = false;
+    }
+
+    // Same rules as the chunk pipeline: sidechain never reaches the main
+    // thread (SessionParser splits it out), hardNoise is skipped entirely,
+    // a user/system/compact boundary closes the current AI run.
+    if (!parsed.isSidechain) {
+      const category = categorizeMessage(parsed);
+      if (category === 'ai') {
+        aiRunOpen = true;
+      } else if (category !== 'hardNoise' && aiRunOpen) {
+        turnCount++;
+        aiRunOpen = false;
+      }
     }
 
     if (!gitBranch && 'gitBranch' in entry && entry.gitBranch) {
@@ -569,6 +669,20 @@ export async function analyzeSessionFileMetadata(
       }
     }
 
+    // Total spend: sum every assistant usage block (sidechain included — this
+    // is the cost of the transcript), synthetic lines carry no usage
+    if (parsed.type === 'assistant' && parsed.usage) {
+      const requestKey = parsed.requestId ?? parsed.messageId;
+      if (!requestKey || !billedRequests.has(requestKey)) {
+        if (requestKey) billedRequests.add(requestKey);
+        totalTokens +=
+          (parsed.usage.input_tokens ?? 0) +
+          (parsed.usage.cache_read_input_tokens ?? 0) +
+          (parsed.usage.cache_creation_input_tokens ?? 0) +
+          (parsed.usage.output_tokens ?? 0);
+      }
+    }
+
     // Context consumption: detect compaction events
     if (parsed.isCompactSummary) {
       compactionPhases.push({ pre: lastMainAssistantInputTokens, post: 0 });
@@ -635,6 +749,10 @@ export async function analyzeSessionFileMetadata(
     }
   }
 
+  if (aiRunOpen) {
+    turnCount++;
+  }
+
   return {
     firstUserMessage: firstUserMessage ?? firstCommandMessage,
     messageCount,
@@ -643,6 +761,8 @@ export async function analyzeSessionFileMetadata(
     contextConsumption,
     compactionCount: compactionPhases.length > 0 ? compactionPhases.length : undefined,
     phaseBreakdown,
+    totalTokens,
+    turnCount,
     hasDisplayableContent,
   };
 }

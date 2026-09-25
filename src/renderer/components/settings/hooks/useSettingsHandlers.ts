@@ -35,6 +35,7 @@ interface SettingsHandlers {
   // Notification handlers
   handleNotificationToggle: (key: keyof AppConfig['notifications'], value: boolean) => void;
   handleLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
+  handleTurnBudgetChange: (value: { enabled: boolean; maxInputTokensPerTurn: number }) => void;
   handleSnooze: (minutes: number) => Promise<void>;
   handleClearSnooze: () => Promise<void>;
   handleAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -101,6 +102,14 @@ export function useSettingsHandlers({
   const handleLoopDetectionChange = useCallback(
     (value: { enabled: boolean; cycleThreshold: number }) => {
       void updateConfig('notifications', { loopDetection: value });
+    },
+    [updateConfig]
+  );
+
+  // Turn budget: nested config field, read by the PreToolUse hook directly
+  const handleTurnBudgetChange = useCallback(
+    (value: { enabled: boolean; maxInputTokensPerTurn: number }) => {
+      void updateConfig('notifications', { turnBudget: value });
     },
     [updateConfig]
   );
@@ -290,6 +299,7 @@ export function useSettingsHandlers({
           includeSubagentErrors: true,
           triggers: defaultTriggers,
           loopDetection: { enabled: true, cycleThreshold: 4 },
+          turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 },
         },
         general: {
           launchAtLogin: false,
@@ -388,6 +398,7 @@ export function useSettingsHandlers({
     handleDefaultTabChange,
     handleNotificationToggle,
     handleLoopDetectionChange,
+    handleTurnBudgetChange,
     handleSnooze,
     handleClearSnooze,
     handleAddIgnoredRepository,

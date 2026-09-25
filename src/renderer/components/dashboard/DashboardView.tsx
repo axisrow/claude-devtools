@@ -13,6 +13,7 @@ import { api } from '@renderer/api';
 import { useStore } from '@renderer/store';
 import { formatShortcut } from '@renderer/utils/stringUtils';
 import { createLogger } from '@shared/utils/logger';
+import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { useShallow } from 'zustand/react/shallow';
 
 const logger = createLogger('Component:DashboardView');
@@ -76,7 +77,11 @@ const CommandSearch = ({ value, onChange }: Readonly<CommandSearchProps>): React
         <button
           onClick={() => openCommandPalette()}
           className="flex shrink-0 items-center gap-1 transition-opacity hover:opacity-80"
-          title={selectedProjectId ? `Search in sessions (${formatShortcut('K')})` : `Search projects (${formatShortcut('K')})`}
+          title={
+            selectedProjectId
+              ? `Search in sessions (${formatShortcut('K')})`
+              : `Search projects (${formatShortcut('K')})`
+          }
         >
           <kbd className="flex h-5 items-center justify-center rounded border border-border bg-surface-overlay px-1.5 text-[10px] font-medium text-text-muted">
             <Command className="size-2.5" />
@@ -96,6 +101,10 @@ const CommandSearch = ({ value, onChange }: Readonly<CommandSearchProps>): React
 
 interface RepositoryCardProps {
   repo: RepositoryGroup;
+  /** Total spend summed over all worktrees' sessions (undefined until computed) */
+  spend?: number;
+  /** Total turns summed over all worktrees' sessions (undefined until computed) */
+  turns?: number;
   onClick: () => void;
   isHighlighted?: boolean;
 }
@@ -139,6 +148,8 @@ function isWindowsUserPath(input: string): boolean {
 
 const RepositoryCard = ({
   repo,
+  spend,
+  turns,
   onClick,
   isHighlighted,
 }: Readonly<RepositoryCardProps>): React.JSX.Element => {
@@ -184,8 +195,32 @@ const RepositoryCard = ({
           </span>
         )}
         <span className="text-[10px] text-text-secondary">{repo.totalSessions} sessions</span>
-        <span className="text-text-muted">·</span>
-        <span className="text-[10px] text-text-muted">{lastActivity}</span>
+        {turns !== undefined && turns > 0 && (
+          <span className="inline-flex items-center gap-2">
+            <span className="text-text-muted">·</span>
+            <span
+              className="text-[10px] tabular-nums text-text-secondary"
+              title="Total turns across all worktrees' sessions (completed prompt→response exchanges)"
+            >
+              {formatTokensCompact(turns)} turns
+            </span>
+          </span>
+        )}
+        {spend !== undefined && spend > 0 && (
+          <span className="inline-flex items-center gap-2">
+            <span className="text-text-muted">·</span>
+            <span
+              className="text-[10px] tabular-nums text-text-secondary"
+              title="Total spend across all worktrees' sessions (input + cache + output)"
+            >
+              {formatTokensCompact(spend)}
+            </span>
+          </span>
+        )}
+        <span className="inline-flex items-center gap-2">
+          <span className="text-text-muted">·</span>
+          <span className="text-[10px] text-text-muted">{lastActivity}</span>
+        </span>
       </div>
     </button>
   );
@@ -261,15 +296,23 @@ const ProjectsGrid = ({
   searchQuery,
   maxProjects = 12,
 }: Readonly<ProjectsGridProps>): React.JSX.Element => {
-  const { repositoryGroups, repositoryGroupsLoading, fetchRepositoryGroups, selectRepository } =
-    useStore(
-      useShallow((s) => ({
-        repositoryGroups: s.repositoryGroups,
-        repositoryGroupsLoading: s.repositoryGroupsLoading,
-        fetchRepositoryGroups: s.fetchRepositoryGroups,
-        selectRepository: s.selectRepository,
-      }))
-    );
+  const {
+    repositoryGroups,
+    repositoryGroupsLoading,
+    repositorySpend,
+    repositoryTurns,
+    fetchRepositoryGroups,
+    selectRepository,
+  } = useStore(
+    useShallow((s) => ({
+      repositoryGroups: s.repositoryGroups,
+      repositoryGroupsLoading: s.repositoryGroupsLoading,
+      repositorySpend: s.repositorySpend,
+      repositoryTurns: s.repositoryTurns,
+      fetchRepositoryGroups: s.fetchRepositoryGroups,
+      selectRepository: s.selectRepository,
+    }))
+  );
 
   useEffect(() => {
     if (repositoryGroups.length === 0) {
@@ -380,6 +423,8 @@ const ProjectsGrid = ({
         <RepositoryCard
           key={repo.id}
           repo={repo}
+          spend={repositorySpend[repo.id]}
+          turns={repositoryTurns[repo.id]}
           onClick={() => selectRepository(repo.id)}
           isHighlighted={!!searchQuery.trim()}
         />

@@ -12,7 +12,7 @@
 
 import { type FileChangeEvent, type ParsedMessage } from '@main/types';
 import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
-import { LoopDetector } from '@main/utils/loopDetection';
+import { LoopDetector, StallDetector } from '@main/utils/loopDetection';
 import { extractProjectName, getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { EventEmitter } from 'events';
@@ -90,6 +90,7 @@ export class FileWatcher extends EventEmitter {
   private pendingReprocess = new Set<string>();
   /** Live tool-call loop detection state, fed from detectErrorsInSessionFile */
   private loopDetector = new LoopDetector();
+  private stallDetector = new StallDetector();
   /** Flag to prevent reuse after disposal */
   private disposed = false;
 
@@ -207,6 +208,7 @@ export class FileWatcher extends EventEmitter {
     this.processingInProgress.clear();
     this.pendingReprocess.clear();
     this.loopDetector.resetAll();
+    this.stallDetector.resetAll();
 
     logger.info('Stopped watching');
   }
@@ -659,6 +661,7 @@ export class FileWatcher extends EventEmitter {
       } else {
         // Fallback for first-read, truncation, or rewrite scenarios
         this.loopDetector.reset(filePath);
+        this.stallDetector.reset(filePath);
         const messages = await parseJsonlFile(filePath);
         currentLineCount = messages.length;
         newMessages = messages.slice(lastLineCount);
@@ -731,6 +734,32 @@ export class FileWatcher extends EventEmitter {
             })
           );
         }
+
+        // Context-stall detection — the tool-call counterpart of the key-based
+        // walk above: rounds that make calls yet stop growing the context
+        // (echo-marker loops with distinct args). Same gate, same threshold.
+        const stallIncident = this.stallDetector.feed(
+          filePath,
+          newMessages,
+          loopCfg.cycleThreshold
+        );
+        if (stallIncident) {
+          await this.notificationManager.addError(
+            createDetectedError({
+              sessionId,
+              projectId,
+              filePath,
+              projectName: extractProjectName(projectId, stallIncident.cwd),
+              lineNumber: lastLineCount + stallIncident.batchIndex + 1,
+              source: 'loop',
+              message: `${stallIncident.key} ×${stallIncident.count} — context not growing (echo-marker loop)`,
+              timestamp: new Date(),
+              cwd: stallIncident.cwd,
+              toolUseId: stallIncident.toolUseId || undefined,
+              triggerName: 'Stall detected',
+            })
+          );
+        }
       }
 
       // Update the last processed line count
@@ -764,6 +793,7 @@ export class FileWatcher extends EventEmitter {
     this.lastProcessedSize.delete(filePath);
     this.activeSessionFiles.delete(filePath);
     this.loopDetector.reset(filePath);
+    this.stallDetector.reset(filePath);
   }
 
   /**
@@ -774,6 +804,7 @@ export class FileWatcher extends EventEmitter {
     this.lastProcessedSize.clear();
     this.activeSessionFiles.clear();
     this.loopDetector.resetAll();
+    this.stallDetector.resetAll();
   }
 
   /**

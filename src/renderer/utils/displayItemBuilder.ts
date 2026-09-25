@@ -141,6 +141,8 @@ export function buildDisplayItems(
 
   // Build display items
   for (const step of steps) {
+    // Round marker: the assistant response this item belongs to
+    const roundId = step.sourceMessageId;
     // Skip the last output step
     if (lastOutputStepId && step.id === lastOutputStepId) {
       continue;
@@ -154,6 +156,7 @@ export function buildDisplayItems(
             content: step.content.thinkingText,
             timestamp: step.startTime,
             tokenCount: estimateTokens(step.content.thinkingText),
+            roundId,
           });
         }
         break;
@@ -169,6 +172,7 @@ export function buildDisplayItems(
             displayItems.push({
               type: 'tool',
               tool: linkedTool,
+              roundId,
             });
           }
         }
@@ -198,6 +202,7 @@ export function buildDisplayItems(
             content: step.content.outputText,
             timestamp: step.startTime,
             tokenCount: estimateTokens(step.content.outputText),
+            roundId,
           });
         }
         break;
@@ -209,6 +214,7 @@ export function buildDisplayItems(
             content: step.content.interruptionText,
             timestamp: step.startTime,
             tokenCount: estimateTokens(step.content.interruptionText),
+            roundId,
           });
         }
         break;
@@ -425,8 +431,7 @@ export function buildDisplayItemsFromMessages(
       }
       // Only treat as subagent input if there are NO tool_result blocks in this message
       const hasToolResults =
-        Array.isArray(msg.content) &&
-        msg.content.some((b) => b.type === 'tool_result');
+        Array.isArray(msg.content) && msg.content.some((b) => b.type === 'tool_result');
       if (rawText.trim() && !hasToolResults) {
         displayItems.push({
           type: 'subagent_input',

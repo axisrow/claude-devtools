@@ -771,6 +771,8 @@ export class ProjectScanner {
       contextConsumption: metadata.contextConsumption,
       compactionCount: metadata.compactionCount,
       phaseBreakdown: metadata.phaseBreakdown,
+      totalTokens: metadata.totalTokens,
+      turnCount: metadata.turnCount,
     };
   }
 
@@ -814,6 +816,8 @@ export class ProjectScanner {
           messageCount: 0,
           isOngoing: false,
           gitBranch: null,
+          totalTokens: 0,
+          turnCount: 0,
           hasDisplayableContent: false,
         };
       }
@@ -836,6 +840,8 @@ export class ProjectScanner {
       messageTimestamp: metadata.firstUserMessage?.timestamp,
       hasSubagents: false,
       messageCount: metadata.messageCount,
+      totalTokens: metadata.totalTokens,
+      turnCount: metadata.turnCount,
       metadataLevel,
     };
   }
