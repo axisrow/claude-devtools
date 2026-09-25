@@ -36,4 +36,6 @@ jobs:
         run: pnpm test
 
       - name: Validate plugin
-        run: pnpm add -g @anthropic-ai/claude-code@2.1.282 && claude plugin validate .
+        # npm, not pnpm: pnpm 10 blocks the package postinstall that
+        # downloads the native binary (Ignored build scripts).
+        run: npm install -g @anthropic-ai/claude-code@2.1.282 && claude plugin validate .
