@@ -171,6 +171,17 @@ describe('jsonl', () => {
       expect(merged[0].toolCalls).toHaveLength(1);
     });
 
+    it('mergeAssistantFragments joins string-content fragments without dropping text', () => {
+      const messages = [
+        createMessage({ uuid: 'a1', messageId: 'msg_1', usage: usageA, content: 'hel' }),
+        createMessage({ uuid: 'a2', messageId: 'msg_1', usage: usageA, content: 'lo' }),
+      ];
+
+      const merged = mergeAssistantFragments(messages);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].content).toBe('hello');
+    });
+
     it('keeps requestId-bearing snapshot lines untouched (dedupe path handles them)', () => {
       const messages = [
         createMessage({

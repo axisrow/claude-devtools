@@ -270,6 +270,19 @@ export function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage
   });
 }
 
+/** Fragment content concat: block arrays concatenate, strings join directly
+ * (proxy fragment lines partition one response's text); a string beside a
+ * block array becomes a text block, so neither side is dropped. */
+// eslint-disable-next-line sonarjs/function-return-type -- preserves the input shape by contract: string fragments stay string
+function concatContent(
+  a: ParsedMessage['content'],
+  b: ParsedMessage['content']
+): ParsedMessage['content'] {
+  const aBlocks = typeof a === 'string' ? [{ type: 'text' as const, text: a }] : (a ?? []);
+  const bBlocks = typeof b === 'string' ? [{ type: 'text' as const, text: b }] : (b ?? []);
+  return typeof a === 'string' && typeof b === 'string' ? a + b : [...aBlocks, ...bBlocks];
+}
+
 /**
  * Merge assistant streaming fragment lines into one message per API request.
  *
@@ -299,10 +312,7 @@ export function mergeAssistantFragments(messages: ParsedMessage[]): ParsedMessag
     const first = result[firstIdx];
     result[firstIdx] = {
       ...first,
-      content: [
-        ...(Array.isArray(first.content) ? first.content : []),
-        ...(Array.isArray(msg.content) ? msg.content : []),
-      ],
+      content: concatContent(first.content, msg.content),
       toolCalls: [...first.toolCalls, ...msg.toolCalls],
       toolResults: [...first.toolResults, ...msg.toolResults],
       usage: msg.usage ?? first.usage,
