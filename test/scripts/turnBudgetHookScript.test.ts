@@ -61,7 +61,9 @@ describe('hook analyzeTurn', () => {
 
 describe('hook readConfig', () => {
   it('reads the section, defaults when missing, survives garbage', () => {
-    expect(readConfig('{"turnBudget":{"enabled":false,"maxInputTokensPerTurn":42}}')).toEqual({
+    expect(
+      readConfig('{"notifications":{"turnBudget":{"enabled":false,"maxInputTokensPerTurn":42}}}')
+    ).toEqual({
       enabled: false,
       budget: 42,
     });

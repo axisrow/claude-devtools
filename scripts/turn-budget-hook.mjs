@@ -107,7 +107,8 @@ export function* linesBackward(fd, size) {
 export function readConfig(raw) {
   try {
     const cfg = JSON.parse(raw ?? '{}');
-    const tb = cfg.turnBudget ?? {};
+    // ConfigManager writes it under notifications.turnBudget, not top level
+    const tb = cfg.notifications?.turnBudget ?? {};
     return {
       enabled: tb.enabled !== false,
       budget: Number.isInteger(tb.maxInputTokensPerTurn) ? tb.maxInputTokensPerTurn : DEFAULT_BUDGET,
