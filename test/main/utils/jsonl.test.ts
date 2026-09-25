@@ -183,6 +183,65 @@ describe('jsonl', () => {
       expect(merged[0].content).toBe('hello');
     });
 
+    // GLM proxy shape (#19): subagent transcripts write the first streamed
+    // blocks with usage 0/0 and the billed totals only on the final fragment
+    it('collapses GLM ghost partials (0/0 first blocks) into the billed fragment', () => {
+      const billedUsage = { input_tokens: 27503, output_tokens: 73 };
+      const messages = [
+        createMessage({
+          uuid: 'g1',
+          messageId: 'msg_glm_1',
+          usage: { input_tokens: 0, output_tokens: 0 },
+          content: [{ type: 'thinking', thinking: 'plan', signature: 'sig' }],
+        }),
+        createMessage({
+          uuid: 'g2',
+          messageId: 'msg_glm_1',
+          usage: { input_tokens: 0, output_tokens: 0 },
+          content: [{ type: 'text', text: 'reading the file' }],
+        }),
+        createMessage({
+          uuid: 'g3',
+          messageId: 'msg_glm_1',
+          usage: billedUsage,
+          content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+          toolCalls: [{ id: 't1', name: 'Read', input: {}, isTask: false }],
+        }),
+      ];
+
+      const merged = mergeAssistantFragments(messages);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].uuid).toBe('g1');
+      // merge keeps the LAST fragment's usage (no billed-selection); the GLM
+      // format guarantees the billed totals land on the final fragment
+      expect(merged[0].usage).toEqual(billedUsage);
+      expect(merged[0].content).toHaveLength(3);
+      expect(merged[0].toolCalls).toHaveLength(1);
+    });
+
+    it('merges an all-ghost response into one zero-usage message (stays a ghost round)', () => {
+      const zero = { input_tokens: 0, output_tokens: 0 };
+      const messages = [
+        createMessage({
+          uuid: 'h1',
+          messageId: 'msg_glm_2',
+          usage: zero,
+          content: [{ type: 'text', text: 'a' }],
+        }),
+        createMessage({
+          uuid: 'h2',
+          messageId: 'msg_glm_2',
+          usage: zero,
+          content: [{ type: 'text', text: 'b' }],
+        }),
+      ];
+
+      const merged = mergeAssistantFragments(messages);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].usage).toEqual(zero); // no billing invented — exclusion logic still sees a ghost
+      expect(merged[0].content).toHaveLength(2);
+    });
+
     it('keeps requestId-bearing snapshot lines untouched (dedupe path handles them)', () => {
       const messages = [
         createMessage({
