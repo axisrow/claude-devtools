@@ -28,6 +28,8 @@ export interface RepositorySlice {
   repositorySpend: Record<string, number>;
   /** Repo-id -> total turns summed over all worktrees' sessions (best-effort) */
   repositoryTurns: Record<string, number>;
+  /** Repo-id -> /name of the most recently updated named session (best-effort) */
+  repositoryLastName: Record<string, string | undefined>;
   viewMode: 'flat' | 'grouped';
 
   // Actions
@@ -55,6 +57,7 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
   repositoryGroupsError: null,
   repositorySpend: {},
   repositoryTurns: {},
+  repositoryLastName: {},
   viewMode: 'grouped', // Default to grouped view
 
   // Fetch all repository groups (projects grouped by git repo)
@@ -87,9 +90,16 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
           const sessions = perWorktree.flat();
           const total = sessions.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0);
           const turns = sessions.reduce((sum, s) => sum + (s.turnCount ?? 0), 0);
+          const lastNamed = sessions
+            .filter((s) => s.name)
+            .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0];
           set((state) => ({
             repositorySpend: { ...state.repositorySpend, [repo.id]: total },
             repositoryTurns: { ...state.repositoryTurns, [repo.id]: turns },
+            repositoryLastName: {
+              ...state.repositoryLastName,
+              [repo.id]: lastNamed?.name,
+            },
           }));
         } catch {
           // leave this repo's total absent — the card just omits it

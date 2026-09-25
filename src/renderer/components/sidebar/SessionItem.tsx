@@ -270,8 +270,9 @@ export const SessionItem = React.memo(function SessionItem({
           <span
             className="truncate text-[13px] font-medium leading-tight"
             style={{ color: isActive ? 'var(--color-text)' : 'var(--color-text-muted)' }}
+            title={session.name ? session.firstMessage : undefined}
           >
-            {session.firstMessage ?? 'Untitled'}
+            {session.name ?? session.firstMessage ?? 'Untitled'}
           </span>
         </div>
 

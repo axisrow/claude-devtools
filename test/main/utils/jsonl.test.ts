@@ -8,6 +8,7 @@ import {
   calculateMetrics,
   mergeAssistantFragments,
   parseJsonlFile,
+  readSessionName,
 } from '../../../src/main/utils/jsonl';
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
 import { isAIChunk } from '../../../src/main/types';
@@ -277,6 +278,71 @@ describe('jsonl', () => {
       expect(ai[0].responses).toHaveLength(1);
       expect(ai[0].responses[0].content).toHaveLength(2);
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
+  describe('session name (agent-name / ai-title)', () => {
+    const USER = {
+      type: 'user',
+      uuid: 'u1',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: { role: 'user', content: 'hello' },
+      isMeta: false,
+    };
+
+    function writeSession(lines: unknown[]): { filePath: string; cleanup: () => void } {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-name-'));
+      const filePath = path.join(tempDir, 'session.jsonl');
+      fs.writeFileSync(filePath, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`, 'utf8');
+      return {
+        filePath,
+        cleanup: () => {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          } catch {
+            // best-effort
+          }
+        },
+      };
+    }
+
+    it('extracts last agent-name, falling back to ai-title', async () => {
+      const { filePath, cleanup } = writeSession([
+        USER,
+        { type: 'agent-name', agentName: 'first-name', sessionId: 's1' },
+        { type: 'ai-title', aiTitle: 'auto title', sessionId: 's1' },
+        { type: 'agent-name', agentName: 'renamed', sessionId: 's1' },
+      ]);
+      try {
+        const meta = await analyzeSessionFileMetadata(filePath);
+        expect(meta.name).toBe('renamed');
+        await expect(readSessionName(filePath)).resolves.toBe('renamed');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('falls back to ai-title when no agent-name, null when unnamed', async () => {
+      const withTitle = writeSession([
+        USER,
+        { type: 'ai-title', aiTitle: 'auto title', sessionId: 's1' },
+      ]);
+      try {
+        await expect(readSessionName(withTitle.filePath)).resolves.toBe('auto title');
+        const meta = await analyzeSessionFileMetadata(withTitle.filePath);
+        expect(meta.name).toBe('auto title');
+      } finally {
+        withTitle.cleanup();
+      }
+
+      const unnamed = writeSession([USER]);
+      try {
+        await expect(readSessionName(unnamed.filePath)).resolves.toBeNull();
+        const meta = await analyzeSessionFileMetadata(unnamed.filePath);
+        expect(meta.name).toBeNull();
+      } finally {
+        unnamed.cleanup();
+      }
     });
   });
 

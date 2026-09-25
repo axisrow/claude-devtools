@@ -105,6 +105,8 @@ interface RepositoryCardProps {
   spend?: number;
   /** Total turns summed over all worktrees' sessions (undefined until computed) */
   turns?: number;
+  /** /name of the most recently updated named session (undefined until computed) */
+  lastName?: string;
   onClick: () => void;
   isHighlighted?: boolean;
 }
@@ -150,6 +152,7 @@ const RepositoryCard = ({
   repo,
   spend,
   turns,
+  lastName,
   onClick,
   isHighlighted,
 }: Readonly<RepositoryCardProps>): React.JSX.Element => {
@@ -219,6 +222,17 @@ const RepositoryCard = ({
         )}
         <span className="inline-flex items-center gap-2">
           <span className="text-text-muted">·</span>
+          {lastName && (
+            <>
+              <span
+                className="min-w-0 max-w-[160px] truncate text-[10px] text-text-secondary"
+                title="Session name of the most recently updated named session (/name)"
+              >
+                {lastName}
+              </span>
+              <span className="text-text-muted">·</span>
+            </>
+          )}
           <span className="text-[10px] text-text-muted">{lastActivity}</span>
         </span>
       </div>
@@ -301,6 +315,7 @@ const ProjectsGrid = ({
     repositoryGroupsLoading,
     repositorySpend,
     repositoryTurns,
+    repositoryLastName,
     fetchRepositoryGroups,
     selectRepository,
   } = useStore(
@@ -309,6 +324,7 @@ const ProjectsGrid = ({
       repositoryGroupsLoading: s.repositoryGroupsLoading,
       repositorySpend: s.repositorySpend,
       repositoryTurns: s.repositoryTurns,
+      repositoryLastName: s.repositoryLastName,
       fetchRepositoryGroups: s.fetchRepositoryGroups,
       selectRepository: s.selectRepository,
     }))
@@ -425,6 +441,7 @@ const ProjectsGrid = ({
           repo={repo}
           spend={repositorySpend[repo.id]}
           turns={repositoryTurns[repo.id]}
+          lastName={repositoryLastName[repo.id]}
           onClick={() => selectRepository(repo.id)}
           isHighlighted={!!searchQuery.trim()}
         />
