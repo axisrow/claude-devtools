@@ -30,7 +30,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
-import { pathToFileURL } from 'url';
 
 import {
   bashStem,
@@ -45,7 +44,7 @@ import {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
 } from './analyzeSession';
-import { inDateRange, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
+import { inDateRange, isDirectRun, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
 
 interface RawUsage {
   input_tokens?: number;
@@ -580,7 +579,7 @@ function modelShareCell(e: InventoryEntry): string {
 }
 
 // run only when executed directly — vitest imports this file for scanSessionFile
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectRun(import.meta.url)) {
   void main().catch((err) => {
     console.error(err);
     process.exitCode = 1;
