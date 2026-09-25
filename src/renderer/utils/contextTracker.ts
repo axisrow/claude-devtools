@@ -9,7 +9,7 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import { isQuietTick, isStalledRound } from '@shared/constants/loopPolicy';
+import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -455,7 +455,9 @@ function aggregateWaitLoopRounds(
       outputTokens: round.outputTokens,
       billed: round.billed,
     }));
-  if (rounds.length === 0) return null;
+  // same minimum-round gate as the CLI's wait_loop finding (@shared/constants/loopPolicy):
+  // a lone quiet round is not burn the analyzer would flag
+  if (rounds.length < WAIT_LOOP_MIN_TICKS) return null;
 
   return {
     id: generateWaitLoopId(turnIndex),

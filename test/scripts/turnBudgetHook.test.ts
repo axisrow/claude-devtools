@@ -68,6 +68,28 @@ describe('turnSpendStats', () => {
     expect(s.spends[0].rounds).toBe(2);
   });
 
+  it('bounds turns at compaction markers too — the hook boundary, not just user messages', () => {
+    const s = mkState();
+    for (const line of [
+      userLine('before compact'),
+      assistantLine(1000, 50_000, 200),
+      JSON.stringify({
+        type: 'user',
+        isMeta: true,
+        isCompactSummary: true,
+        message: { role: 'user', content: 'compact summary' },
+      }),
+      assistantLine(2000, 60_000, 500),
+    ]) {
+      feedLine(line, s);
+    }
+    // post-compact activity is its own turn — pre-compact spend must not fold in
+    expect(s.spends).toHaveLength(1);
+    expect(s.spends[0].inputSide).toBe(51_000);
+    expect(s.spends[0].rounds).toBe(1);
+    expect(s.current?.inputSide).toBe(62_000);
+  });
+
   it('computes nearest-rank percentile', () => {
     const sorted = [10, 20, 30, 40, 100];
     expect(percentile(sorted, 50)).toBe(30);

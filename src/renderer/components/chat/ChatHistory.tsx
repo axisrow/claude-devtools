@@ -266,28 +266,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   // Local tool highlight for context panel navigation (separate from controller)
   const [contextNavToolUseId, setContextNavToolUseId] = useState<string | null>(null);
-  // Red body target: Wait/Loop entries keep the whole turn tinted until the
-  // next such navigation (unlike the 2s header flash)
-  const [bodyHighlightGroupId, setBodyHighlightGroupId] = useState<string | null>(null);
   const effectiveHighlightToolUseId = controllerToolUseId ?? contextNavToolUseId ?? undefined;
   // Use blue for context panel tool navigation, otherwise use controller's color
   const effectiveHighlightColor = contextNavToolUseId ? ('blue' as const) : highlightColor;
 
-  // Red alarm on the turn header: 2s panel flash or persistent loop-notification
-  // alarm (red group navigation without a tool target)
+  // Red alarm on the turn header AND the turn body: 2s panel flash (Wait/Loop
+  // navigation tints both) or persistent loop-notification alarm (red group
+  // navigation without a tool target). One state drives both, so the tint
+  // always clears with the same 2s timer — nothing can outlive the flash.
   const isHeaderHighlightedFor = (groupId: string): boolean =>
     headerFlashGroupId === groupId ||
-    isGroupHeaderAlarm(groupId, {
-      highlightedGroupId,
-      highlightColor,
-      highlightToolUseId: effectiveHighlightToolUseId,
-    });
-
-  // Red body: the whole turn's stream stays tinted while it remains the red
-  // group navigation target (Wait/Loop entries) — not a flash, clears when
-  // another navigation lands
-  const isBodyHighlightedFor = (groupId: string): boolean =>
-    bodyHighlightGroupId === groupId ||
     isGroupHeaderAlarm(groupId, {
       highlightedGroupId,
       highlightColor,
@@ -453,7 +441,6 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
         setHighlightedGroupId(groupId);
         setIsNavigationHighlight(true);
         if (opts?.flashHeader) {
-          setBodyHighlightGroupId(groupId);
           setHeaderFlashGroupId(groupId);
           if (headerFlashTimerRef.current) clearTimeout(headerFlashTimerRef.current);
           headerFlashTimerRef.current = setTimeout(() => {
@@ -862,7 +849,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                           isNavigationHighlight={isNavigationHighlight}
                           highlightColor={effectiveHighlightColor}
                           isHeaderHighlighted={isHeaderHighlightedFor(item.group.id)}
-                          isBodyHighlighted={isBodyHighlightedFor(item.group.id)}
+                          isBodyHighlighted={isHeaderHighlightedFor(item.group.id)}
                           registerChatItemRef={registerChatItemRef}
                           registerAIGroupRef={registerAIGroupRefCombined}
                           registerToolRef={registerToolRef}
@@ -882,7 +869,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                     isNavigationHighlight={isNavigationHighlight}
                     highlightColor={effectiveHighlightColor}
                     isHeaderHighlighted={isHeaderHighlightedFor(item.group.id)}
-                    isBodyHighlighted={isBodyHighlightedFor(item.group.id)}
+                    isBodyHighlighted={isHeaderHighlightedFor(item.group.id)}
                     registerChatItemRef={registerChatItemRef}
                     registerAIGroupRef={registerAIGroupRefCombined}
                     registerToolRef={registerToolRef}

@@ -545,6 +545,10 @@ export default defineConfig([
             {
               group: ['../**/..'],
               message: 'Avoid deep relative imports, use @/ aliases',
+              // the turn-budget hook must stay a plain .mjs outside src (Claude
+              // Code runs it standalone); the calibration CLI imports its shared
+              // turn-boundary predicate so the two accountings cannot drift
+              allowImportNames: ['isTurnBoundary'],
             },
           ],
         },

@@ -22,7 +22,7 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import { isQuietTick, isStalledRound } from '@shared/constants/loopPolicy';
+import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
 import { asText, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -81,7 +81,7 @@ export const WASTE_THRESHOLDS = {
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
   loopStreakMin: 3,
-  waitLoopTicks: 5,
+  waitLoopTicks: WAIT_LOOP_MIN_TICKS, // from @shared/constants/loopPolicy — shared with the renderer
 } as const;
 
 // gaps between a turn's rounds longer than this are idle, not work
