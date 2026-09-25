@@ -49,7 +49,6 @@ export default defineConfig({
     outDir: 'dist-cli',
     emptyOutDir: true,
     copyPublicDir: false,
-    publicDir: false,
     target: 'node20',
     ssr: true,
     minify: false,
