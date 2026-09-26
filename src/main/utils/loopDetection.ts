@@ -19,6 +19,8 @@ export interface LoopIncident {
   key: string;
   /** current run length */
   count: number;
+  /** billed tokens burned by the rounds of this run so far (requestKey-deduped) */
+  tokens: number;
   /** toolUseId of the run's latest call — deep-link target */
   toolUseId: string;
   /** cwd of the last fed message carrying one, for project naming */
@@ -27,9 +29,25 @@ export interface LoopIncident {
   batchIndex: number;
 }
 
+/** Billed side of one request: the four usage counters, total. */
+function billedTokensOf(msg: ParsedMessage): number {
+  const u = msg.usage;
+  if (!u) return 0;
+  return (
+    (u.input_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0) +
+    (u.cache_creation_input_tokens ?? 0) +
+    (u.output_tokens ?? 0)
+  );
+}
+
 interface FileLoopState {
   lastKey: string;
   streak: number;
+  /** billed tokens of the current run's rounds — survives batches, resets with the streak */
+  streakTokens: number;
+  /** billedRequestKey of the last processed request — GLM-proxy fragment dedup */
+  lastRequestKey?: string;
   lastToolUseId: string;
   /** streak length at last notification; 0 = not yet notified for this run */
   notifiedCount: number;
@@ -39,6 +57,7 @@ interface FileLoopState {
 const freshState = (): FileLoopState => ({
   lastKey: '',
   streak: 0,
+  streakTokens: 0,
   lastToolUseId: '',
   notifiedCount: 0,
 });
@@ -75,6 +94,17 @@ export class LoopDetector {
       // main-chain assistant lines only — same accounting as the inventory scan
       if (msg.type !== 'assistant' || msg.isSidechain || msg.model === '<synthetic>') continue;
       if (msg.cwd) state.cwd = msg.cwd;
+      // one request streamed as several lines (each with the full usage) bills once
+      const billed = billedTokensOf(msg);
+      const requestKey = billedRequestKey(msg);
+      const doubleBilled = requestKey !== undefined && requestKey === state.lastRequestKey;
+      if (requestKey) state.lastRequestKey = requestKey;
+
+      // ponytail: a round's tokens are booked once even when it carries several
+      // calls of the run (count grows per call) — tokens track ROUNDS, counts
+      // track CALLS; a mixed A-extends/B-starts message books its tokens on the
+      // new run — same approximation class as the count itself
+      let billedBooked = false;
 
       for (const call of msg.toolCalls) {
         // ponytail: snapshot dedup by consecutive toolUseId only — real repeats
@@ -84,9 +114,18 @@ export class LoopDetector {
         const key = bashStem(normalizeCallKey(call.name, call.input ?? {}));
         if (key === state.lastKey) {
           state.streak += 1;
+          // book at the FIRST extending call so an incident fired by this very
+          // round already carries its tokens
+          if (!billedBooked) {
+            billedBooked = true;
+            if (!doubleBilled && billed > 0) state.streakTokens += billed;
+          }
         } else {
           state.lastKey = key;
           state.streak = 1;
+          // the founding round belongs to the run — same accounting as the
+          // first stalled round in StallDetector
+          state.streakTokens = doubleBilled ? 0 : billed;
           state.notifiedCount = 0;
         }
         state.lastToolUseId = call.id ?? '';
@@ -99,6 +138,7 @@ export class LoopDetector {
           incident = {
             key,
             count: state.streak,
+            tokens: state.streakTokens,
             toolUseId: call.id,
             cwd: state.cwd,
             batchIndex: i,
@@ -115,6 +155,8 @@ interface FileStallState {
   /** billedRequestKey of the last processed request — GLM-proxy fragment dedup */
   lastRequestKey?: string;
   streak: number;
+  /** billed tokens of the current stall's rounds — survives batches, resets with the streak */
+  streakTokens: number;
   lastToolUseId: string;
   /** streak length at last notification; 0 = not yet notified for this run */
   notifiedCount: number;
@@ -124,6 +166,7 @@ interface FileStallState {
 const freshStallState = (): FileStallState => ({
   lastContext: 0,
   streak: 0,
+  streakTokens: 0,
   lastToolUseId: '',
   notifiedCount: 0,
 });
@@ -181,6 +224,7 @@ export class StallDetector {
       const toolUseId = msg.toolCalls[msg.toolCalls.length - 1]?.id ?? '';
       if (stalled) {
         state.streak += 1;
+        state.streakTokens += context + output;
         state.lastToolUseId = toolUseId;
         if (
           !incident &&
@@ -191,6 +235,7 @@ export class StallDetector {
           incident = {
             key: 'context stall',
             count: state.streak,
+            tokens: state.streakTokens,
             toolUseId,
             cwd: state.cwd,
             batchIndex: i,
@@ -198,6 +243,7 @@ export class StallDetector {
         }
       } else {
         state.streak = 0;
+        state.streakTokens = 0;
         state.notifiedCount = 0;
       }
     }

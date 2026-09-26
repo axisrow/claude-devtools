@@ -7,7 +7,12 @@ import { LoopDetector, StallDetector } from '../../../src/main/utils/loopDetecti
 const assistant = (
   uuid: string,
   calls: { id: string; name: string; input?: Record<string, unknown> }[],
-  opts: { sidechain?: boolean; model?: string } = {}
+  opts: {
+    sidechain?: boolean;
+    model?: string;
+    usage?: { input?: number; output?: number };
+    messageId?: string;
+  } = {}
 ): ParsedMessage =>
   ({
     uuid,
@@ -20,6 +25,17 @@ const assistant = (
     isMeta: false,
     toolCalls: calls.map((c) => ({ id: c.id, name: c.name, input: c.input ?? {}, isTask: false })),
     toolResults: [],
+    ...(opts.usage
+      ? {
+          usage: {
+            input_tokens: opts.usage.input ?? 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: opts.usage.output ?? 0,
+          },
+        }
+      : {}),
+    ...(opts.messageId ? { messageId: opts.messageId } : {}),
   }) as unknown as ParsedMessage;
 
 const read = (
@@ -39,6 +55,7 @@ describe('LoopDetector', () => {
     expect(first).toEqual({
       key: 'Read|/x/f',
       count: 3,
+      tokens: 0,
       toolUseId: 't3',
       cwd: undefined,
       batchIndex: 2,
@@ -77,6 +94,7 @@ describe('LoopDetector', () => {
     expect(det.feed('s', msgs, 2)).toEqual({
       key: 'Read|/x/f',
       count: 2,
+      tokens: 0,
       toolUseId: 't2',
       cwd: undefined,
       batchIndex: 2,
@@ -93,6 +111,59 @@ describe('LoopDetector', () => {
     det.feed('s', msgs.slice(0, 3), 3); // 2x Read + break
     const incident = det.feed('s', msgs.slice(3), 3); // 3x Read -> fire
     expect(incident?.count).toBe(3);
+  });
+
+  it("accumulates the run's billed tokens across batches; re-notify shows the growth", () => {
+    const det = new LoopDetector();
+    const round = (n: string) =>
+      assistant(n, [read(`t-${n}`, '/x/f')], { usage: { input: 1000, output: 100 } });
+    const first = det.feed('s', [round('a1'), round('a2'), round('a3')], 3);
+    expect(first?.count).toBe(3);
+    expect(first?.tokens).toBe(3300); // 3 × (1000 + 100)
+    const second = det.feed('s', [round('b1'), round('b2'), round('b3')], 3); // streak 6 = 2×3
+    expect(second?.count).toBe(6);
+    expect(second?.tokens).toBe(6600); // monotone total, no double-billing
+  });
+
+  it('a key change resets the token total with the streak', () => {
+    const det = new LoopDetector();
+    const a = [1, 2, 3].map((n) =>
+      assistant(`a${n}`, [read(`t${n}`, '/x/f')], { usage: { input: 1000 } })
+    );
+    const b = [1, 2, 3].map((n) =>
+      assistant(`b${n}`, [read(`t${n}`, '/x/other')], { usage: { input: 500 } })
+    );
+    const first = det.feed('s', a, 3);
+    expect(first?.tokens).toBe(3000);
+    const second = det.feed('s', b, 3);
+    expect(second?.key).toBe('Read|/x/other');
+    expect(second?.tokens).toBe(1500); // only the new run's rounds
+  });
+
+  it('bills GLM-proxy fragments of one request once (requestKey dedup)', () => {
+    const det = new LoopDetector();
+    // one request streamed as two lines, EACH carrying the full usage —
+    // incremental batches are not merged at parse time
+    const msgs = [
+      assistant('f1', [read('t1', '/x/f')], { usage: { input: 45_000 }, messageId: 'req_a' }),
+      assistant('f2', [read('t2', '/x/f')], { usage: { input: 45_000 }, messageId: 'req_a' }),
+      assistant('f3', [read('t3', '/x/f')], { usage: { input: 45_000 }, messageId: 'req_b' }),
+    ];
+    const incident = det.feed('s', msgs, 3);
+    expect(incident?.count).toBe(3);
+    expect(incident?.tokens).toBe(90_000); // req_a billed once
+  });
+
+  it('a streaming snapshot dup adds no tokens', () => {
+    const det = new LoopDetector();
+    const msgs = [
+      assistant('m1', [read('t1', '/x/f')], { usage: { input: 1000 } }),
+      assistant('m2', [read('t1', '/x/f')], { usage: { input: 50_000 } }), // dup of t1
+      assistant('m3', [read('t2', '/x/f')], { usage: { input: 1000 } }),
+    ];
+    const incident = det.feed('s', msgs, 2);
+    expect(incident?.count).toBe(2);
+    expect(incident?.tokens).toBe(2000); // only the two real rounds
   });
 
   it('files are independent', () => {
@@ -240,5 +311,38 @@ describe('StallDetector', () => {
     ];
     // without the reset the streak would be 5 → incident; it must stay 3
     expect(detector.feed('/s.jsonl', batch, threshold)).toBeNull();
+  });
+
+  it("incident carries the stall run's billed tokens across batches", () => {
+    const detector = new StallDetector();
+    const batch = [
+      assistantMsg({ input: 200, cacheRead: 134_000, output: 2_000, commands: ['cat plan.md'] }),
+      echoRound(1),
+      echoRound(2),
+      echoRound(3),
+    ];
+    expect(detector.feed('/s.jsonl', batch, threshold)).toBeNull();
+    const incident = detector.feed('/s.jsonl', [echoRound(4)], threshold);
+    expect(incident?.count).toBe(4);
+    // echo n bills 134_219 + 25n tokens (input + cacheRead + output); baseline work round excluded
+    expect(incident?.tokens).toBe(4 * 134_219 + 25 * (1 + 2 + 3 + 4));
+  });
+
+  it('a work round resets the token total with the streak', () => {
+    const detector = new StallDetector();
+    const batch = [
+      echoRound(1),
+      echoRound(2),
+      // work round: loud output; its context sits between echo rounds so the
+      // echo streak resumes stalling right after it
+      assistantMsg({ input: 150, cacheRead: 134_100, output: 2_000, commands: ['edit file.ts'] }),
+      echoRound(3),
+      echoRound(4),
+      echoRound(5),
+    ];
+    expect(detector.feed('/s.jsonl', batch, threshold)).toBeNull();
+    const incident = detector.feed('/s.jsonl', [echoRound(6)], threshold);
+    expect(incident?.count).toBe(4);
+    expect(incident?.tokens).toBe(4 * 134_219 + 25 * (3 + 4 + 5 + 6)); // echo3..echo6 only
   });
 });

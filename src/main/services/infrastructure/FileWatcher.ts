@@ -15,6 +15,7 @@ import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
 import { LoopDetector, StallDetector } from '@main/utils/loopDetection';
 import { extractProjectName, getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
+import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -726,7 +727,10 @@ export class FileWatcher extends EventEmitter {
               // approximate — deep link targets toolUseId, line is a fallback
               lineNumber: lastLineCount + incident.batchIndex + 1,
               source: 'loop',
-              message: `${incident.key} ×${incident.count} — possible stuck loop`,
+              message:
+                `${incident.key} ×${incident.count}` +
+                (incident.tokens > 0 ? ` · ${formatTokensCompact(incident.tokens)}` : '') +
+                ' — possible stuck loop',
               timestamp: new Date(),
               cwd: incident.cwd,
               toolUseId: incident.toolUseId || undefined,
@@ -752,7 +756,10 @@ export class FileWatcher extends EventEmitter {
               projectName: extractProjectName(projectId, stallIncident.cwd),
               lineNumber: lastLineCount + stallIncident.batchIndex + 1,
               source: 'loop',
-              message: `${stallIncident.key} ×${stallIncident.count} — context not growing (echo-marker loop)`,
+              message:
+                `${stallIncident.key} ×${stallIncident.count}` +
+                (stallIncident.tokens > 0 ? ` · ${formatTokensCompact(stallIncident.tokens)}` : '') +
+                ' — context not growing (echo-marker loop)',
               timestamp: new Date(),
               cwd: stallIncident.cwd,
               toolUseId: stallIncident.toolUseId || undefined,
