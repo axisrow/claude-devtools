@@ -88,7 +88,7 @@ export function analyzeTurn(linesNewestFirst) {
       break;
     }
     if (m.type === 'assistant' && m.message?.usage) {
-      const key = m.message.requestId ?? m.message.id;
+      const key = m.requestId ?? m.message.id;
       if (key) {
         if (billed.has(key)) continue;
         billed.add(key);
@@ -163,14 +163,8 @@ export function main() {
   try {
     fd = openSync(transcript, 'r');
     const size = statSync(transcript).size;
-    for (const line of linesBackward(fd, size)) {
-      const r = analyzeTurn([line]);
-      spent += r.spent;
-      if (r.boundaryFound) {
-        boundaryFound = true;
-        break;
-      }
-    }
+    // Keep the request deduplication set for the whole turn, not one line.
+    ({ spent, boundaryFound } = analyzeTurn(linesBackward(fd, size)));
   } catch {
     // fail-open
   } finally {

@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — .mjs hook script has no type declarations
@@ -27,9 +32,9 @@ function usageLine(opts: {
 }): string {
   return JSON.stringify({
     type: 'assistant',
+    ...(opts.requestId ? { requestId: opts.requestId } : {}),
     message: {
       id: opts.id,
-      ...(opts.requestId ? { requestId: opts.requestId } : {}),
       usage: {
         input_tokens: opts.input ?? 1000,
         cache_read_input_tokens: opts.cacheRead ?? 340000,
@@ -102,5 +107,67 @@ describe('turn-budget-hook analyzeTurn', () => {
     ];
     const { spent } = analyzeTurn(lines);
     expect(spent).toBe(341000);
+  });
+});
+
+describe('turn-budget-hook entry point', () => {
+  it.each(['requestId', 'message.id'])('bills streamed %s usage once when run by Node', (key) => {
+    const home = mkdtempSync(join(tmpdir(), 'turn-budget-hook-'));
+    try {
+      const configDir = join(home, '.claude');
+      mkdirSync(configDir);
+      writeFileSync(
+        join(configDir, 'claude-devtools-config.json'),
+        JSON.stringify({
+          notifications: { turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 } },
+        })
+      );
+      const transcript = join(home, 'session.jsonl');
+      const runHook = (lines: string[]): string => {
+        writeFileSync(transcript, lines.join('\n') + '\n');
+        const result = spawnSync(process.execPath, [resolve('scripts/turn-budget-hook.mjs')], {
+          cwd: home,
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          encoding: 'utf8',
+          timeout: 5_000,
+          input: JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            session_id: 'test',
+            transcript_path: transcript,
+            tool_name: 'Bash',
+            tool_input: { command: 'pnpm test' },
+          }),
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe('');
+        return result.stdout;
+      };
+      const fragments = Array.from({ length: 75 }, (_, i) =>
+        [0, 1].map((fragment) =>
+          usageLine({
+            id: key === 'requestId' ? `m-${i}-${fragment}` : `m-${i}`,
+            requestId: key === 'requestId' ? `req-${i}` : undefined,
+            input: 1_000,
+            cacheRead: 199_000,
+          })
+        )
+      ).flat();
+
+      // 40 requests cost 8M, not 16M: the old main() lost its dedup set per line.
+      expect(runHook([USER_LINE, ...fragments.slice(0, 80)])).toBe('');
+
+      // Still enforce the real budget, with the deduplicated total in the log.
+      const denied = JSON.parse(runHook([USER_LINE, ...fragments]));
+      expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(readFileSync(join(configDir, 'claude-devtools-turnbudget.log'), 'utf8')).toContain(
+        'spent=15000000 budget=15000000 denied=true'
+      );
+
+      expect(runHook([USER_LINE, ...fragments, USER_LINE, ...fragments.slice(0, 80)])).toBe('');
+      expect(runHook(fragments)).toBe(''); // Missing boundary must remain fail-open.
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
