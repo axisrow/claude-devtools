@@ -6,12 +6,16 @@ import { describe, expect, it } from 'vitest';
 import { create } from 'zustand';
 
 import { createConversationSlice } from '../../../src/renderer/store/slices/conversationSlice';
+import { enhanceAIGroup } from '../../../src/renderer/utils/aiGroupEnhancer';
+import { displayItemKey } from '../../../src/renderer/utils/displayItemBuilder';
+import { precedingSlashFromUserGroup } from '../../../src/renderer/utils/slashCommandExtractor';
 import {
   makeAIGroup,
   makeConversation,
   makeSteps,
   makeSystemGroup,
   makeUserGroup,
+  NOW,
 } from '../../mocks/conversationFixtures';
 
 import type { AppState } from '../../../src/renderer/store/types';
@@ -109,5 +113,53 @@ describe('conversationSlice performSearch (full corpus, issue #36)', () => {
     const s = store.getState();
     expect(s.searchExpandedAIGroupIds.has('ai-g1')).toBe(true);
     expect(s.searchCurrentDisplayItemId).toBe('tool-tu-1-1');
+  });
+
+  it('display item keys match the rendered list for slash-command sessions', () => {
+    const store = makeStore();
+    // The user slash command precedes the turn; a command-message copy inside
+    // the AI group's responses has a LATER timestamp, so render (Strategy-1
+    // slash, stamped with the user command time) and a scan without slash info
+    // (fallback slash, stamped with the response time) order slash items
+    // differently — positional keys drift. Regression test for review fix 1.
+    const userGroup = makeUserGroup(
+      'user-cmd',
+      '/foo run',
+      '<command-name>/foo</command-name><command-message>foo</command-message>',
+      new Date(NOW.getTime() - 5000)
+    );
+    const cmdCopy = {
+      uuid: 'user-cmd',
+      type: 'user',
+      isMeta: false,
+      content: '<command-name>/foo</command-name><command-message>foo</command-message>',
+      timestamp: new Date(NOW.getTime() + 5000),
+    };
+    const aiGroup = makeAIGroup(
+      makeSteps({
+        thinking: 'plan',
+        toolCallId: 'tu-1',
+        toolResult: { content: 'needle text', isError: false },
+        output: 'done',
+      }),
+      'ai-g1',
+      [cmdCopy]
+    );
+    const conversation = makeConversation([userGroup, aiGroup]);
+
+    store.getState().setSearchQuery('needle', conversation);
+    const match = store.getState().searchMatches.find((m) => m.displayItemId?.startsWith('tool-'));
+
+    // The scan must produce the exact keys the render path produces
+    const rendered = enhanceAIGroup(
+      aiGroup.group,
+      undefined,
+      precedingSlashFromUserGroup(userGroup.group)
+    );
+    const renderKeys = rendered.displayItems.map((d, i) => displayItemKey(d, i));
+    expect(renderKeys).toContain(match?.displayItemId);
+    // Slash sorts FIRST in the render list (user-command timestamp), so the
+    // tool key is shifted — proves the scan saw the same shift
+    expect(match?.displayItemId).toBe('tool-tu-1-2');
   });
 });

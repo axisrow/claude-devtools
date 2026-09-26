@@ -5,10 +5,13 @@
 import { extractOutputText } from '@renderer/components/chat/items/linkedTool/renderHelpers';
 import { enhanceAIGroup, findLastOutput } from '@renderer/utils/aiGroupEnhancer';
 import { displayItemKey } from '@renderer/utils/displayItemBuilder';
+import {
+  precedingSlashFromUserGroup,
+  type PrecedingSlashInfo,
+} from '@renderer/utils/slashCommandExtractor';
 
 import type { AppState, SearchMatch } from '../types';
-import type { AIGroupExpansionLevel } from '@renderer/types/groups';
-import type { SessionConversation } from '@renderer/types/groups';
+import type { AIGroupExpansionLevel, SessionConversation, UserGroup } from '@renderer/types/groups';
 import type { StateCreator } from 'zustand';
 
 // =============================================================================
@@ -241,7 +244,9 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
 
     // Build search matches by scanning conversation.
     // Plain indexOf search — no markdown parsing. Match counts may differ
-    // slightly from rendered highlights; syncSearchMatchesWithRendered corrects this.
+    // slightly from rendered highlights; syncSearchMatchesWithRendered corrects
+    // this upward only — with fewer rendered marks (collapsed content) the
+    // store list stays canonical.
     const matches: SearchMatch[] = [];
     const lowerQuery = query.toLowerCase();
     let globalIndex = 0;
@@ -276,6 +281,20 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
       }
     };
 
+    // Slash info per AI group, same as the render path (AIChatGroup looks up the
+    // nearest preceding UserGroup) — otherwise display item keys drift between
+    // scan and DOM for sessions started by a slash command.
+    const precedingSlashByGroupId = new Map<string, PrecedingSlashInfo | undefined>();
+    let pendingUser: UserGroup | undefined;
+    for (const item of conversation.items) {
+      if (item.type === 'user') {
+        pendingUser = item.group;
+      } else if (item.type === 'ai') {
+        precedingSlashByGroupId.set(item.group.id, precedingSlashFromUserGroup(pendingUser));
+        pendingUser = undefined;
+      }
+    }
+
     for (const item of conversation.items) {
       if (capped) break;
       if (item.type === 'user') {
@@ -306,7 +325,11 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
         // Full-corpus scan over display items; displayItemId = the same keys
         // DisplayItemList renders, so marks/expansion address the same elements.
         // ponytail: enhanceAIGroup per keystroke — cache if typing lags on huge sessions.
-        const { displayItems } = enhanceAIGroup(aiGroup);
+        const { displayItems } = enhanceAIGroup(
+          aiGroup,
+          undefined,
+          precedingSlashByGroupId.get(aiGroup.id)
+        );
         displayItems.forEach((displayItem, index) => {
           let text = '';
           switch (displayItem.type) {

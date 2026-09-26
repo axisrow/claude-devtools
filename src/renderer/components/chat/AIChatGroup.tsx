@@ -3,10 +3,10 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
-import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
+import { enhanceAIGroup } from '@renderer/utils/aiGroupEnhancer';
 import { matchesEventFilter } from '@renderer/utils/eventFilters';
+import { precedingSlashFromUserGroup } from '@renderer/utils/slashCommandExtractor';
 import { TOOL_HIGHLIGHT_CLASSES, type TriggerColor } from '@shared/constants/triggerColors';
-import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
 import { estimateTokens, formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { format } from 'date-fns';
@@ -21,42 +21,7 @@ import { LastOutputDisplay } from './LastOutputDisplay';
 
 import type { EventFilterType } from '@renderer/store/slices/tabUISlice';
 import type { ContextStats } from '@renderer/types/contextInjection';
-import type {
-  AIGroup,
-  AIGroupDisplayItem,
-  EnhancedAIGroup,
-  UserGroup,
-} from '@renderer/types/groups';
-
-/**
- * Extract slash info from a UserGroup's message content.
- * Returns PrecedingSlashInfo if the user message was a slash invocation,
- * null otherwise.
- */
-function extractPrecedingSlashInfo(
-  userGroup: UserGroup | undefined
-): PrecedingSlashInfo | undefined {
-  if (!userGroup) return undefined;
-
-  const msg = userGroup.message;
-  const content = msg.content;
-
-  // Check if this is a slash message (has <command-name> tags)
-  if (typeof content === 'string' && isCommandContent(content)) {
-    const slashInfo = extractSlashInfo(content);
-    if (slashInfo) {
-      return {
-        name: slashInfo.name,
-        message: slashInfo.message,
-        args: slashInfo.args,
-        commandMessageUuid: msg.uuid,
-        timestamp: new Date(msg.timestamp),
-      };
-    }
-  }
-
-  return undefined;
-}
+import type { AIGroup, AIGroupDisplayItem, EnhancedAIGroup } from '@renderer/types/groups';
 
 /**
  * Format duration in milliseconds to human-readable string.
@@ -218,7 +183,7 @@ const AIChatGroupInner = ({
     for (let i = aiGroupIndex - 1; i >= 0; i--) {
       const item = conversation.items[i];
       if (item.type === 'user') {
-        return extractPrecedingSlashInfo(item.group);
+        return precedingSlashFromUserGroup(item.group);
       }
       // Stop if we hit another AI group (shouldn't happen in normal flow)
       if (item.type === 'ai') break;

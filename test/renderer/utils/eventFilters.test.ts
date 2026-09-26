@@ -48,6 +48,8 @@ describe('applyEventFilters', () => {
     expect(counts.tools).toBe(2);
     expect(counts.errors).toBe(1);
     expect(counts.system).toBe(1);
+    // lastOutput is not a display item — count it per AI group with text output
+    expect(counts.ai).toBe(2);
   });
 
   it("'errors' keeps only groups with errored tools and non-zero counts", () => {

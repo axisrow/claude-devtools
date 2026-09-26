@@ -21,7 +21,7 @@ export function makeConversation(items: ChatItem[]): SessionConversation {
 }
 
 /** AI group fixture: a turn with the given semantic steps */
-export function makeAIGroup(steps: unknown[], id = 'ai-g1'): ChatItem {
+export function makeAIGroup(steps: unknown[], id = 'ai-g1', responses: unknown[] = []): ChatItem {
   return {
     type: 'ai',
     group: {
@@ -37,7 +37,7 @@ export function makeAIGroup(steps: unknown[], id = 'ai-g1'): ChatItem {
       processes: [],
       chunkId: 'c1',
       metrics: {},
-      responses: [],
+      responses,
     },
   } as ChatItem;
 }
@@ -98,13 +98,22 @@ export function makeSteps(opts: {
 }
 
 /** user ChatItem fixture */
-export function makeUserGroup(id: string, rawText: string): ChatItem {
+export function makeUserGroup(
+  id: string,
+  rawText: string,
+  messageContent?: string,
+  timestamp?: Date
+): ChatItem {
   return {
     type: 'user',
     group: {
       id,
-      message: {} as never,
-      timestamp: NOW,
+      message: {
+        uuid: id,
+        content: messageContent ?? rawText,
+        timestamp: timestamp ?? NOW,
+      } as never,
+      timestamp: timestamp ?? NOW,
       index: 0,
       content: { rawText, commands: [], images: [], fileReferences: [] },
     },

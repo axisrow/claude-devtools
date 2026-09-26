@@ -111,6 +111,9 @@ export function applyEventFilters(
       for (const displayItem of enhanced.displayItems) {
         for (const t of displayItemFilterTypes(displayItem)) counts[t]++;
       }
+      // lastOutput is skipped by buildDisplayItems, so count it here — a plain
+      // Q&A turn otherwise yields counts.ai = 0 and a disabled chip
+      if (enhanced.lastOutput?.type === 'text' && enhanced.lastOutput.text) counts.ai++;
       if (filters.length === 0) {
         items.push(item);
         continue;

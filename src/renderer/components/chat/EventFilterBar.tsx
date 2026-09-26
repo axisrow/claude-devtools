@@ -44,9 +44,10 @@ export const EventFilterBar = ({ counts }: EventFilterBarProps): React.JSX.Eleme
             title={`${label} (${count})`}
             className="rounded-full px-2 py-0.5 text-[11px] transition-colors disabled:cursor-default disabled:opacity-35"
             style={{
-              backgroundColor: isActive ? 'var(--tag-bg-active, var(--tag-bg))' : 'var(--tag-bg)',
-              color: isActive ? 'var(--tag-text-active, var(--tag-text))' : COLOR_TEXT_SECONDARY,
-              border: `1px solid ${isActive ? 'var(--tag-border-active, var(--tag-border))' : 'var(--tag-border)'}`,
+              // Invert tag tokens for the active chip — no -active variables exist
+              backgroundColor: isActive ? 'var(--tag-text)' : 'var(--tag-bg)',
+              color: isActive ? 'var(--tag-bg)' : COLOR_TEXT_SECONDARY,
+              border: `1px solid ${isActive ? 'var(--tag-text)' : 'var(--tag-border)'}`,
             }}
           >
             {label}
