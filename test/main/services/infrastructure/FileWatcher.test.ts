@@ -95,7 +95,7 @@ function jsonlLine(uuid: string, text: string): string {
 }
 
 /** Assistant JSONL line carrying one Read tool_use — identical calls key as one loop */
-function toolUseLine(uuid: string, toolUseId: string): string {
+function toolUseLine(uuid: string, toolUseId: string, inputTokens?: number): string {
   return (
     JSON.stringify({
       type: 'assistant',
@@ -106,6 +106,16 @@ function toolUseLine(uuid: string, toolUseId: string): string {
         role: 'assistant',
         model: 'claude-sonnet-5',
         content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: '/x/f' } }],
+        ...(inputTokens === undefined
+          ? {}
+          : {
+              usage: {
+                input_tokens: inputTokens,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                output_tokens: 0,
+              },
+            }),
       },
     }) + '\n'
   );
@@ -672,6 +682,8 @@ describe('FileWatcher', () => {
       expect(loopError.triggerName).toBe('Loop detected');
       expect(loopError.toolUseId).toBe('t3');
       expect(loopError.message).toContain('Read|/x/f ×3');
+      // no usage in fixture — the token segment must be absent entirely
+      expect(loopError.message).not.toContain(' · ');
       // pre-batch base (1 seed line) + batchIndex 2 + 1
       expect(loopError.lineNumber).toBe(4);
       expect(loopError.sessionId).toBe('session-1');
@@ -681,6 +693,49 @@ describe('FileWatcher', () => {
       fs.appendFileSync(filePath, toolUseLine('a4', 't4') + toolUseLine('a5', 't5'), 'utf8');
       await run();
       expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('includes the run billed tokens in the alert message', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = true;
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-tokens-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(filePath, jsonlLine('u1', 'hello'), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const run = (): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (p: string, s: string, f: string) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('test-project', 'session-1', filePath);
+
+      await run(); // baseline
+
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('a1', 't1', 500) + toolUseLine('a2', 't2', 500) + toolUseLine('a3', 't3', 500),
+        'utf8'
+      );
+      await run();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const loopError = vi.mocked(notificationManager.addError).mock.calls[0][0];
+      expect(loopError.message).toContain('Read|/x/f ×3 · 1.5k — possible stuck loop');
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
