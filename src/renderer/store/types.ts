@@ -34,13 +34,14 @@ export interface BreadcrumbItem {
 
 /**
  * Represents a single search match in the conversation.
- * Only searches: user message text and AI lastOutput text (not tool results, thinking, or subagents)
+ * Searches user text, AI text/thinking/tool/teammate/slash display items, and system/compact text.
+ * Subagent internals are not searched.
  */
 export interface SearchMatch {
-  /** ID of the chat item containing this match */
+  /** ID of the chat item containing this match (the owning group for display-item matches) */
   itemId: string;
-  /** Type of item ('user' | 'ai') - system items are not searched */
-  itemType: 'user' | 'ai';
+  /** Type of item containing the match */
+  itemType: 'user' | 'ai' | 'system' | 'compact';
   /** Which match within this item (0-based) */
   matchIndexInItem: number;
   /** Global index across all matches */

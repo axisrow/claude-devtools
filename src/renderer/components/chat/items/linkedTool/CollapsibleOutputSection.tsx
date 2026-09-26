@@ -16,14 +16,18 @@ interface CollapsibleOutputSectionProps {
   children: React.ReactNode;
   /** Label shown in the header (default: "Output") */
   label?: string;
+  /** Show the section expanded regardless of local toggle (e.g. search matches inside) */
+  forceExpanded?: boolean;
 }
 
 export const CollapsibleOutputSection: React.FC<CollapsibleOutputSectionProps> = ({
   status,
   children,
   label = 'Output',
+  forceExpanded = false,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const expanded = isExpanded || forceExpanded;
 
   return (
     <div>
@@ -33,11 +37,11 @@ export const CollapsibleOutputSection: React.FC<CollapsibleOutputSectionProps> =
         style={{ color: 'var(--tool-item-muted)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
         onClick={() => setIsExpanded((prev) => !prev)}
       >
-        {isExpanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         {label}
         <StatusDot status={status} />
       </button>
-      {isExpanded && (
+      {expanded && (
         <div
           className="max-h-96 overflow-auto rounded p-3 font-mono text-xs"
           style={{

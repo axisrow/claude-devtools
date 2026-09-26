@@ -97,11 +97,32 @@ describe('SearchTextExtractor', () => {
       const result = extractSearchableEntries(messages);
 
       const aiEntries = result.entries.filter((e) => e.itemType === 'ai');
-      expect(aiEntries).toHaveLength(1);
+      // Full-corpus search (issue #36): the last text output + tool_result texts
+      expect(aiEntries).toHaveLength(2);
       // groupId uses the first message in the AI buffer
       expect(aiEntries[0].groupId).toMatch(/^ai-/);
       // Text is from the last assistant message with text
       expect(aiEntries[0].text).toBe('final answer');
+      // Tool result from the isMeta user message is searchable too
+      expect(aiEntries[1].text).toBe('result text');
+      expect(aiEntries[1].groupId).toBe(aiEntries[0].groupId);
+    });
+
+    it('extracts system command output as a searchable entry', () => {
+      const systemMessage = {
+        uuid: 'sys1',
+        type: 'user',
+        role: 'user',
+        content: '<local-command-stdout>deploy done</local-command-stdout>',
+        timestamp: new Date('2026-01-01T00:00:02.000Z'),
+        isMeta: false,
+        isSidechain: false,
+      } as ParsedMessage;
+      const result = extractSearchableEntries([systemMessage]);
+
+      const systemEntries = result.entries.filter((e) => e.groupId.startsWith('system-'));
+      expect(systemEntries).toHaveLength(1);
+      expect(systemEntries[0].text).toContain('deploy done');
     });
 
     it('extracts last AI text output correctly (backward scan)', () => {
@@ -143,10 +164,7 @@ describe('SearchTextExtractor', () => {
 
     it('extracts sessionTitle from first user message (truncated to 100 chars)', () => {
       const longText = 'a'.repeat(200);
-      const messages = [
-        makeUserMessage('u1', longText),
-        makeUserMessage('u2', 'second message'),
-      ];
+      const messages = [makeUserMessage('u1', longText), makeUserMessage('u2', 'second message')];
       const result = extractSearchableEntries(messages);
 
       expect(result.sessionTitle).toBe('a'.repeat(100));
@@ -159,9 +177,7 @@ describe('SearchTextExtractor', () => {
     });
 
     it('handles messages with no user messages', () => {
-      const messages = [
-        makeAssistantMessage('a1', 'just AI talking'),
-      ];
+      const messages = [makeAssistantMessage('a1', 'just AI talking')];
       const result = extractSearchableEntries(messages);
 
       expect(result.sessionTitle).toBeUndefined();

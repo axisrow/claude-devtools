@@ -18,6 +18,7 @@ import {
   hasReadContent,
   hasSkillInstructions,
   hasWriteContent,
+  isHookErrorTool,
 } from '@renderer/utils/toolRendering';
 import {
   getToolHighlightProps,
@@ -51,6 +52,8 @@ interface LinkedToolItemProps {
   highlightColor?: TriggerColor;
   /** Notification dot color for this tool item */
   notificationDotColor?: TriggerColor;
+  /** Display-item key for in-session search (marks + output section auto-expand) */
+  searchItemId?: string;
   /** Optional ref registration callback for external scroll control */
   registerRef?: (el: HTMLDivElement | null) => void;
 }
@@ -62,11 +65,15 @@ export const LinkedToolItem: React.FC<LinkedToolItemProps> = React.memo(function
   isHighlighted,
   highlightColor,
   notificationDotColor,
+  searchItemId,
   registerRef,
 }) {
   const status = getToolStatus(linkedTool);
   const summary = getToolSummary(linkedTool.name, linkedTool.input);
   const elementRef = useRef<HTMLDivElement>(null);
+
+  // Hook denial badge: errored result whose text matches /hook error:/ (issue #36)
+  const isHookError = isHookErrorTool(linkedTool);
 
   // Combined ref callback - handles both internal ref and external registration
   const handleRef = (el: HTMLDivElement | null): void => {
@@ -156,6 +163,17 @@ export const LinkedToolItem: React.FC<LinkedToolItemProps> = React.memo(function
         }
         label={linkedTool.name}
         summary={summary}
+        badge={
+          isHookError ? (
+            <span
+              className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+              style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#f87171' }}
+              title="Hook denial (hook error: in tool result)"
+            >
+              Hook
+            </span>
+          ) : undefined
+        }
         tokenCount={getToolContextTokens(linkedTool)}
         status={status}
         durationMs={linkedTool.durationMs}
@@ -178,7 +196,9 @@ export const LinkedToolItem: React.FC<LinkedToolItemProps> = React.memo(function
         {useSkillViewer && <SkillToolViewer linkedTool={linkedTool} />}
 
         {/* Default rendering for other tools */}
-        {useDefaultViewer && <DefaultToolViewer linkedTool={linkedTool} status={status} />}
+        {useDefaultViewer && (
+          <DefaultToolViewer linkedTool={linkedTool} status={status} searchItemId={searchItemId} />
+        )}
 
         {/* Error output for Read tool */}
         {showReadError && <ToolErrorDisplay linkedTool={linkedTool} />}

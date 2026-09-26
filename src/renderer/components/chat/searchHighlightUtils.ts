@@ -70,7 +70,7 @@ export function createSearchContext(
  * Increments matchCounter for each match found.
  */
 // eslint-disable-next-line sonarjs/function-return-type -- mixed text/element return
-function highlightSearchText(text: string, ctx: SearchContext): React.ReactNode {
+export function highlightPlainText(text: string, ctx: SearchContext): React.ReactNode {
   const lowerText = text.toLowerCase();
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -125,7 +125,7 @@ export function highlightSearchInChildren(
   // eslint-disable-next-line sonarjs/function-return-type -- React child manipulation inherently returns mixed node types
   return React.Children.map(children, (child): React.ReactNode => {
     if (typeof child === 'string') {
-      return highlightSearchText(child, ctx);
+      return highlightPlainText(child, ctx);
     }
 
     if (React.isValidElement<{ children?: React.ReactNode }>(child)) {

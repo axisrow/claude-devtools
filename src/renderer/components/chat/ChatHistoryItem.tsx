@@ -12,6 +12,7 @@ import { CompactBoundary } from './CompactBoundary';
 import { SystemChatGroup } from './SystemChatGroup';
 import { UserChatGroup } from './UserChatGroup';
 
+import type { EventFilterType } from '@renderer/store/slices/tabUISlice';
 import type { ChatItem } from '@renderer/types/groups';
 
 interface ChatHistoryItemProps {
@@ -28,6 +29,8 @@ interface ChatHistoryItemProps {
   readonly registerAIGroupRef: (groupId: string) => (el: HTMLElement | null) => void;
   /** Register ref for individual tool items (for precise scroll targeting) */
   readonly registerToolRef: (toolId: string, el: HTMLElement | null) => void;
+  /** Active event filter chips (empty = no filtering) */
+  readonly eventFilters?: EventFilterType[];
 }
 
 /**
@@ -62,6 +65,7 @@ const ChatHistoryItemInner = ({
   registerChatItemRef,
   registerAIGroupRef,
   registerToolRef,
+  eventFilters,
 }: ChatHistoryItemProps): JSX.Element | null => {
   switch (item.type) {
     case 'user': {
@@ -125,6 +129,7 @@ const ChatHistoryItemInner = ({
             isHeaderHighlighted={isHeaderHighlighted}
             isBodyHighlighted={isBodyHighlighted}
             registerToolRef={registerToolRef}
+            eventFilters={eventFilters}
           />
         </div>
       );

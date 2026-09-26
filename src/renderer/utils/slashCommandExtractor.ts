@@ -9,7 +9,7 @@ import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitiz
 import { estimateTokens, toDate } from './aiGroupHelpers';
 
 import type { ParsedMessage } from '@renderer/types/data';
-import type { SlashItem } from '@renderer/types/groups';
+import type { SlashItem, UserGroup } from '@renderer/types/groups';
 
 /**
  * Info about the preceding user message's slash invocation.
@@ -151,4 +151,35 @@ export function extractSlashes(
   }
 
   return slashes;
+}
+
+/**
+ * Extract slash info from a UserGroup's message content.
+ * Returns PrecedingSlashInfo if the user message was a slash invocation,
+ * undefined otherwise. Shared by AIChatGroup (render) and the search scan
+ * (conversationSlice) so both build identical display item lists.
+ */
+export function precedingSlashFromUserGroup(
+  userGroup: UserGroup | undefined
+): PrecedingSlashInfo | undefined {
+  if (!userGroup) return undefined;
+
+  const msg = userGroup.message;
+  const content = msg.content;
+
+  // Check if this is a slash message (has <command-name> tags)
+  if (typeof content === 'string' && isCommandContent(content)) {
+    const slashInfo = extractSlashInfo(content);
+    if (slashInfo) {
+      return {
+        name: slashInfo.name,
+        message: slashInfo.message,
+        args: slashInfo.args,
+        commandMessageUuid: msg.uuid,
+        timestamp: new Date(msg.timestamp),
+      };
+    }
+  }
+
+  return undefined;
 }

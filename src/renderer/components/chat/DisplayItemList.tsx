@@ -8,6 +8,7 @@ import {
   TOOL_CALL_BORDER,
   TOOL_CALL_TEXT,
 } from '@renderer/constants/cssVariables';
+import { displayItemKey } from '@renderer/utils/displayItemBuilder';
 import { formatTokensCompact } from '@renderer/utils/formatters';
 import { format } from 'date-fns';
 import { ChevronRight, Layers, MailOpen } from 'lucide-react';
@@ -145,12 +146,12 @@ export const DisplayItemList = React.memo(function DisplayItemList({
       {items.map((item, index) => {
         const rid = 'roundId' in item ? (item.roundId ?? null) : null;
         const divider = rid ? (roundDividers.get(rid) ?? null) : null;
-        let itemKey = '';
+        // Shared with conversationSlice search — same keys, same addressing
+        const itemKey = displayItemKey(item, index);
         let element: React.ReactNode = null;
 
         switch (item.type) {
           case 'thinking': {
-            itemKey = `thinking-${index}`;
             const thinkingStep = {
               id: itemKey,
               type: 'thinking' as const,
@@ -173,7 +174,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'output': {
-            itemKey = `output-${index}`;
             const textStep = {
               id: itemKey,
               type: 'output' as const,
@@ -196,7 +196,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'tool': {
-            itemKey = `tool-${item.tool.id}-${index}`;
             element = (
               <LinkedToolItem
                 linkedTool={item.tool}
@@ -205,6 +204,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 isHighlighted={highlightToolUseId === item.tool.id}
                 highlightColor={highlightColor}
                 notificationDotColor={notificationColorMap?.get(item.tool.id)}
+                searchItemId={itemKey}
                 registerRef={
                   registerToolRef ? (el) => registerToolRef(item.tool.id, el) : undefined
                 }
@@ -214,7 +214,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'subagent': {
-            itemKey = `subagent-${item.subagent.id}-${index}`;
             const subagentStep = {
               id: itemKey,
               type: 'subagent' as const,
@@ -245,7 +244,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'slash': {
-            itemKey = `slash-${item.slash.name}-${index}`;
             element = (
               <SlashItem
                 slash={item.slash}
@@ -257,7 +255,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'teammate_message': {
-            itemKey = `teammate-${item.teammateMessage.id}-${index}`;
             element = (
               <TeammateMessageItem
                 teammateMessage={item.teammateMessage}
@@ -270,7 +267,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'subagent_input': {
-            itemKey = `input-${index}`;
             const inputContent = item.content;
             const inputTokenCount = item.tokenCount;
             element = (
@@ -289,7 +285,6 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'compact_boundary': {
-            itemKey = `compact-${index}`;
             const compactContent = item.content;
             const compactExpanded = expandedItemIds.has(itemKey);
             element = (

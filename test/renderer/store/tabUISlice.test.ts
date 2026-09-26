@@ -372,4 +372,32 @@ describe('tabUISlice', () => {
       expect(store.getState().isAIGroupExpandedForTab('lazy-tab', 'group-1')).toBe(true);
     });
   });
+
+  describe('eventFilters', () => {
+    it('defaults to empty selection (no filtering)', () => {
+      store.getState().initTabUIState('tab-1');
+      expect(store.getState().tabUIStates.get('tab-1')?.eventFilters).toEqual([]);
+    });
+
+    it('toggles a chip on and off', () => {
+      store.getState().initTabUIState('tab-1');
+      store.getState().toggleEventFilterForTab('tab-1', 'errors');
+
+      expect(store.getState().tabUIStates.get('tab-1')?.eventFilters).toEqual(['errors']);
+
+      store.getState().toggleEventFilterForTab('tab-1', 'errors');
+      expect(store.getState().tabUIStates.get('tab-1')?.eventFilters).toEqual([]);
+    });
+
+    it('isolates filter state per tab', () => {
+      store.getState().initTabUIState('tab-1');
+      store.getState().initTabUIState('tab-2');
+
+      store.getState().toggleEventFilterForTab('tab-1', 'errors');
+      store.getState().toggleEventFilterForTab('tab-2', 'tools');
+
+      expect(store.getState().tabUIStates.get('tab-1')?.eventFilters).toEqual(['errors']);
+      expect(store.getState().tabUIStates.get('tab-2')?.eventFilters).toEqual(['tools']);
+    });
+  });
 });

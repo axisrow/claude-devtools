@@ -9,6 +9,7 @@ export {
   hasReadContent,
   hasSkillInstructions,
   hasWriteContent,
+  isHookErrorTool,
 } from './toolContentChecks';
 export { getToolSummary } from './toolSummaryHelpers';
 export { getToolContextTokens, getToolStatus } from './toolTokens';

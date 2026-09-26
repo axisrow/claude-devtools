@@ -21,6 +21,21 @@ import type { StateCreator } from 'zustand';
 // =============================================================================
 
 /**
+ * Event types addressable by the chat filter chips. Empty selection = no filtering.
+ * Slash → 'system', subagent_input → 'subagents', compact_boundary → 'compact'.
+ */
+export type EventFilterType =
+  | 'user'
+  | 'ai'
+  | 'thinking'
+  | 'tools'
+  | 'errors'
+  | 'subagents'
+  | 'teammates'
+  | 'system'
+  | 'compact';
+
+/**
  * UI state for a single tab.
  * All values are optional - defaults are applied when reading.
  */
@@ -40,6 +55,9 @@ export interface TabUIState {
   /** Selected context phase for filtering (null = current/latest phase) */
   selectedContextPhase: number | null;
 
+  /** Active event filter chips (empty = show everything) */
+  eventFilters: EventFilterType[];
+
   /** Saved scroll position for restoring when switching back to this tab */
   savedScrollTop?: number;
 }
@@ -54,6 +72,7 @@ function createDefaultTabUIState(): TabUIState {
     expandedSubagentTraceIds: new Set(),
     showContextPanel: false,
     selectedContextPhase: null,
+    eventFilters: [],
     savedScrollTop: undefined,
   };
 }
@@ -105,6 +124,9 @@ export interface TabUISlice {
   // Context phase selection (per-tab)
   /** Set the selected context phase for a specific tab */
   setSelectedContextPhaseForTab: (tabId: string, phase: number | null) => void;
+
+  /** Toggle an event filter chip for a specific tab */
+  toggleEventFilterForTab: (tabId: string, filter: EventFilterType) => void;
 
   // Scroll position (per-tab)
   /** Save scroll position for a specific tab */
@@ -296,6 +318,20 @@ export const createTabUISlice: StateCreator<AppState, [], [], TabUISlice> = (set
     const newMap = new Map(state.tabUIStates);
     const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
     newMap.set(tabId, { ...tabState, selectedContextPhase: phase });
+    set({ tabUIStates: newMap });
+  },
+
+  toggleEventFilterForTab: (tabId: string, filter: EventFilterType) => {
+    const state = get();
+    const newMap = new Map(state.tabUIStates);
+    const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
+
+    const active = tabState.eventFilters.includes(filter);
+    const eventFilters = active
+      ? tabState.eventFilters.filter((f) => f !== filter)
+      : [...tabState.eventFilters, filter];
+
+    newMap.set(tabId, { ...tabState, eventFilters });
     set({ tabUIStates: newMap });
   },
 
