@@ -6,6 +6,7 @@
 
 import React from 'react';
 
+import { highlightPlainText, type SearchContext } from '@renderer/components/chat/searchHighlightUtils';
 import {
   COLOR_TEXT,
   COLOR_TEXT_MUTED,
@@ -179,11 +180,14 @@ function isContentBlock(value: unknown): boolean {
   );
 }
 
-export function renderOutput(content: string | unknown[]): React.ReactElement {
+export function renderOutput(
+  content: string | unknown[],
+  searchCtx?: SearchContext | null
+): React.ReactElement {
   const displayText = extractOutputText(content);
   return (
     <pre className="whitespace-pre-wrap break-all" style={{ color: COLOR_TEXT }}>
-      {displayText}
+      {searchCtx ? highlightPlainText(displayText, searchCtx) : displayText}
     </pre>
   );
 }

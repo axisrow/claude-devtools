@@ -17,6 +17,8 @@ interface BaseItemProps {
   icon: React.ReactNode;
   /** Primary label (e.g., "Thinking", "Output", tool name) */
   label: string;
+  /** Optional badge rendered after the label (e.g. "Hook" denial badge) */
+  badge?: React.ReactNode;
   /** Summary text shown after the label */
   summary?: string;
   /** Token count to display */
@@ -75,6 +77,7 @@ export const StatusDot: React.FC<{ status: ItemStatus }> = ({ status }) => {
 export const BaseItem: React.FC<BaseItemProps> = ({
   icon,
   label,
+  badge,
   summary,
   tokenCount,
   tokenLabel = 'tokens',
@@ -122,6 +125,9 @@ export const BaseItem: React.FC<BaseItemProps> = ({
         <span className="text-sm font-medium" style={{ color: 'var(--tool-item-name)' }}>
           {label}
         </span>
+
+        {/* Optional badge (e.g. Hook denial) */}
+        {badge}
 
         {/* Separator and Summary */}
         {summary && (

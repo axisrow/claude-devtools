@@ -2,7 +2,9 @@
  * Conversation slice - manages expansion states, chart mode, search, and detail popover.
  */
 
-import { findLastOutput } from '@renderer/utils/aiGroupEnhancer';
+import { extractOutputText } from '@renderer/components/chat/items/linkedTool/renderHelpers';
+import { enhanceAIGroup, findLastOutput } from '@renderer/utils/aiGroupEnhancer';
+import { displayItemKey } from '@renderer/utils/displayItemBuilder';
 
 import type { AppState, SearchMatch } from '../types';
 import type { AIGroupExpansionLevel } from '@renderer/types/groups';
@@ -249,7 +251,7 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
     const addPlainTextMatches = (
       text: string,
       itemId: string,
-      itemType: 'user' | 'ai',
+      itemType: SearchMatch['itemType'],
       displayItemId?: string
     ): void => {
       if (capped) return;
@@ -279,14 +281,58 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
       if (item.type === 'user') {
         const text = item.group.content.rawText ?? item.group.content.text ?? '';
         addPlainTextMatches(text, item.group.id, 'user');
+      } else if (item.type === 'system') {
+        addPlainTextMatches(item.group.commandOutput, item.group.id, 'system');
+      } else if (item.type === 'compact') {
+        const content = item.group.message.content;
+        const text =
+          typeof content === 'string'
+            ? content
+            : Array.isArray(content)
+              ? content
+                  .filter((block) => block.type === 'text')
+                  .map((block) => block.text)
+                  .join('')
+              : '';
+        addPlainTextMatches(text, item.group.id, 'compact');
       } else if (item.type === 'ai') {
         const aiGroup = item.group;
-        const itemId = aiGroup.id;
         const lastOutput = findLastOutput(aiGroup.steps, aiGroup.isOngoing ?? false);
 
         if (lastOutput?.type === 'text' && lastOutput.text) {
-          addPlainTextMatches(lastOutput.text, itemId, 'ai', 'lastOutput');
+          addPlainTextMatches(lastOutput.text, aiGroup.id, 'ai', 'lastOutput');
         }
+
+        // Full-corpus scan over display items; displayItemId = the same keys
+        // DisplayItemList renders, so marks/expansion address the same elements.
+        // ponytail: enhanceAIGroup per keystroke — cache if typing lags on huge sessions.
+        const { displayItems } = enhanceAIGroup(aiGroup);
+        displayItems.forEach((displayItem, index) => {
+          let text = '';
+          switch (displayItem.type) {
+            case 'thinking':
+            case 'output':
+            case 'subagent_input':
+            case 'compact_boundary':
+              text = displayItem.content;
+              break;
+            case 'tool':
+              text = displayItem.tool.result
+                ? `${JSON.stringify(displayItem.tool.input)} ${extractOutputText(displayItem.tool.result.content)}`
+                : JSON.stringify(displayItem.tool.input);
+              break;
+            case 'slash':
+              text = displayItem.slash.instructions ?? '';
+              break;
+            case 'teammate_message':
+              text = displayItem.teammateMessage.content;
+              break;
+            case 'subagent':
+              return; // subagent internals are not searched (out of scope, issue #36)
+          }
+          if (!text) return;
+          addPlainTextMatches(text, aiGroup.id, 'ai', displayItemKey(displayItem, index));
+        });
       }
     }
 
@@ -307,10 +353,14 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
       console.info('[search] sample', sample);
     }
 
-    // Build set of item IDs that have matches — components use this to skip re-renders
+    // Components subscribe via searchMatchItemIds: display-item matches register
+    // under their itemKey ("tool-<id>-3"); 'lastOutput' matches carry the group id.
     const matchItemIds = new Set<string>();
     for (const match of matches) {
       matchItemIds.add(match.itemId);
+      if (match.displayItemId && match.displayItemId !== 'lastOutput') {
+        matchItemIds.add(match.displayItemId);
+      }
     }
 
     set({
@@ -320,6 +370,7 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
       searchMatches: matches,
       searchResultsCapped: capped,
       searchMatchItemIds: matchItemIds,
+      searchExpandedAIGroupIds: new Set(),
     });
   },
 
@@ -337,6 +388,10 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
     }
 
     const oldMatches = state.searchMatches;
+    // Full-corpus matches (tool outputs, thinking, collapsed groups) may render without
+    // <mark> elements. A shorter rendered list means a partial snapshot — keep the
+    // store-level list (it is the canonical count for the whole corpus).
+    if (dedupedRendered.length < oldMatches.length) return;
     const sameLength = oldMatches.length === dedupedRendered.length;
     const sameContent =
       sameLength &&
@@ -483,11 +538,17 @@ export const createConversationSlice: StateCreator<AppState, [], [], Conversatio
     const currentMatch = searchMatches[currentSearchIndex];
     if (!currentMatch) return;
 
-    // For AI group matches, track the display item ID for highlighting
-    // Since we only search lastOutput text (always visible), no expansion needed
+    // For AI group matches, track the display item ID for highlighting and expand
+    // the owning group when the match lives in a collapsible display item
+    // (tool/thinking/teammate/... — anything other than the always-visible lastOutput).
     if (currentMatch.itemType === 'ai') {
+      const displayItemId = currentMatch.displayItemId ?? null;
+      const needsGroupExpansion = displayItemId !== null && displayItemId !== 'lastOutput';
       set({
-        searchCurrentDisplayItemId: currentMatch.displayItemId ?? null,
+        searchExpandedAIGroupIds: needsGroupExpansion
+          ? new Set(state.searchExpandedAIGroupIds).add(currentMatch.itemId)
+          : state.searchExpandedAIGroupIds,
+        searchCurrentDisplayItemId: displayItemId,
         searchCurrentSubagentItemId: null,
       });
     } else {

@@ -1,19 +1,14 @@
 /**
  * SearchTextExtractor - Lightweight text extraction for search.
- *
- * Mirrors ChunkBuilder's classification loop (classifyMessages → buffer flush)
- * but only extracts searchable text + metadata, skipping all expensive operations:
- * - No tool execution building
- * - No semantic step extraction
- * - No subagent linking
- * - No timeline gap filling
- * - No metrics calculation
+ * Mirrors ChunkBuilder's classification loop but only extracts searchable
+ * text + metadata, skipping tool execution, semantic steps, subagent linking,
+ * timeline gaps and metrics.
  */
 
 import { classifyMessages } from '@main/services/parsing/MessageClassifier';
 import { sanitizeDisplayContent } from '@shared/utils/contentSanitizer';
 
-import type { ParsedMessage } from '@main/types';
+import type { ContentBlock, ParsedMessage } from '@main/types';
 
 /**
  * A lightweight entry containing only the data needed for search matching.
@@ -39,13 +34,11 @@ export interface SearchTextResult {
  * Extract searchable text entries from parsed messages.
  *
  * Algorithm mirrors ChunkBuilder.buildChunks() lines 78-151:
- * - Filter to main thread (!m.isSidechain)
- * - classifyMessages() — cheap type guard checks
- * - Walk classified messages with an aiBuffer:
- *   - hardNoise → skip
- *   - compact / system / user → flush AI buffer, then handle
- *   - ai → push to buffer
- * - Flush remaining buffer at end
+ * - Filter to main thread (!m.isSidechain), classifyMessages(), walk with an
+ *   aiBuffer: hardNoise → skip; compact/system/user → flush AI buffer, then
+ *   handle; ai → push to buffer; flush the remaining buffer at end.
+ * AI buffers additionally yield entries for tool_use inputs and tool_result
+ * texts (issue #36); system command output is searchable too.
  */
 export function extractSearchableEntries(messages: ParsedMessage[]): SearchTextResult {
   const entries: SearchableEntry[] = [];
@@ -57,6 +50,14 @@ export function extractSearchableEntries(messages: ParsedMessage[]): SearchTextR
 
   let aiBuffer: ParsedMessage[] = [];
 
+  const flushAIBuffer = (): void => {
+    if (aiBuffer.length === 0) return;
+    const aiEntry = extractAIEntry(aiBuffer);
+    if (aiEntry) entries.push(aiEntry);
+    entries.push(...extractAIToolEntries(aiBuffer));
+    aiBuffer = [];
+  };
+
   for (const { message, category } of classified) {
     switch (category) {
       case 'hardNoise':
@@ -65,21 +66,26 @@ export function extractSearchableEntries(messages: ParsedMessage[]): SearchTextR
 
       case 'compact':
       case 'system':
-        // Flush AI buffer, but compact/system messages have no searchable text
-        if (aiBuffer.length > 0) {
-          const aiEntry = extractAIEntry(aiBuffer);
-          if (aiEntry) entries.push(aiEntry);
-          aiBuffer = [];
+        // Flush AI buffer, then index the command/system output text
+        flushAIBuffer();
+        if (category === 'system') {
+          const text = extractUserText(message);
+          if (text) {
+            entries.push({
+              text,
+              groupId: `system-${message.uuid}`,
+              messageType: 'assistant',
+              itemType: 'ai',
+              timestamp: message.timestamp.getTime(),
+              messageUuid: message.uuid,
+            });
+          }
         }
         break;
 
       case 'user': {
         // Flush AI buffer
-        if (aiBuffer.length > 0) {
-          const aiEntry = extractAIEntry(aiBuffer);
-          if (aiEntry) entries.push(aiEntry);
-          aiBuffer = [];
-        }
+        flushAIBuffer();
         // Extract user text
         const userText = extractUserText(message);
         if (userText) {
@@ -105,10 +111,7 @@ export function extractSearchableEntries(messages: ParsedMessage[]): SearchTextR
   }
 
   // Flush remaining AI buffer
-  if (aiBuffer.length > 0) {
-    const aiEntry = extractAIEntry(aiBuffer);
-    if (aiEntry) entries.push(aiEntry);
-  }
+  flushAIBuffer();
 
   return { entries, sessionTitle };
 }
@@ -139,6 +142,50 @@ function extractAIEntry(buffer: ParsedMessage[]): SearchableEntry | null {
     }
   }
   return null;
+}
+
+/**
+ * Extract tool_use input and tool_result text entries from an AI buffer (issue #36).
+ * Both are addressed by the same ai-{uuid} group id as the buffer's text entry.
+ */
+function extractAIToolEntries(buffer: ParsedMessage[]): SearchableEntry[] {
+  const entries: SearchableEntry[] = [];
+  const groupId = `ai-${buffer[0].uuid}`;
+
+  for (const msg of buffer) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      const toolText =
+        block.type === 'tool_use'
+          ? `${block.name} ${JSON.stringify(block.input)}`
+          : block.type === 'tool_result'
+            ? toolResultText(block.content)
+            : '';
+      if (!toolText) continue;
+      entries.push({
+        text: toolText,
+        groupId,
+        messageType: 'assistant',
+        itemType: 'ai',
+        timestamp: msg.timestamp.getTime(),
+        messageUuid: msg.uuid,
+      });
+    }
+  }
+  return entries;
+}
+
+/** Plain text of a tool_result content (string or content-block array) */
+function toolResultText(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return sanitizeDisplayContent(content);
+  if (Array.isArray(content)) {
+    return sanitizeDisplayContent(
+      content
+        .map((block) => (block.type === 'text' ? block.text : JSON.stringify(block)))
+        .join('\n')
+    );
+  }
+  return '';
 }
 
 /**

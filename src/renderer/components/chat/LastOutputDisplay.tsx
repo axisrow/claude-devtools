@@ -103,6 +103,7 @@ export const LastOutputDisplay = ({
   // Render tool result
   if (type === 'tool_result' && lastOutput.toolResult) {
     const isError = lastOutput.isError ?? false;
+    const isHookError = isError && /hook error:/i.test(lastOutput.toolResult);
     const Icon = isError ? XCircle : CheckCircle;
 
     return (
@@ -146,6 +147,14 @@ export const LastOutputDisplay = ({
               style={{ color: 'var(--tool-result-error-text)' }}
             >
               Error
+            </span>
+          )}
+          {isHookError && (
+            <span
+              className="rounded px-1.5 py-0.5 text-[10px] font-medium"
+              style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#f87171' }}
+            >
+              Hook
             </span>
           )}
         </div>

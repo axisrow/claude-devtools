@@ -4,6 +4,7 @@ import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssV
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
+import { matchesEventFilter } from '@renderer/utils/eventFilters';
 import { TOOL_HIGHLIGHT_CLASSES, type TriggerColor } from '@shared/constants/triggerColors';
 import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
@@ -18,6 +19,7 @@ import { ContextBadge } from './ContextBadge';
 import { DisplayItemList } from './DisplayItemList';
 import { LastOutputDisplay } from './LastOutputDisplay';
 
+import type { EventFilterType } from '@renderer/store/slices/tabUISlice';
 import type { ContextStats } from '@renderer/types/contextInjection';
 import type {
   AIGroup,
@@ -89,6 +91,8 @@ interface AIChatGroupProps {
   isBodyHighlighted?: boolean;
   /** Register ref for individual tool items (for precise scroll targeting) */
   registerToolRef?: (toolId: string, el: HTMLElement | null) => void;
+  /** Active event filter chips (empty/undefined = show everything) */
+  eventFilters?: EventFilterType[];
 }
 
 /**
@@ -131,6 +135,7 @@ const AIChatGroupInner = ({
   isHeaderHighlighted,
   isBodyHighlighted,
   registerToolRef,
+  eventFilters,
 }: Readonly<AIChatGroupProps>): React.JSX.Element => {
   // Per-tab UI state for expansion (completely isolated per tab)
   const {
@@ -388,6 +393,21 @@ const AIChatGroupInner = ({
   // Determine if there's content to toggle
   const hasToggleContent = enhanced.displayItems.length > 0;
 
+  const activeFilters = useMemo(() => eventFilters ?? [], [eventFilters]);
+  const isFiltering = activeFilters.length > 0;
+  const visibleItems = useMemo(
+    () =>
+      isFiltering
+        ? enhanced.displayItems.filter((d) => matchesEventFilter(d, activeFilters))
+        : enhanced.displayItems,
+    [enhanced.displayItems, isFiltering, activeFilters]
+  );
+  const showLastOutput =
+    !isFiltering ||
+    (enhanced.lastOutput?.type === 'text' &&
+      !!enhanced.lastOutput.text &&
+      activeFilters.includes('ai'));
+
   // Handle item click - toggle inline expansion using store action
   const handleItemClick = (itemId: string): void => {
     toggleDisplayItemExpansion(aiGroup.id, itemId);
@@ -528,7 +548,7 @@ const AIChatGroupInner = ({
       {hasToggleContent && isExpanded && (
         <div className="py-2 pl-2">
           <DisplayItemList
-            items={enhanced.displayItems}
+            items={visibleItems}
             onItemClick={handleItemClick}
             expandedItemIds={expandedItemIds}
             aiGroupId={aiGroup.id}
@@ -542,14 +562,16 @@ const AIChatGroupInner = ({
       )}
 
       {/* Always-visible Output */}
-      <div>
-        <LastOutputDisplay
-          lastOutput={enhanced.lastOutput}
-          aiGroupId={aiGroup.id}
-          isLastGroup={aiGroup.isOngoing ?? false}
-          isSessionOngoing={isSessionOngoing}
-        />
-      </div>
+      {showLastOutput && (
+        <div>
+          <LastOutputDisplay
+            lastOutput={enhanced.lastOutput}
+            aiGroupId={aiGroup.id}
+            isLastGroup={aiGroup.isOngoing ?? false}
+            isSessionOngoing={isSessionOngoing}
+          />
+        </div>
+      )}
     </div>
   );
 };

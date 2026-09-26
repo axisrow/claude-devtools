@@ -26,6 +26,8 @@ import { useTabIdOptional } from '@renderer/contexts/useTabUIContext';
 import { useStore } from '@renderer/store';
 import { useShallow } from 'zustand/react/shallow';
 
+import type { EventFilterType } from '@renderer/store/slices/tabUISlice';
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -45,6 +47,10 @@ interface UseTabUIReturn {
   setContextPanelVisible: (visible: boolean) => void;
   selectedContextPhase: number | null;
   setSelectedContextPhase: (phase: number | null) => void;
+  /** Active event filter chips for this tab (empty = show everything) */
+  eventFilters: EventFilterType[];
+  /** Toggle an event filter chip for this tab */
+  toggleEventFilter: (filter: EventFilterType) => void;
   savedScrollTop: number | undefined;
   saveScrollPosition: (scrollTop: number) => void;
   initializeTabUI: () => void;
@@ -83,6 +89,7 @@ export function useTabUI(): UseTabUIReturn {
     expandSubagentTraceForTab,
     setContextPanelVisibleForTab,
     setSelectedContextPhaseForTab,
+    toggleEventFilterForTab,
     saveScrollPositionForTab,
     initTabUIState,
   } = useStore(
@@ -95,6 +102,7 @@ export function useTabUI(): UseTabUIReturn {
       expandSubagentTraceForTab: s.expandSubagentTraceForTab,
       setContextPanelVisibleForTab: s.setContextPanelVisibleForTab,
       setSelectedContextPhaseForTab: s.setSelectedContextPhaseForTab,
+      toggleEventFilterForTab: s.toggleEventFilterForTab,
       saveScrollPositionForTab: s.saveScrollPositionForTab,
       initTabUIState: s.initTabUIState,
     }))
@@ -198,6 +206,17 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, setSelectedContextPhaseForTab]
   );
 
+  // Event filter chips - derive from tabState (reactive!)
+  const eventFilters = tabState?.eventFilters ?? [];
+
+  const toggleEventFilter = useCallback(
+    (filter: EventFilterType): void => {
+      if (!tabId) return;
+      toggleEventFilterForTab(tabId, filter);
+    },
+    [tabId, toggleEventFilterForTab]
+  );
+
   // Scroll position - derive from tabState
   const savedScrollTop = tabState?.savedScrollTop;
 
@@ -241,6 +260,10 @@ export function useTabUI(): UseTabUIReturn {
     // Context phase selection
     selectedContextPhase,
     setSelectedContextPhase,
+
+    // Event filter chips
+    eventFilters,
+    toggleEventFilter,
 
     // Scroll position
     savedScrollTop,

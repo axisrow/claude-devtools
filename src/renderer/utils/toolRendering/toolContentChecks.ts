@@ -56,3 +56,26 @@ export function hasWriteContent(linkedTool: LinkedToolItem): boolean {
 
   return false;
 }
+
+/**
+ * Checks if a tool result is a hook denial: errored result whose text
+ * contains "hook error:" (e.g. PreToolUse denials). Issue #36.
+ */
+export function isHookErrorTool(linkedTool: LinkedToolItem): boolean {
+  const result = linkedTool.result;
+  if (!result?.isError) return false;
+  const { content } = result;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((block) =>
+              typeof block === 'object' && block !== null && 'text' in block
+                ? String((block as { text: unknown }).text)
+                : ''
+            )
+            .join('\n')
+        : '';
+  return /hook error:/i.test(text);
+}

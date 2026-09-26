@@ -6,6 +6,7 @@ import { useTabNavigationController } from '@renderer/hooks/useTabNavigationCont
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
+import { applyEventFilters, EMPTY_EVENT_FILTER_COUNTS } from '@renderer/utils/eventFilters';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronsDown } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -20,6 +21,7 @@ const CONTEXT_PANEL_WIDTH_PX = 320;
 import { ChatHistoryEmptyState } from './ChatHistoryEmptyState';
 import { ChatHistoryItem } from './ChatHistoryItem';
 import { ChatHistoryLoadingState } from './ChatHistoryLoadingState';
+import { EventFilterBar } from './EventFilterBar';
 
 import type { ContextInjection } from '@renderer/types/contextInjection';
 
@@ -51,6 +53,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     expandSubagentTrace,
     selectedContextPhase,
     setSelectedContextPhase,
+    eventFilters,
   } = useTabUI();
 
   // Global store subscriptions (shared data)
@@ -100,6 +103,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     sessionPhaseInfo,
     sessionDetail,
   } = tabData;
+
+  // Event filter chips: filtered items for rendering + per-type counts for the chips
+  // (single enhancement pass; counts always reflect the full conversation)
+  const { items: filteredItems, counts: eventFilterCounts } = useMemo(
+    () =>
+      conversation
+        ? applyEventFilters(conversation, eventFilters)
+        : { items: [], counts: EMPTY_EVENT_FILTER_COUNTS },
+    [conversation, eventFilters]
+  );
 
   // State for Context button hover (local state OK - doesn't need per-tab isolation)
   const [isContextButtonHovered, setIsContextButtonHovered] = useState(false);
@@ -199,17 +212,14 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   const groupIndexMap = useMemo(() => {
     const map = new Map<string, number>();
-    if (!conversation?.items) {
-      return map;
-    }
-    conversation.items.forEach((item, index) => {
+    filteredItems.forEach((item, index) => {
       map.set(item.group.id, index);
     });
     return map;
-  }, [conversation]);
+  }, [filteredItems]);
 
   const rowVirtualizer = useVirtualizer({
-    count: shouldVirtualize ? (conversation?.items.length ?? 0) : 0,
+    count: shouldVirtualize ? filteredItems.length : 0,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => ESTIMATED_CHAT_ITEM_HEIGHT,
     overscan: 8,
@@ -582,6 +592,13 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     };
 
+    // Marks for display-item matches carry the displayItemId (e.g. "tool-<id>-3");
+    // lastOutput and user matches carry the group id itself.
+    const markItemId =
+      currentMatch.displayItemId && currentMatch.displayItemId !== 'lastOutput'
+        ? currentMatch.displayItemId
+        : currentMatch.itemId;
+
     /**
      * DOM text-search fallback: walk text nodes inside the group element to find the
      * Nth occurrence of the search query, then scroll the enclosing element into view.
@@ -633,14 +650,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
       // Primary: find mark by item ID + match index
       const el = container.querySelector<HTMLElement>(
-        `mark[data-search-item-id="${CSS.escape(currentMatch.itemId)}"][data-search-match-index="${currentMatch.matchIndexInItem}"]`
+        `mark[data-search-item-id="${CSS.escape(markItemId)}"][data-search-match-index="${currentMatch.matchIndexInItem}"]`
       );
       if (el) {
         promoteAndScroll(el);
         return;
       }
 
-      // Secondary: align by global order (nth rendered mark) as canonical fallback.
+      // Secondary: align by global order (nth rendered mark) as canonical fallback,
+      // but only when that mark belongs to the current match's item — rendered marks
+      // may cover only a subset of full-corpus matches.
       if (attempt >= 3) {
         const orderedMarks = Array.from(
           container.querySelectorAll<HTMLElement>(
@@ -648,7 +667,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
           )
         );
         const byGlobal = orderedMarks[currentSearchIndex];
-        if (byGlobal) {
+        if (byGlobal?.dataset.searchItemId === markItemId) {
           promoteAndScroll(byGlobal);
           return;
         }
@@ -780,6 +799,8 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       className="flex flex-1 flex-col overflow-hidden"
       style={{ backgroundColor: 'var(--color-surface)' }}
     >
+      {/* Event filter chips (per-tab state, issue #36) */}
+      <EventFilterBar counts={eventFilterCounts} />
       <div className="relative flex flex-1 overflow-hidden">
         {/* Chat content */}
         <div
@@ -816,7 +837,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             style={{ marginTop: allContextInjections.length > 0 ? '-2rem' : 0 }}
           >
             <div className="space-y-8">
-              {shouldVirtualize ? (
+              {filteredItems.length === 0 ? (
+                <div className="py-12 text-center text-sm" style={{ color: 'var(--color-text-muted)' }}>
+                  No events match the active filters.
+                </div>
+              ) : shouldVirtualize ? (
                 <div
                   style={{
                     height: `${rowVirtualizer.getTotalSize()}px`,
@@ -825,7 +850,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                   }}
                 >
                   {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const item = conversation.items[virtualRow.index];
+                    const item = filteredItems[virtualRow.index];
                     if (!item) return null;
                     return (
                       <div
@@ -853,13 +878,14 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                           registerChatItemRef={registerChatItemRef}
                           registerAIGroupRef={registerAIGroupRefCombined}
                           registerToolRef={registerToolRef}
+                          eventFilters={eventFilters}
                         />
                       </div>
                     );
                   })}
                 </div>
               ) : (
-                conversation.items.map((item) => (
+                filteredItems.map((item) => (
                   <ChatHistoryItem
                     key={item.group.id}
                     item={item}
@@ -873,6 +899,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                     registerChatItemRef={registerChatItemRef}
                     registerAIGroupRef={registerAIGroupRefCombined}
                     registerToolRef={registerToolRef}
+                    eventFilters={eventFilters}
                   />
                 ))
               )}

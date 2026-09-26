@@ -14,6 +14,31 @@ import type { ParsedMessage, Process, SemanticStep } from '../types/data';
 import type { AIGroupDisplayItem, AIGroupLastOutput, LinkedToolItem } from '../types/groups';
 
 /**
+ * Stable item key for a display item at `index` — the exact keys DisplayItemList
+ * renders; shared with search so marks/expansion address the same elements.
+ */
+export function displayItemKey(item: AIGroupDisplayItem, index: number): string {
+  switch (item.type) {
+    case 'thinking':
+      return `thinking-${index}`;
+    case 'output':
+      return `output-${index}`;
+    case 'tool':
+      return `tool-${item.tool.id}-${index}`;
+    case 'subagent':
+      return `subagent-${item.subagent.id}-${index}`;
+    case 'slash':
+      return `slash-${item.slash.name}-${index}`;
+    case 'teammate_message':
+      return `teammate-${item.teammateMessage.id}-${index}`;
+    case 'subagent_input':
+      return `input-${index}`;
+    case 'compact_boundary':
+      return `compact-${index}`;
+  }
+}
+
+/**
  * Get the timestamp from a display item for sorting.
  */
 function getDisplayItemTimestamp(item: AIGroupDisplayItem): Date {
