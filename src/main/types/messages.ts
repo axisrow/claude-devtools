@@ -6,13 +6,14 @@
  * parsed messages into categories for chunk building.
  */
 
+import { isUserChunkLine } from '@shared/turnAccounting';
+
 import {
   EMPTY_STDERR,
   EMPTY_STDOUT,
   HARD_NOISE_TAGS,
   LOCAL_COMMAND_STDERR_TAG,
   LOCAL_COMMAND_STDOUT_TAG,
-  SYSTEM_OUTPUT_TAGS,
 } from '../constants/messageTags';
 
 import { type MessageType, type TokenUsage } from './domain';
@@ -165,66 +166,9 @@ export function isParsedRealUserMessage(msg: ParsedMessage): boolean {
  * - "<system-reminder>...</system-reminder>" -> Hard noise
  */
 export function isParsedUserChunkMessage(msg: ParsedMessage): boolean {
-  if (msg.type !== 'user') return false;
-  if (msg.isMeta === true) return false;
-  if (isParsedTeammateMessage(msg)) return false;
-
-  const content = msg.content;
-
-  // Check string content
-  if (typeof content === 'string') {
-    const trimmed = content.trim();
-
-    // Exclude messages that are system output or system metadata
-    // These tags indicate system-generated content, not user input
-    for (const tag of SYSTEM_OUTPUT_TAGS) {
-      if (trimmed.startsWith(tag)) {
-        return false;
-      }
-    }
-
-    // <command-name> is ALLOWED - it's user-initiated slash commands
-    // Remaining content is genuine user input
-    return trimmed.length > 0;
-  }
-
-  // Array content format (newer sessions)
-  if (Array.isArray(content)) {
-    // Must contain text or image blocks for real user input
-    const hasUserContent = content.some((block) => block.type === 'text' || block.type === 'image');
-
-    if (!hasUserContent) {
-      return false;
-    }
-
-    // Filter out user interruption messages (should be part of AI response flow)
-    // These have exactly 1 text block with content like "[Request interrupted by user]"
-    // or "[Request interrupted by user for tool use]"
-    if (
-      content.length === 1 &&
-      content[0].type === 'text' &&
-      typeof content[0].text === 'string' &&
-      content[0].text.startsWith('[Request interrupted by user')
-    ) {
-      return false;
-    }
-
-    // Check text blocks for excluded tags
-    for (const block of content) {
-      if (block.type === 'text') {
-        const textBlock = block;
-        for (const tag of SYSTEM_OUTPUT_TAGS) {
-          if (textBlock.text.startsWith(tag)) {
-            return false;
-          }
-        }
-      }
-    }
-
-    return true;
-  }
-
-  return false;
+  // canonical predicate lives in the accounting core — one definition for
+  // the hook, the calibration CLI and the parser (no drift)
+  return isUserChunkLine(msg);
 }
 
 /**
@@ -359,22 +303,4 @@ export function isParsedHardNoiseMessage(msg: ParsedMessage): boolean {
  */
 export function isParsedCompactMessage(msg: ParsedMessage): boolean {
   return msg.isCompactSummary === true;
-}
-
-/**
- * Detect teammate messages - messages from team member agents.
- * Format: <teammate-message teammate_id="name" ...>content</teammate-message>
- */
-const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)"/;
-
-function isParsedTeammateMessage(msg: ParsedMessage): boolean {
-  if (msg.type !== 'user' || msg.isMeta) return false;
-  const content = msg.content;
-  if (typeof content === 'string') return TEAMMATE_MESSAGE_REGEX.test(content.trim());
-  if (Array.isArray(content)) {
-    return content.some(
-      (block) => block.type === 'text' && TEAMMATE_MESSAGE_REGEX.test(block.text.trim())
-    );
-  }
-  return false;
 }

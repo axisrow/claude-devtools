@@ -34,13 +34,9 @@ export const EMPTY_STDERR = '<local-command-stderr></local-command-stderr>';
 // Tag Arrays for Filtering
 // =============================================================================
 
-/** Tags that indicate system output (excludes from User chunks) */
-export const SYSTEM_OUTPUT_TAGS = [
-  LOCAL_COMMAND_STDERR_TAG,
-  LOCAL_COMMAND_STDOUT_TAG,
-  LOCAL_COMMAND_CAVEAT_TAG,
-  SYSTEM_REMINDER_TAG,
-] as const;
+/** Tags that indicate system output (excludes from User chunks) —
+ * canonical list lives in the accounting core (scripts/turn-accounting.mjs). */
+export { SYSTEM_OUTPUT_TAGS } from '@shared/turnAccounting';
 
 /** Tags that indicate hard noise (messages filtered completely) */
 export const HARD_NOISE_TAGS = [LOCAL_COMMAND_CAVEAT_TAG, SYSTEM_REMINDER_TAG] as const;

@@ -67,14 +67,16 @@ describe('turn accounting — golden parity across consumers', () => {
     expect(spends[spends.length - 1].inputSide).toBe(102_320);
   });
 
-  it('pins the fixture numbers: 4 turns, fragment dedup, sidechain counted', () => {
+  it('pins the fixture numbers: 3 turns — stdout no longer splits turns', () => {
     const state = mkState();
     for (const line of lines) feedLine(line, state);
     const spends = state.spends as { inputSide: number; rounds: number }[];
 
-    expect(spends).toHaveLength(4);
-    expect(spends.map((s) => s.inputSide)).toEqual([311_800, 4_400, 10_798, 102_320]);
-    expect(spends.map((s) => s.rounds)).toEqual([4, 1, 2, 2]);
+    // canonical boundary: <local-command-stdout> is system output, NOT a turn
+    // boundary — turn 1 now spans fixture lines 2..10 (311.8k + 4.4k)
+    expect(spends).toHaveLength(3);
+    expect(spends.map((s) => s.inputSide)).toEqual([316_200, 10_798, 102_320]);
+    expect(spends.map((s) => s.rounds)).toEqual([5, 2, 2]);
   });
 
   it('sumTurnReread (renderer) matches the hook on the same requests', () => {

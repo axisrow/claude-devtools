@@ -18,5 +18,7 @@ export {
   inputSideTokens,
   isRealUserLine,
   isTurnBoundary,
+  isUserChunkLine,
   lastAssistantTotalTokens,
+  SYSTEM_OUTPUT_TAGS,
 } from '../../scripts/turn-accounting.mjs';

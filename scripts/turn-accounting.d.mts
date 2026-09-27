@@ -43,7 +43,13 @@ export declare function lastAssistantTotalTokens(responses?: AccountableMessage[
 /** Real user message (raw or flattened shape) — not meta/system/teammate. */
 export declare function isRealUserLine(m: AccountableMessage): boolean;
 
-/** Turn boundary: real user message or compaction marker. */
+/** System-output wrapper tags (canonical list; messageTags.ts re-exports). */
+export declare const SYSTEM_OUTPUT_TAGS: string[];
+
+/** Canonical user-turn predicate: port of isParsedUserChunkMessage. */
+export declare function isUserChunkLine(m: AccountableMessage): boolean;
+
+/** Turn boundary: user-initiated message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
 /** Sum input-side spend of the current turn, scanning lines newest-first. */
