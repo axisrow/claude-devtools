@@ -169,7 +169,7 @@ export const NotificationsSection = ({
       </SettingRow>
       <SettingRow
         label="Input tokens per turn"
-        description="Corpus-calibrated default: your historical p95 is ~12.6M"
+        description="Corpus-calibrated default (request-deduped): your historical p95 is ~6.7M"
       >
         <div className="flex items-center gap-2">
           <input

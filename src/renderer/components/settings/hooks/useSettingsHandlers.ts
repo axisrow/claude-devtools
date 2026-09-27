@@ -299,7 +299,7 @@ export function useSettingsHandlers({
           includeSubagentErrors: true,
           triggers: defaultTriggers,
           loopDetection: { enabled: true, cycleThreshold: 4 },
-          turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 },
+          turnBudget: { enabled: true, maxInputTokensPerTurn: 8_000_000 },
         },
         general: {
           launchAtLogin: false,

@@ -248,8 +248,9 @@ const DEFAULT_CONFIG: AppConfig = {
     includeSubagentErrors: true,
     triggers: DEFAULT_TRIGGERS,
     loopDetection: { enabled: true, cycleThreshold: 4 },
-    // corpus-calibrated (pnpm turn-spend:stats, 10 080 turns): p95 = 12.56M
-    turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 },
+    // corpus-calibrated with request dedup (pnpm turn-spend:stats,
+    // 10 423 turns, 2026-09-27): p95 = 6.66M -> budget = p95 x 1.2 = 8M
+    turnBudget: { enabled: true, maxInputTokensPerTurn: 8_000_000 },
   },
   general: {
     launchAtLogin: false,
