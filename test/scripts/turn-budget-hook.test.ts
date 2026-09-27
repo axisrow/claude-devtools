@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error — .mjs hook script has no type declarations
+// plain-node hook script — typed via scripts/turn-budget-hook.d.mts
 import { analyzeTurn } from '../../scripts/turn-budget-hook.mjs';
 
 /**

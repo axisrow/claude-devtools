@@ -7,6 +7,10 @@
  * - Empty lines should be skipped
  */
 
+import {
+  billedRequestKey as billedRequestKeyCore,
+  billedTotalTokens,
+} from '@shared/turnAccounting';
 import { isCommandOutputContent, sanitizeDisplayContent } from '@shared/utils/contentSanitizer';
 import { createLogger } from '@shared/utils/logger';
 import * as readline from 'readline';
@@ -232,10 +236,11 @@ function parseMessageType(type?: string): MessageType | null {
  * Which key identifies one billed request on this transcript: the backend's
  * requestId when present, else the API message.id (proxies that stream one
  * line per content block omit requestId but repeat message.id). Every
- * once-per-request accounting site keys on this.
+ * once-per-request accounting site keys on this. Delegates to the canonical
+ * core (scripts/turn-budget-hook.mjs) — one implementation everywhere.
  */
 export function billedRequestKey(msg: ParsedMessage): string | undefined {
-  return msg.requestId ?? msg.messageId;
+  return billedRequestKeyCore(msg);
 }
 
 /**
@@ -684,14 +689,10 @@ export async function analyzeSessionFileMetadata(
     // Total spend: sum every assistant usage block (sidechain included — this
     // is the cost of the transcript), synthetic lines carry no usage
     if (parsed.type === 'assistant' && parsed.usage) {
-      const requestKey = parsed.requestId ?? parsed.messageId;
+      const requestKey = billedRequestKey(parsed);
       if (!requestKey || !billedRequests.has(requestKey)) {
         if (requestKey) billedRequests.add(requestKey);
-        totalTokens +=
-          (parsed.usage.input_tokens ?? 0) +
-          (parsed.usage.cache_read_input_tokens ?? 0) +
-          (parsed.usage.cache_creation_input_tokens ?? 0) +
-          (parsed.usage.output_tokens ?? 0);
+        totalTokens += billedTotalTokens(parsed.usage);
       }
     }
 
