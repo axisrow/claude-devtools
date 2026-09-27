@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  getDateCategory,
   getNonEmptyCategories,
   groupSessionsByDate,
 } from '../../../src/renderer/utils/dateGrouping';
@@ -137,6 +138,19 @@ describe('dateGrouping', () => {
 
       expect(result.Today).toHaveLength(1);
       expect(result.Older).toHaveLength(0);
+    });
+  });
+
+  describe('getDateCategory', () => {
+    it('categorizes timestamps across the category boundaries', () => {
+      const ts = (iso: string): number => new Date(iso).getTime();
+
+      // mid-day timestamps: Today/Yesterday split is calendar-local, so
+      // second-precision edges at midnight Z would be timezone-fragile
+      expect(getDateCategory(ts('2024-01-15T10:00:00Z'))).toBe('Today');
+      expect(getDateCategory(ts('2024-01-14T10:00:00Z'))).toBe('Yesterday');
+      expect(getDateCategory(ts('2024-01-08T12:00:01Z'))).toBe('Previous 7 Days'); // a second under 7 full days
+      expect(getDateCategory(ts('2024-01-07T11:59:59Z'))).toBe('Older'); // 8 full days + 1s
     });
   });
 
