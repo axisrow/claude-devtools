@@ -381,6 +381,12 @@ export interface ContextStats {
   newCounts: NewCountsByCategory;
   /** Running totals of accumulated injection counts by category (always populated) */
   accumulatedCounts: NewCountsByCategory;
+  /** Hook-parity per-turn re-read: input-side billed context of ALL requests
+   *  in this turn, requestId-deduped — same accounting as the turn-budget
+   *  hook (scripts/turn-budget-hook.mjs analyzeTurn) */
+  turnRereadTokens: number;
+  /** Billed requests in the turn (requestId-deduped) */
+  turnRequests: number;
   /** Which context phase this stats belongs to (1-based) */
   phaseNumber?: number;
   /** Per-round classification for the group's stream (keyed by response uuid) */

@@ -470,10 +470,41 @@ function aggregateWaitLoopRounds(
   };
 }
 
+/**
+ * Hook-parity turn re-read: every request of the turn re-sends the whole
+ * context, so the honest per-turn cost is the input-side sum over ALL
+ * rounds — same accounting as the turn-budget hook
+ * (scripts/turn-budget-hook.mjs analyzeTurn): input + cache_read +
+ * cache_creation, billed once per requestId (GLM streams one request as
+ * several full-usage JSONL lines). Sidechain rounds live in subagent
+ * groups, not aiGroup.responses — measured gap nil (audit 2026-09-27:
+ * side = 0.0M on every top-spend turn).
+ */
+function sumTurnReread(responses: ParsedMessage[]): { tokens: number; requests: number } {
+  const seen = new Set<string>();
+  let tokens = 0;
+  let requests = 0;
+  for (const msg of responses ?? []) {
+    if (msg.type !== 'assistant') continue;
+    const key = msg.requestId ?? msg.messageId;
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    const u = msg.usage;
+    if (!u) continue;
+    tokens +=
+      (u.input_tokens ?? 0) +
+      (u.cache_read_input_tokens ?? 0) +
+      (u.cache_creation_input_tokens ?? 0);
+    requests += 1;
+  }
+  return { tokens, requests };
+}
+
 // =============================================================================
 // Task Coordination Aggregation
 // =============================================================================
-
 /**
  * Aggregate task coordination tokens from linked tools and display items.
  * Tracks SendMessage, TeamCreate, TaskCreate, and other task tools,
@@ -1176,6 +1207,9 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     });
   }
 
+  // hook-parity per-turn re-read (the number the turn-budget hook enforces)
+  const turnReread = sumTurnReread(aiGroup.responses ?? []);
+
   return {
     stats: {
       newInjections,
@@ -1185,6 +1219,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       newCounts,
       accumulatedCounts,
       roundFlags,
+      turnRereadTokens: turnReread.tokens,
+      turnRequests: turnReread.requests,
     },
     previousPaths,
     loopState: updatedLoopState,

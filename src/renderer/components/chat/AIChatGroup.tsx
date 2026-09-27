@@ -543,7 +543,8 @@ const AIChatGroupInner = ({
 
 export const AIChatGroup = React.memo(AIChatGroupInner);
 
-/** Red waste pills for this turn: Wait-loop quiet-round re-read + Loop repeats. */
+/** Turn cost pills: hook-parity re-read of the whole turn + Wait-loop
+ * quiet-round burn + Loop repeats. */
 const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactElement | null => {
   let waitTokens = 0;
   let waitRounds = 0;
@@ -556,7 +557,10 @@ const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactEle
       loopTokens += inj.estimatedTokens;
     }
   }
-  if (waitTokens === 0 && loopTokens === 0) return null;
+  // Re-read pill shows from 2 billed requests: single-round turns are the
+  // normal case and a badge on every turn would be noise
+  const showReread = stats.turnRequests > 1 && stats.turnRereadTokens > 0;
+  if (waitTokens === 0 && loopTokens === 0 && !showReread) return null;
 
   const pillStyle: React.CSSProperties = {
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
@@ -565,6 +569,14 @@ const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactEle
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
+      {showReread && (
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          style={pillStyle}
+        >
+          Re-read {formatTokensCompact(stats.turnRereadTokens)} · {stats.turnRequests} rq
+        </span>
+      )}
       {waitTokens > 0 && (
         <span
           className="rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"

@@ -295,3 +295,33 @@ describe('contextTracker wait-loop category', () => {
     expect(stats!.tokensByCategory.waitLoop).toBe(0);
   });
 });
+
+describe('contextTracker turn re-read (hook parity)', () => {
+  it('sums input-side context over ALL rounds; GLM fragments bill once', () => {
+    const frag = (rid: string): ParsedMessage => {
+      const m = assistantMsg({ input: 1000, cacheRead: 133_000, output: 100 });
+      (m as unknown as { requestId?: string }).requestId = rid;
+      return m;
+    };
+    const items = [
+      userGroup(),
+      aiGroup(
+        'ai-0',
+        0,
+        [],
+        [
+          frag('req_a'),
+          frag('req_a'), // stream fragment of the same request, full usage again
+          assistantMsg({ input: 2000, cacheRead: 60_000, output: 2_000 }), // working round
+        ]
+      ),
+    ];
+
+    const stats = lastStats(items).get('ai-0');
+    // fragment pair bills once (134k), working round adds 62k
+    expect(stats!.turnRequests).toBe(2);
+    expect(stats!.turnRereadTokens).toBe(196_000);
+    // quiet subset untouched: 2 rounds < WAIT_LOOP_MIN_TICKS gate
+    expect(stats!.tokensByCategory.waitLoop).toBe(0);
+  });
+});
