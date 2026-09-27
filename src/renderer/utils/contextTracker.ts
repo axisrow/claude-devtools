@@ -474,13 +474,14 @@ function aggregateWaitLoopRounds(
 /**
  * Hook-parity turn re-read: every request of the turn re-sends the whole
  * context, so the honest per-turn cost is the input-side sum over ALL
- * rounds — the canonical accounting core (scripts/turn-budget-hook.mjs
+ * rounds — the canonical accounting core (scripts/turn-accounting.mjs
  * analyzeTurn): input + cache_read + cache_creation, billed once per
  * request key (GLM streams one request as several full-usage JSONL lines).
  * Sidechain rounds live in subagent groups, not aiGroup.responses —
  * measured gap nil (audit 2026-09-27: side = 0.0M on every top-spend turn).
+ * Exported for the golden parity test.
  */
-function sumTurnReread(responses: ParsedMessage[]): { tokens: number; requests: number } {
+export function sumTurnReread(responses: ParsedMessage[]): { tokens: number; requests: number } {
   // keep-newest per request key — the last line of a request carries its
   // final counts (same semantics as the hook's newest-first scan)
   const lastUsageByRequest = new Map<string, ParsedMessage['usage']>();

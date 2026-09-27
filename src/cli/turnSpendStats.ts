@@ -4,8 +4,9 @@
  * Walks ~/.claude/projects/** session transcripts with the SAME accounting the
  * turn-budget hook enforces: per turn (from one real user message to the next),
  * sum the input-side tokens (input + cache_read + cache_creation) of every
- * assistant round. Prints percentiles so the default budget comes from data,
- * not guesswork. Flags: --p N (percentile to highlight, default 99).
+ * distinct request (streaming/GLM fragments billed once, keep-newest). Prints
+ * percentiles so the default budget comes from data, not guesswork. Flags:
+ * --p N (percentile to highlight, default 99).
  */
 
 import * as fs from 'fs';
@@ -14,7 +15,11 @@ import * as path from 'path';
 import * as readline from 'readline';
 
 // same turn-boundary predicate the hook enforces — one definition, no drift
-import { isTurnBoundary } from '../../scripts/turn-budget-hook.mjs';
+import {
+  billedRequestKey,
+  inputSideTokens,
+  isTurnBoundary,
+} from '../../scripts/turn-budget-hook.mjs';
 
 import { wantsHelp } from './args';
 
@@ -23,6 +28,8 @@ export interface TurnSpend {
   turnIndex: number;
   inputSide: number;
   rounds: number;
+  /** per-request running input side — keep-newest bookkeeping (internal) */
+  usageByRequest?: Map<string, number>;
 }
 
 /** One JSONL line -> state mutation for the turn-spend walker. */
@@ -33,7 +40,10 @@ export function feedLine(
   let msg: {
     type?: string;
     isMeta?: boolean;
+    requestId?: string;
+    messageId?: string;
     message?: {
+      id?: string;
       usage?: {
         input_tokens?: number;
         cache_read_input_tokens?: number;
@@ -58,12 +68,26 @@ export function feedLine(
   }
 
   if (msg.type === 'assistant' && inner.usage && state.current) {
-    const u = inner.usage;
-    state.current.inputSide +=
-      (u.input_tokens ?? 0) +
-      (u.cache_read_input_tokens ?? 0) +
-      (u.cache_creation_input_tokens ?? 0);
-    state.current.rounds += 1;
+    const side = inputSideTokens(inner.usage);
+    const key = billedRequestKey(msg);
+    if (key) {
+      // keep-newest, same as the hook's newest-first scan: the last line of a
+      // streamed request carries the final counts, so it REPLACES the earlier
+      // fragment's contribution instead of adding to it
+      const usageByRequest = (state.current.usageByRequest ??= new Map<string, number>());
+      const prev = usageByRequest.get(key);
+      if (prev === undefined) {
+        state.current.rounds += 1;
+      } else {
+        state.current.inputSide -= prev;
+      }
+      usageByRequest.set(key, side);
+      state.current.inputSide += side;
+    } else {
+      // no request identity — each line is its own request
+      state.current.inputSide += side;
+      state.current.rounds += 1;
+    }
   }
 }
 

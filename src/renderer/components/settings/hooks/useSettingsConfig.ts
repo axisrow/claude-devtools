@@ -177,7 +177,7 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
         turnBudget: {
           enabled: displayConfig?.notifications?.turnBudget?.enabled ?? true,
           maxInputTokensPerTurn:
-            displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? 15_000_000,
+            displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? 8_000_000,
         },
       },
       display: {

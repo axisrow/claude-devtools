@@ -62,8 +62,10 @@ export {
 };
 
 const CONFIG_PATH = join(homedir(), '.claude', 'claude-devtools-config.json');
-// corpus-calibrated (pnpm turn-spend:stats, 10 080 turns): p95 = 12.56M
-const DEFAULT_BUDGET = 15_000_000;
+// corpus-calibrated with request dedup (pnpm turn-spend:stats, 10 423 turns,
+// 2026-09-27): p95 = 6.66M -> budget = round to 0.5M of p95 x 1.2 = 8M.
+// Same convention as the original 15M (12.56M p95 x 1.2, un-deduped count).
+const DEFAULT_BUDGET = 8_000_000;
 const CHUNK = 1 << 20; // backwards-read window
 
 /** Backwards line generator: yields lines newest-first. */
