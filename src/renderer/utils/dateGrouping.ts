@@ -24,6 +24,15 @@ import type { DateCategory, DateGroupedSessions } from '../types/tabs';
  * @param sessions Array of sessions to group
  * @returns Object with sessions grouped by date category
  */
+export function getDateCategory(timestamp: number, now: Date = new Date()): DateCategory {
+  const date = new Date(timestamp);
+
+  if (isToday(date)) return 'Today';
+  if (isYesterday(date)) return 'Yesterday';
+  if (differenceInDays(now, date) <= 7) return 'Previous 7 Days';
+  return 'Older';
+}
+
 export function groupSessionsByDate(sessions: Session[]): DateGroupedSessions {
   const now = new Date();
 
@@ -31,17 +40,7 @@ export function groupSessionsByDate(sessions: Session[]): DateGroupedSessions {
     (acc, session) => {
       // Use updatedAt if available, fallback to createdAt. Ensure we don't go backwards in time.
       const timestamp = Math.max(session.updatedAt ?? session.createdAt, session.createdAt);
-      const sessionDate = new Date(timestamp);
-
-      if (isToday(sessionDate)) {
-        acc.Today.push(session);
-      } else if (isYesterday(sessionDate)) {
-        acc.Yesterday.push(session);
-      } else if (differenceInDays(now, sessionDate) <= 7) {
-        acc['Previous 7 Days'].push(session);
-      } else {
-        acc.Older.push(session);
-      }
+      acc[getDateCategory(timestamp, now)].push(session);
 
       return acc;
     },

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '@renderer/store';
+import { getDateCategory } from '@renderer/utils/dateGrouping';
 import { getTriggerColorDef } from '@shared/constants/triggerColors';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { CheckCheck, Inbox, Loader2, Trash2 } from 'lucide-react';
@@ -15,9 +16,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { NotificationRow } from './NotificationRow';
 
 import type { DetectedError } from '@renderer/types/data';
+import type { DateCategory } from '@renderer/types/tabs';
 
 // Virtual list constants
 const ROW_HEIGHT = 56;
+const HEADER_HEIGHT = 28; // Must match the header row height in the sidebar's DateGroupedSessions
 const OVERSCAN = 5;
 
 /** Label used for notifications without a triggerName */
@@ -28,6 +31,11 @@ interface FilterChip {
   count: number;
   colorHex: string;
 }
+
+// Flat virtual list: a date-section header precedes each date group
+type ListItem =
+  | { type: 'header'; category: DateCategory }
+  | { type: 'notification'; notification: DetectedError };
 
 export const NotificationsView = (): React.JSX.Element => {
   const {
@@ -112,12 +120,31 @@ export const NotificationsView = (): React.JSX.Element => {
     });
   }, [sortedNotifications, activeFilter]);
 
-  // Estimate item size
-  const estimateSize = useCallback(() => ROW_HEIGHT, []);
+  // Flatten into a date-sectioned list: header row before each date group.
+  // Notifications are sorted newest-first, so categories appear in display order.
+  const listItems = useMemo((): ListItem[] => {
+    const items: ListItem[] = [];
+    let currentCategory: DateCategory | null = null;
+    for (const notification of filteredNotifications) {
+      const category = getDateCategory(notification.timestamp);
+      if (category !== currentCategory) {
+        currentCategory = category;
+        items.push({ type: 'header', category });
+      }
+      items.push({ type: 'notification', notification });
+    }
+    return items;
+  }, [filteredNotifications]);
+
+  // Estimate item size based on type
+  const estimateSize = useCallback(
+    (index: number) => (listItems[index]?.type === 'header' ? HEADER_HEIGHT : ROW_HEIGHT),
+    [listItems]
+  );
 
   // Set up virtualizer
   const rowVirtualizer = useVirtualizer({
-    count: filteredNotifications.length,
+    count: listItems.length,
     getScrollElement: () => parentRef.current,
     estimateSize,
     overscan: OVERSCAN,
@@ -339,8 +366,8 @@ export const NotificationsView = (): React.JSX.Element => {
             }}
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const notification = filteredNotifications[virtualRow.index];
-              if (!notification) return null;
+              const item = listItems[virtualRow.index];
+              if (!item) return null;
 
               return (
                 <div
@@ -354,12 +381,25 @@ export const NotificationsView = (): React.JSX.Element => {
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
                 >
-                  <NotificationRow
-                    error={notification}
-                    onRowClick={() => handleRowClick(notification)}
-                    onArchive={() => handleArchive(notification.id)}
-                    onDelete={() => handleDelete(notification.id)}
-                  />
+                  {item.type === 'header' ? (
+                    <div
+                      className="flex h-full items-center border-t px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider"
+                      style={{
+                        backgroundColor: 'var(--color-surface-sidebar)',
+                        color: 'var(--color-text-muted)',
+                        borderColor: 'var(--color-border-emphasis)',
+                      }}
+                    >
+                      {item.category}
+                    </div>
+                  ) : (
+                    <NotificationRow
+                      error={item.notification}
+                      onRowClick={() => handleRowClick(item.notification)}
+                      onArchive={() => handleArchive(item.notification.id)}
+                      onDelete={() => handleDelete(item.notification.id)}
+                    />
+                  )}
                 </div>
               );
             })}
