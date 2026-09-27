@@ -12,7 +12,7 @@
 import { type ParsedMessage } from '@main/types';
 import { billedRequestKey } from '@main/utils/jsonl';
 import { isStalledRound } from '@shared/constants/loopPolicy';
-import { billedTotalTokens, isTurnBoundary } from '@shared/turnAccounting';
+import { billedTotalTokens, inputSideTokens, isTurnBoundary } from '@shared/turnAccounting';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 export interface LoopIncident {
@@ -237,6 +237,110 @@ export class StallDetector {
         state.streak = 0;
         state.streakTokens = 0;
         state.notifiedCount = 0;
+      }
+    }
+    return incident;
+  }
+}
+
+interface FileBudgetState {
+  /** input-side spend per request key — keep-newest (last line of a request wins) */
+  usageByRequest: Map<string, number>;
+  /** assistant lines without any request id — each is its own request */
+  keylessSpend: number;
+  /** running turn total = Σ usageByRequest.values() + keylessSpend */
+  total: number;
+  /** this turn already fired its crossing notification */
+  notified: boolean;
+  lastToolUseId: string;
+  cwd?: string;
+}
+
+const freshBudgetState = (): FileBudgetState => ({
+  usageByRequest: new Map(),
+  keylessSpend: 0,
+  total: 0,
+  notified: false,
+  lastToolUseId: '',
+});
+
+export interface TurnBudgetIncident {
+  /** turn's input-side spend at the crossing */
+  spent: number;
+  /** configured per-turn budget (the hook's currency) */
+  budget: number;
+  toolUseId: string;
+  cwd?: string;
+  batchIndex: number;
+}
+
+/**
+ * TurnBudgetDetector — the bell's live mirror of the turn-budget hook.
+ * Watches the current turn's input-side re-read with the SAME accounting
+ * core (billedRequestKey + inputSideTokens, keep-newest), the SAME config
+ * field the hook enforces, from the SAME transcript the hook reads — so
+ * the notification number equals the hook's number by construction, not by
+ * synchronization. Fires once per turn at the crossing (edge-triggered);
+ * a new user turn resets the bucket.
+ */
+export class TurnBudgetDetector {
+  private perFile = new Map<string, FileBudgetState>();
+
+  /** Drop state — file was truncated/rewritten, counters no longer describe it. */
+  reset(filePath: string): void {
+    this.perFile.delete(filePath);
+  }
+
+  /** Drop state for every file (full tracking cleanup). */
+  resetAll(): void {
+    this.perFile.clear();
+  }
+
+  /** Same contract as LoopDetector.feed; budget = notifications.turnBudget.maxInputTokensPerTurn. */
+  feed(filePath: string, messages: ParsedMessage[], budget: number): TurnBudgetIncident | null {
+    let state = this.perFile.get(filePath) ?? freshBudgetState();
+    this.perFile.set(filePath, state);
+
+    let incident: TurnBudgetIncident | null = null;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      // a new user turn (or compaction) starts a fresh budget bucket
+      if (isTurnBoundary(msg)) {
+        state = freshBudgetState();
+        this.perFile.set(filePath, state);
+      }
+      // main-chain assistant lines only — same accounting as the hook
+      if (msg.type !== 'assistant' || msg.isSidechain || msg.model === '<synthetic>') continue;
+      if (msg.cwd) state.cwd = msg.cwd;
+      const u = msg.usage;
+      if (!u) continue;
+      const side = inputSideTokens(u);
+      const key = billedRequestKey(msg);
+      if (key) {
+        // keep-newest replace: a streamed request's later lines carry the
+        // final counts, so they REPLACE the earlier contribution
+        const prev = state.usageByRequest.get(key);
+        state.usageByRequest.set(key, side);
+        state.total += side - (prev ?? 0);
+      } else {
+        // no request identity — each line is its own request
+        state.keylessSpend += side;
+        state.total += side;
+      }
+      state.lastToolUseId = msg.toolCalls[msg.toolCalls.length - 1]?.id ?? '';
+
+      if (!state.notified && state.total >= budget) {
+        state.notified = true;
+        if (!incident) {
+          incident = {
+            spent: state.total,
+            budget,
+            toolUseId: state.lastToolUseId,
+            cwd: state.cwd,
+            batchIndex: i,
+          };
+        }
       }
     }
     return incident;

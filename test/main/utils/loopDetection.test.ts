@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ParsedMessage } from '../../../src/main/types';
-import { LoopDetector, StallDetector } from '../../../src/main/utils/loopDetection';
+import {
+  LoopDetector,
+  StallDetector,
+  TurnBudgetDetector,
+} from '../../../src/main/utils/loopDetection';
 
 /** Minimal ParsedMessage fixture: one assistant line carrying tool calls. */
 const assistant = (
@@ -357,5 +361,58 @@ describe('StallDetector', () => {
     // boundary in between resets the baseline to 0
     const batch = [echoRound(1), echoRound(2), echoRound(3), userTurn, echoRound(4)];
     expect(detector.feed('/s.jsonl', batch, threshold)).toBeNull();
+  });
+});
+
+describe('TurnBudgetDetector', () => {
+  const budget = 10_000_000;
+  const userTurn = {
+    type: 'user',
+    isMeta: false,
+    content: 'next turn',
+  } as unknown as ParsedMessage;
+  const big = (uuid: string, input: number): ParsedMessage =>
+    assistant(uuid, [read(`t-${uuid}`, '/x/f')], { usage: { input } });
+
+  it('fires once at the crossing; stays quiet for the rest of the turn', () => {
+    const det = new TurnBudgetDetector();
+    expect(det.feed('s', [big('a', 4_000_000), big('b', 4_000_000)], budget)).toBeNull();
+    const incident = det.feed('s', [big('c', 4_000_000)], budget);
+    expect(incident).toEqual({
+      spent: 12_000_000,
+      budget,
+      toolUseId: 't-c',
+      cwd: undefined,
+      batchIndex: 0,
+    });
+    // the hook keeps denying on every call — the detector stays silent
+    expect(det.feed('s', [big('d', 4_000_000)], budget)).toBeNull();
+  });
+
+  it('a new turn resets the bucket and can fire again', () => {
+    const det = new TurnBudgetDetector();
+    expect(det.feed('s', [big('a', 12_000_000)], budget)).not.toBeNull();
+    const second = det.feed('s', [userTurn, big('b', 12_000_000)], budget);
+    expect(second?.spent).toBe(12_000_000);
+  });
+
+  it('spend does not carry across a turn boundary', () => {
+    const det = new TurnBudgetDetector();
+    // 9.5M below budget in turn 1 — the boundary must drop it
+    expect(det.feed('s', [big('a', 9_500_000)], budget)).toBeNull();
+    expect(det.feed('s', [userTurn, big('b', 1_000_000)], budget)).toBeNull();
+  });
+
+  it('GLM fragments of one request bill once (keep-newest replace)', () => {
+    const det = new TurnBudgetDetector();
+    const frag = (uuid: string, input: number): ParsedMessage => {
+      const m = big(uuid, input);
+      (m as unknown as { requestId: string }).requestId = 'req_a';
+      return m;
+    };
+    // 60k + 60k written as two lines of ONE request — bills 60k, not 120k
+    expect(det.feed('s', [frag('f1', 60_000), frag('f2', 60_000)], 100_000)).toBeNull();
+    const incident = det.feed('s', [big('r', 50_000)], 100_000);
+    expect(incident?.spent).toBe(110_000);
   });
 });
