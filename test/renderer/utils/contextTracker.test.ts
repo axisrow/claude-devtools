@@ -325,3 +325,39 @@ describe('contextTracker turn re-read (hook parity)', () => {
     expect(stats!.tokensByCategory.waitLoop).toBe(0);
   });
 });
+
+describe('contextTracker compaction reset', () => {
+  function compactItem(): ChatItem {
+    return {
+      type: 'compact',
+      group: { id: 'compact-0' } as unknown as never,
+    } as unknown as ChatItem;
+  }
+
+  it("loopState resets on compaction — repeat streaks don't leak across phases", () => {
+    const items = [
+      userGroup(),
+      aiGroup(
+        'ai-0',
+        0,
+        [...toolCall('t1', '/src/a.ts', 5000), ...toolCall('t2', '/src/a.ts', 5000)],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2'])]
+      ),
+      compactItem(),
+      userGroup(),
+      aiGroup(
+        'ai-1',
+        0,
+        [...toolCall('t3', '/src/a.ts', 5000), ...toolCall('t4', '/src/a.ts', 5000)],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t3', 't4'])]
+      ),
+    ];
+
+    const stats = lastStats(items).get('ai-1');
+    expect(stats).toBeDefined();
+    // without the reset this would be the 3rd+4th occurrence of the same key
+    // (loop = 2 entries); with the reset the streak restarts: only the 2nd
+    // call of the new phase loops — 60.2k, not 120.4k
+    expect(stats!.tokensByCategory.loop).toBe(60_200);
+  });
+});

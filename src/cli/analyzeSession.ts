@@ -23,7 +23,7 @@ import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
 import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
-import { asText, normalizeCallKey } from '@shared/utils/callKey';
+import { asText, bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
   estimateTokens,
@@ -33,7 +33,14 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { inDateRange, isDirectRun, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
+import {
+  inDateRange,
+  isDirectRun,
+  lastDaysSince,
+  parseDayBound,
+  takeFlagValue,
+  wantsHelp,
+} from './args';
 
 import type { ParsedMessage, Process } from '@main/types';
 
@@ -546,7 +553,9 @@ export function computeFindings(
     if (retryCopies.has(msg.uuid)) continue;
     if (!inDateRange(msg.timestamp, since, until)) continue;
     for (const call of msg.toolCalls) {
-      const key = normalizeCallKey(call.name, call.input);
+      // bashStem: `git show X | wc -l` variants bucket as one loop — same key
+      // as the live LoopDetector and the inventory (one definition everywhere)
+      const key = bashStem(normalizeCallKey(call.name, call.input));
       const result = results.get(call.id);
       const text = result ? resultText(result.content) : '';
       const resultTok = estimateTokens(text);

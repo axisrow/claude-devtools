@@ -7,6 +7,7 @@ import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
 import { applyEventFilters, EMPTY_EVENT_FILTER_COUNTS } from '@renderer/utils/eventFilters';
+import { lastAssistantTotalTokens } from '@shared/turnAccounting';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronsDown } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -165,19 +166,9 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       (item) => item.type === 'ai' && item.group.id === targetAiGroupId
     );
     if (targetItem?.type === 'ai') {
-      const responses = targetItem.group.responses || [];
-      for (let i = responses.length - 1; i >= 0; i--) {
-        const msg = responses[i];
-        if (msg.type === 'assistant' && msg.usage) {
-          const usage = msg.usage;
-          totalTokens =
-            (usage.input_tokens ?? 0) +
-            (usage.output_tokens ?? 0) +
-            (usage.cache_read_input_tokens ?? 0) +
-            (usage.cache_creation_input_tokens ?? 0);
-          break;
-        }
-      }
+      // canonical accounting core — one implementation of "last round cost"
+      const total = lastAssistantTotalTokens(targetItem.group.responses || []);
+      totalTokens = total === 0 ? undefined : total;
     }
 
     return { allContextInjections: injections, lastAiGroupTotalTokens: totalTokens };
@@ -838,7 +829,10 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
           >
             <div className="space-y-8">
               {filteredItems.length === 0 ? (
-                <div className="py-12 text-center text-sm" style={{ color: 'var(--color-text-muted)' }}>
+                <div
+                  className="py-12 text-center text-sm"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
                   No events match the active filters.
                 </div>
               ) : shouldVirtualize ? (

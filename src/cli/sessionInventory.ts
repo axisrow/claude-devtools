@@ -44,7 +44,14 @@ import {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
 } from './analyzeSession';
-import { inDateRange, isDirectRun, lastDaysSince, parseDayBound, takeFlagValue, wantsHelp } from './args';
+import {
+  inDateRange,
+  isDirectRun,
+  lastDaysSince,
+  parseDayBound,
+  takeFlagValue,
+  wantsHelp,
+} from './args';
 
 interface RawUsage {
   input_tokens?: number;
@@ -116,8 +123,8 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   let messageCount = 0;
   const seenCallIds = new Set<string>();
   // back-to-back run tracking: one entry per maximal run of >= loopStreakMin
-  // identical calls. Buckets Bash by stem (pipe-cut) — analyze:session's
-  // loop_streak keys on the full input, so the two may split one session
+  // identical calls, keyed by bashStem(normalizeCallKey) — now the SAME key
+  // as analyze:session's loop_streak
   let lastStreakKey = '';
   let curStreak = 0;
   let curStreakStartTs = '';

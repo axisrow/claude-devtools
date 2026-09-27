@@ -17,6 +17,7 @@ import {
   isEnhancedUserChunk,
 } from '@renderer/types/data';
 import { getFirstSegment, hasPathSeparator, isRelativePath } from '@renderer/utils/pathUtils';
+import { firstAssistantTotalTokens, lastAssistantTotalTokens } from '@shared/turnAccounting';
 import { isCommandContent, sanitizeDisplayContent } from '@shared/utils/contentSanitizer';
 import { createLogger } from '@shared/utils/logger';
 
@@ -822,43 +823,21 @@ function findFirstAiAfter(items: ChatItem[], index: number): AIGroup | null {
 }
 
 /**
- * Get total tokens from the last assistant message in an AI group.
- * Sums input_tokens, output_tokens, cache_read_input_tokens, and cache_creation_input_tokens.
+ * Get total tokens from the last/first assistant message in an AI group.
+ * Delegates to the canonical accounting core (turn-accounting.mjs).
  */
 function getLastAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
   const responses = aiGroup.responses || [];
-  for (let i = responses.length - 1; i >= 0; i--) {
-    const msg = responses[i];
-    if (msg.type === 'assistant' && msg.usage) {
-      return (
-        (msg.usage.input_tokens ?? 0) +
-        (msg.usage.output_tokens ?? 0) +
-        (msg.usage.cache_read_input_tokens ?? 0) +
-        (msg.usage.cache_creation_input_tokens ?? 0)
-      );
-    }
-  }
-  return undefined;
+  if (responses.length === 0) return undefined;
+  const total = lastAssistantTotalTokens(responses);
+  return total === 0 ? undefined : total;
 }
 
-/**
- * Get total tokens from the FIRST assistant message in an AI group.
- * Used for post-compaction token measurement: the first response after compaction
- * reflects the actual compacted context size before the AI generates more content.
- */
 function getFirstAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
   const responses = aiGroup.responses || [];
-  for (const msg of responses) {
-    if (msg.type === 'assistant' && msg.usage) {
-      return (
-        (msg.usage.input_tokens ?? 0) +
-        (msg.usage.output_tokens ?? 0) +
-        (msg.usage.cache_read_input_tokens ?? 0) +
-        (msg.usage.cache_creation_input_tokens ?? 0)
-      );
-    }
-  }
-  return undefined;
+  if (responses.length === 0) return undefined;
+  const total = firstAssistantTotalTokens(responses);
+  return total === 0 ? undefined : total;
 }
 
 // =============================================================================
