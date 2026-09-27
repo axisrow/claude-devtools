@@ -1,8 +1,7 @@
 /**
- * Types for the standalone turn-budget hook — the fork's single-source-of-truth
- * accounting core. The app imports it only through src/shared/turnAccounting.ts
- * (whose typecheck fails if an exported name disappears here); the calibration
- * CLI imports the predicates directly.
+ * Types for the canonical token-accounting core — pure functions, zero
+ * imports (see turn-accounting.mjs). The turn-budget hook re-exports these
+ * plus its own I/O entry points (declared in turn-budget-hook.d.mts).
  */
 
 export interface UsageLike {
@@ -12,7 +11,7 @@ export interface UsageLike {
   output_tokens?: number | null;
 }
 
-/** A raw hook line (usage under `.message`) or a flattened ParsedMessage. */
+/** A raw hook line (usage/id under `.message`) or a flattened ParsedMessage. */
 export interface AccountableMessage {
   type?: string;
   requestId?: string;
@@ -52,6 +51,3 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   spent: number;
   boundaryFound: boolean;
 };
-
-/** Parse the notifications.turnBudget config section with defaults. */
-export declare function readConfig(raw?: string): { enabled: boolean; budget: number };

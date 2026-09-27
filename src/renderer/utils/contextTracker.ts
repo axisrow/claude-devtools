@@ -10,6 +10,7 @@
  */
 
 import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
+import { billedRequestKey, inputSideTokens } from '@shared/turnAccounting';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -473,30 +474,33 @@ function aggregateWaitLoopRounds(
 /**
  * Hook-parity turn re-read: every request of the turn re-sends the whole
  * context, so the honest per-turn cost is the input-side sum over ALL
- * rounds — same accounting as the turn-budget hook
- * (scripts/turn-budget-hook.mjs analyzeTurn): input + cache_read +
- * cache_creation, billed once per requestId (GLM streams one request as
- * several full-usage JSONL lines). Sidechain rounds live in subagent
- * groups, not aiGroup.responses — measured gap nil (audit 2026-09-27:
- * side = 0.0M on every top-spend turn).
+ * rounds — the canonical accounting core (scripts/turn-budget-hook.mjs
+ * analyzeTurn): input + cache_read + cache_creation, billed once per
+ * request key (GLM streams one request as several full-usage JSONL lines).
+ * Sidechain rounds live in subagent groups, not aiGroup.responses —
+ * measured gap nil (audit 2026-09-27: side = 0.0M on every top-spend turn).
  */
 function sumTurnReread(responses: ParsedMessage[]): { tokens: number; requests: number } {
-  const seen = new Set<string>();
+  // keep-newest per request key — the last line of a request carries its
+  // final counts (same semantics as the hook's newest-first scan)
+  const lastUsageByRequest = new Map<string, ParsedMessage['usage']>();
   let tokens = 0;
   let requests = 0;
   for (const msg of responses ?? []) {
     if (msg.type !== 'assistant') continue;
-    const key = msg.requestId ?? msg.messageId;
-    if (key) {
-      if (seen.has(key)) continue;
-      seen.add(key);
+    const key = billedRequestKey(msg);
+    if (!key) {
+      // a line without any request id is its own request
+      if (!msg.usage) continue;
+      tokens += inputSideTokens(msg.usage);
+      requests += 1;
+      continue;
     }
-    const u = msg.usage;
+    lastUsageByRequest.set(key, msg.usage);
+  }
+  for (const u of lastUsageByRequest.values()) {
     if (!u) continue;
-    tokens +=
-      (u.input_tokens ?? 0) +
-      (u.cache_read_input_tokens ?? 0) +
-      (u.cache_creation_input_tokens ?? 0);
+    tokens += inputSideTokens(u);
     requests += 1;
   }
   return { tokens, requests };

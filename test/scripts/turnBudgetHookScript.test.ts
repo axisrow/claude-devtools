@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
-// untyped plain-node hook script, imported directly
-// @ts-expect-error .mjs without type declarations
-import { analyzeTurn, isRealUserLine, readConfig } from '../../scripts/turn-budget-hook.mjs';
+// plain-node hook script — typed via scripts/turn-budget-hook.d.mts
+import {
+  analyzeTurn,
+  billedRequestKey,
+  billedTotalTokens,
+  firstAssistantTotalTokens,
+  inputSideTokens,
+  isRealUserLine,
+  lastAssistantTotalTokens,
+  readConfig,
+} from '../../scripts/turn-budget-hook.mjs';
 
 const USER_RAW = JSON.stringify({ type: 'user', message: { role: 'user', content: 'go' } });
 const COMPACT_RAW = JSON.stringify({
@@ -17,6 +25,37 @@ function assistantRaw(input: number): string {
     message: { role: 'assistant', usage: { input_tokens: input } },
   });
 }
+
+describe('accounting primitives (canonical core)', () => {
+  it('splits input-side vs billed-total; walks first/last assistant usage', () => {
+    const usage = {
+      input_tokens: 100,
+      cache_read_input_tokens: 200,
+      cache_creation_input_tokens: 50,
+      output_tokens: 25,
+    };
+    expect(inputSideTokens(usage)).toBe(350);
+    expect(billedTotalTokens(usage)).toBe(375);
+    expect(inputSideTokens(undefined)).toBe(0);
+
+    const responses = [
+      { type: 'user' },
+      { type: 'assistant', usage },
+      { type: 'assistant' }, // ghost round: no usage — skipped by the walkers
+      { type: 'assistant', usage: { ...usage, output_tokens: 5 } },
+    ];
+    expect(firstAssistantTotalTokens(responses)).toBe(375);
+    expect(lastAssistantTotalTokens(responses)).toBe(355);
+    expect(firstAssistantTotalTokens([])).toBe(0);
+  });
+
+  it('billedRequestKey prefers requestId, then messageId, then message.id', () => {
+    expect(billedRequestKey({ requestId: 'r', messageId: 'm', message: { id: 'x' } })).toBe('r');
+    expect(billedRequestKey({ messageId: 'm', message: { id: 'x' } })).toBe('m');
+    expect(billedRequestKey({ message: { id: 'x' } })).toBe('x');
+    expect(billedRequestKey({})).toBeUndefined();
+  });
+});
 
 describe('hook isRealUserLine (raw JSONL shapes)', () => {
   it('recognizes a message-wrapped real user line — regression on the 872M bug', () => {

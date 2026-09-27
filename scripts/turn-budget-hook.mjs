@@ -6,6 +6,18 @@
  * in the session transcript; denies the next tool call once the budget is
  * spent, so the agent wraps up and reports instead of looping on.
  *
+ * SINGLE SOURCE OF TRUTH: the pure accounting functions live in
+ * ./turn-accounting.mjs (zero imports, browser-bundle-safe) and are
+ * re-exported here. The app imports them only through
+ * src/shared/turnAccounting.ts, the calibration CLI imports the predicates
+ * directly — nobody re-implements the arithmetic. The file stays a plain
+ * zero-dep .mjs pair because Claude Code runs the hook with bare node.
+ *
+ * Naming contract: inputSideTokens = input + cache_read + cache_creation
+ * (what a turn re-reads — the hook's currency); billedTotalTokens =
+ * inputSide + output (a round's full cost). Bare "billed" appears only in
+ * billedRequestKey (request identity) and the billedTotal* family.
+ *
  * Fail-open: any error exits 0 silently — a broken limiter must not break
  * sessions, and a spend counted without a found turn boundary allows too.
  * Note: Claude Code writes the transcript asynchronously, so the very last
@@ -25,80 +37,34 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+// canonical accounting core — re-exported so the .d.mts on this file keeps
+// covering the CLI and tests that import from the hook script directly
+import {
+  analyzeTurn,
+  billedRequestKey,
+  billedTotalTokens,
+  firstAssistantTotalTokens,
+  inputSideTokens,
+  isRealUserLine,
+  isTurnBoundary,
+  lastAssistantTotalTokens,
+} from './turn-accounting.mjs';
+
+export {
+  analyzeTurn,
+  billedRequestKey,
+  billedTotalTokens,
+  firstAssistantTotalTokens,
+  inputSideTokens,
+  isRealUserLine,
+  isTurnBoundary,
+  lastAssistantTotalTokens,
+};
+
 const CONFIG_PATH = join(homedir(), '.claude', 'claude-devtools-config.json');
 // corpus-calibrated (pnpm turn-spend:stats, 10 080 turns): p95 = 12.56M
 const DEFAULT_BUDGET = 15_000_000;
 const CHUNK = 1 << 20; // backwards-read window
-
-/** Simplified teammate-message wrapper detection. */
-function isTeammateText(t) {
-  return t.startsWith('<teammate-message');
-}
-
-/** Simplified mirror of isParsedUserChunkMessage (main/types/messages.ts). */
-export function isRealUserLine(m) {
-  if (m.type !== 'user' || m.isMeta === true) return false;
-  // raw JSONL lines wrap content in .message (ParsedMessage flattens it)
-  const c = (m.message ?? m).content;
-  if (typeof c === 'string') {
-    const t = c.trim();
-    if (t === '' || t.startsWith('[Request interrupted')) return false;
-    return !isTeammateText(t);
-  }
-  if (Array.isArray(c)) {
-    for (const b of c) {
-      if (b && (b.type === 'text' || b.type === 'image')) {
-        if (b.type === 'text' && (isTeammateText(b.text ?? '') || (b.text ?? '').trim() === '' || (b.text ?? '').trim().startsWith('[Request interrupted'))) {
-          continue;
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-  return false;
-}
-
-/** Turn boundary: a real user message — or a compaction marker (the
- * post-compact context starts fresh, pre-compact spend must not count).
- * The calibration CLI (src/cli/turnSpendStats.ts) imports this exact
- * predicate so both accountings cannot drift. */
-export function isTurnBoundary(m) {
-  return isRealUserLine(m) || m.isCompactSummary === true;
-}
-
-/** Sum input-side tokens of the current turn, scanning lines newest-first. */
-export function analyzeTurn(linesNewestFirst) {
-  let spent = 0;
-  let boundaryFound = false;
-  // streaming writes several JSONL lines per API request, each carrying usage —
-  // billed once per request (same key as main/utils/jsonl.ts billedRequestKey).
-  // Scanning newest-first, the first line seen per key has the final counts.
-  const billed = new Set();
-  for (const line of linesNewestFirst) {
-    let m;
-    try {
-      m = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    // turn boundary: see isTurnBoundary above
-    if (isTurnBoundary(m)) {
-      boundaryFound = true;
-      break;
-    }
-    if (m.type === 'assistant' && m.message?.usage) {
-      const key = m.requestId ?? m.message.id;
-      if (key) {
-        if (billed.has(key)) continue;
-        billed.add(key);
-      }
-      const u = m.message.usage;
-      spent += (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-    }
-  }
-  return { spent, boundaryFound };
-}
 
 /** Backwards line generator: yields lines newest-first. */
 export function* linesBackward(fd, size) {
