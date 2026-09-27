@@ -345,4 +345,17 @@ describe('StallDetector', () => {
     expect(incident?.count).toBe(4);
     expect(incident?.tokens).toBe(4 * 134_219 + 25 * (3 + 4 + 5 + 6)); // echo3..echo6 only
   });
+
+  it('a new user turn resets the stall baseline — first round never stalls', () => {
+    const detector = new StallDetector();
+    const userTurn = {
+      type: 'user',
+      isMeta: false,
+      content: 'next turn',
+    } as unknown as ParsedMessage;
+    // echo4's context sits within 300 tokens of echo3's — stalled UNLESS the
+    // boundary in between resets the baseline to 0
+    const batch = [echoRound(1), echoRound(2), echoRound(3), userTurn, echoRound(4)];
+    expect(detector.feed('/s.jsonl', batch, threshold)).toBeNull();
+  });
 });

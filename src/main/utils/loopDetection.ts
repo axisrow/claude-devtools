@@ -12,6 +12,7 @@
 import { type ParsedMessage } from '@main/types';
 import { billedRequestKey } from '@main/utils/jsonl';
 import { isStalledRound } from '@shared/constants/loopPolicy';
+import { billedTotalTokens, isTurnBoundary } from '@shared/turnAccounting';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 export interface LoopIncident {
@@ -27,18 +28,6 @@ export interface LoopIncident {
   cwd?: string;
   /** index of the incident's message within this batch (lineNumber is approximate) */
   batchIndex: number;
-}
-
-/** Billed side of one request: the four usage counters, total. */
-function billedTokensOf(msg: ParsedMessage): number {
-  const u = msg.usage;
-  if (!u) return 0;
-  return (
-    (u.input_tokens ?? 0) +
-    (u.cache_read_input_tokens ?? 0) +
-    (u.cache_creation_input_tokens ?? 0) +
-    (u.output_tokens ?? 0)
-  );
 }
 
 interface FileLoopState {
@@ -95,7 +84,7 @@ export class LoopDetector {
       if (msg.type !== 'assistant' || msg.isSidechain || msg.model === '<synthetic>') continue;
       if (msg.cwd) state.cwd = msg.cwd;
       // one request streamed as several lines (each with the full usage) bills once
-      const billed = billedTokensOf(msg);
+      const billed = billedTotalTokens(msg.usage);
       const requestKey = billedRequestKey(msg);
       const doubleBilled = requestKey !== undefined && requestKey === state.lastRequestKey;
       if (requestKey) state.lastRequestKey = requestKey;
@@ -202,6 +191,9 @@ export class StallDetector {
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      // a new user turn (or compaction) resets the stall baseline: the first
+      // round of a turn can't be "stalled" relative to the previous turn
+      if (isTurnBoundary(msg)) state.lastContext = 0;
       if (msg.type !== 'assistant' || msg.isSidechain || msg.model === '<synthetic>') continue;
       if (msg.cwd) state.cwd = msg.cwd;
       // one request streamed as several lines (each with the full usage) is
@@ -224,7 +216,7 @@ export class StallDetector {
       const toolUseId = msg.toolCalls[msg.toolCalls.length - 1]?.id ?? '';
       if (stalled) {
         state.streak += 1;
-        state.streakTokens += context + output;
+        state.streakTokens += billedTotalTokens(u);
         state.lastToolUseId = toolUseId;
         if (
           !incident &&

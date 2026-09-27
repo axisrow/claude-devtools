@@ -10,7 +10,12 @@
  */
 
 import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
-import { billedRequestKey, inputSideTokens } from '@shared/turnAccounting';
+import {
+  billedRequestKey,
+  firstAssistantTotalTokens,
+  inputSideTokens,
+  lastAssistantTotalTokens,
+} from '@shared/turnAccounting';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { estimateTokens } from '@shared/utils/tokenFormatting';
 
@@ -398,7 +403,26 @@ export function classifyRounds(
 ): ClassifiedRound[] {
   const rounds: ClassifiedRound[] = [];
   let prevContext = 0;
-  (responses ?? []).forEach((msg, i) => {
+  // keep-newest per request key: a streamed request writes several JSONL
+  // lines with growing counts — only the last line is the real round (same
+  // semantics as analyzeTurn / sumTurnReread; BurnPills stays consistent)
+  const kept: ParsedMessage[] = [];
+  const keyIndex = new Map<string, number>();
+  for (const msg of responses ?? []) {
+    const key = billedRequestKey(msg);
+    if (!key) {
+      kept.push(msg);
+    } else {
+      const idx = keyIndex.get(key);
+      if (idx === undefined) {
+        keyIndex.set(key, kept.length);
+        kept.push(msg);
+      } else {
+        kept[idx] = msg;
+      }
+    }
+  }
+  kept.forEach((msg, i) => {
     const usage = msg.usage;
     const input = usage?.input_tokens ?? 0;
     const cacheRead = usage?.cache_read_input_tokens ?? 0;
@@ -1238,22 +1262,13 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
 
 /**
  * Get total tokens from the last assistant message in an AI group.
- * Sums input_tokens, output_tokens, cache_read_input_tokens, and cache_creation_input_tokens.
+ * Delegates to the canonical accounting core (turn-accounting.mjs).
  */
 function getLastAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
   const responses = aiGroup.responses || [];
-  for (let i = responses.length - 1; i >= 0; i--) {
-    const msg = responses[i];
-    if (msg.type === 'assistant' && msg.usage) {
-      return (
-        (msg.usage.input_tokens ?? 0) +
-        (msg.usage.output_tokens ?? 0) +
-        (msg.usage.cache_read_input_tokens ?? 0) +
-        (msg.usage.cache_creation_input_tokens ?? 0)
-      );
-    }
-  }
-  return undefined;
+  if (responses.length === 0) return undefined;
+  const total = lastAssistantTotalTokens(responses);
+  return total === 0 ? undefined : total;
 }
 
 /**
@@ -1263,17 +1278,9 @@ function getLastAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
  */
 function getFirstAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
   const responses = aiGroup.responses || [];
-  for (const msg of responses) {
-    if (msg.type === 'assistant' && msg.usage) {
-      return (
-        (msg.usage.input_tokens ?? 0) +
-        (msg.usage.output_tokens ?? 0) +
-        (msg.usage.cache_read_input_tokens ?? 0) +
-        (msg.usage.cache_creation_input_tokens ?? 0)
-      );
-    }
-  }
-  return undefined;
+  if (responses.length === 0) return undefined;
+  const total = firstAssistantTotalTokens(responses);
+  return total === 0 ? undefined : total;
 }
 
 /**
@@ -1341,6 +1348,9 @@ export function processSessionContextWithPhases(
       previousPaths = new Set<string>();
       isFirstAiGroup = true;
       previousUserGroup = null;
+      // a compacted session is a fresh conversation — repeat streaks from
+      // before the boundary must not leak into the new phase
+      loopState = createLoopStreakState();
 
       // Start new phase
       currentPhaseNumber++;
