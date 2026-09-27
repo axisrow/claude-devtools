@@ -144,11 +144,9 @@ export function extractSemanticStepsFromAIChunk(chunk: AIChunk | EnhancedAIChunk
       for (const block of msg.content) {
         if (block.type === 'text' && block.text) {
           const textContent = block.text;
-          // Check for interruption patterns
-          if (
-            textContent.includes('[Request interrupted by user]') ||
-            textContent.includes('[Request interrupted by user for tool use]')
-          ) {
+          // interruption marker at the START of a text block — the canonical
+          // predicate (turn-accounting core), not a substring match anywhere
+          if (textContent.trim().startsWith('[Request interrupted')) {
             steps.push({
               id: `${msg.uuid}-interruption-${stepIdCounter++}`,
               type: 'interruption',

@@ -12,6 +12,9 @@ import {
   readConfig,
 } from '../../scripts/turn-budget-hook.mjs';
 
+// canonical boundary predicate + tag list (same core, direct file)
+import { isUserChunkLine, SYSTEM_OUTPUT_TAGS } from '../../scripts/turn-accounting.mjs';
+
 const USER_RAW = JSON.stringify({ type: 'user', message: { role: 'user', content: 'go' } });
 const COMPACT_RAW = JSON.stringify({
   type: 'user',
@@ -78,6 +81,62 @@ describe('hook isRealUserLine (raw JSONL shapes)', () => {
       isRealUserLine({ type: 'user', message: { content: '<teammate-message id="x">yo</...>' } })
     ).toBe(false);
     expect(isRealUserLine({ type: 'assistant', message: { content: 'hi' } })).toBe(false);
+  });
+});
+
+describe('isUserChunkLine — canonical turn-boundary predicate', () => {
+  const userLine = (content: unknown, isMeta = false): Record<string, unknown> => ({
+    type: 'user',
+    isMeta,
+    message: { role: 'user', content },
+  });
+
+  it('plain text starts a turn (string and array forms)', () => {
+    expect(isUserChunkLine(userLine('go'))).toBe(true);
+    expect(isUserChunkLine(userLine([{ type: 'text', text: 'go' }]))).toBe(true);
+    expect(isUserChunkLine(userLine([{ type: 'image', source: {} }]))).toBe(true);
+  });
+
+  it('system output tags never start a turn', () => {
+    for (const tag of SYSTEM_OUTPUT_TAGS) {
+      expect(isUserChunkLine(userLine(`${tag}done`))).toBe(false);
+      expect(isUserChunkLine(userLine([{ type: 'text', text: `${tag}done` }]))).toBe(false);
+    }
+  });
+
+  it('teammate relays with teammate_id never start a turn', () => {
+    expect(
+      isUserChunkLine(userLine('<teammate-message teammate_id="a">yo</teammate-message>'))
+    ).toBe(false);
+    expect(
+      isUserChunkLine(userLine([{ type: 'text', text: '<teammate-message teammate_id="a">hi' }]))
+    ).toBe(false);
+  });
+
+  it('<command-name> is user-initiated and DOES start a turn', () => {
+    expect(isUserChunkLine(userLine('<command-name>/model</command-name> sonnet'))).toBe(true);
+  });
+
+  it('a lone interrupt text block does not start a turn', () => {
+    expect(
+      isUserChunkLine(userLine([{ type: 'text', text: '[Request interrupted by user]' }]))
+    ).toBe(false);
+    expect(
+      isUserChunkLine(
+        userLine([{ type: 'text', text: '[Request interrupted by user for tool use]' }])
+      )
+    ).toBe(false);
+  });
+
+  it('interruption text mixed with real content still counts', () => {
+    expect(
+      isUserChunkLine(
+        userLine([
+          { type: 'text', text: '[Request interrupted by user]' },
+          { type: 'text', text: 'actually do this' },
+        ])
+      )
+    ).toBe(true);
   });
 });
 
