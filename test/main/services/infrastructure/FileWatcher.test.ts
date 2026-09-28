@@ -36,6 +36,7 @@ const mockConfig = vi.hoisted(() => ({
     includeSubagentErrors: true,
     triggers: [] as never[],
     loopDetection: { enabled: false, cycleThreshold: 3 },
+    turnBudget: { enabled: false, maxInputTokensPerTurn: 0 },
   },
 }));
 
@@ -862,6 +863,73 @@ describe('FileWatcher', () => {
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('emits one Turn budget notification when the turn crosses the configured budget', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-budget-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(filePath, jsonlLine('u1', 'hello'), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const run = (): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (p: string, s: string, f: string) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('test-project', 'session-1', filePath);
+
+      await run(); // baseline — silent
+
+      // two 6M rounds cross the 10M budget inside this batch
+      fs.appendFileSync(
+        filePath,
+        toolUseLine('a1', 't1', 6_000_000) + toolUseLine('a2', 't2', 6_000_000),
+        'utf8'
+      );
+      await run();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const budgetError = vi.mocked(notificationManager.addError).mock.calls[0][0];
+      expect(budgetError.source).toBe('turn_budget');
+      expect(budgetError.triggerName).toBe('Turn budget');
+      expect(budgetError.message).toContain('Turn budget · 12.0M / 10.0M');
+      expect(budgetError.toolUseId).toBe('t2');
+      expect(budgetError.sessionId).toBe('session-1');
+
+      // the hook keeps denying on every call — the bell stays quiet
+      fs.appendFileSync(filePath, toolUseLine('a3', 't3', 6_000_000), 'utf8');
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      // a new user turn resets the bucket and can fire again
+      const boundaryLine =
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u-boundary',
+          isMeta: false,
+          message: { role: 'user', content: 'next turn' },
+        }) + '\n';
+      fs.appendFileSync(filePath, boundaryLine + toolUseLine('a4', 't4', 12_000_000), 'utf8');
+      await run();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(2);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      mockConfig.notifications.turnBudget = { enabled: false, maxInputTokensPerTurn: 0 };
     });
   });
 

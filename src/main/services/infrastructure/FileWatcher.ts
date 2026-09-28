@@ -12,7 +12,7 @@
 
 import { type FileChangeEvent, type ParsedMessage } from '@main/types';
 import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
-import { LoopDetector, StallDetector } from '@main/utils/loopDetection';
+import { LoopDetector, StallDetector, TurnBudgetDetector } from '@main/utils/loopDetection';
 import { extractProjectName, getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
@@ -92,6 +92,7 @@ export class FileWatcher extends EventEmitter {
   /** Live tool-call loop detection state, fed from detectErrorsInSessionFile */
   private loopDetector = new LoopDetector();
   private stallDetector = new StallDetector();
+  private turnBudgetDetector = new TurnBudgetDetector();
   /** Flag to prevent reuse after disposal */
   private disposed = false;
 
@@ -210,6 +211,7 @@ export class FileWatcher extends EventEmitter {
     this.pendingReprocess.clear();
     this.loopDetector.resetAll();
     this.stallDetector.resetAll();
+    this.turnBudgetDetector.resetAll();
 
     logger.info('Stopped watching');
   }
@@ -663,6 +665,7 @@ export class FileWatcher extends EventEmitter {
         // Fallback for first-read, truncation, or rewrite scenarios
         this.loopDetector.reset(filePath);
         this.stallDetector.reset(filePath);
+        this.turnBudgetDetector.reset(filePath);
         const messages = await parseJsonlFile(filePath);
         currentLineCount = messages.length;
         newMessages = messages.slice(lastLineCount);
@@ -708,12 +711,13 @@ export class FileWatcher extends EventEmitter {
           `incremental=${canUseIncrementalAppend} newMessages=${newMessages.length} ` +
           `notificationManager=${this.notificationManager ? 'set' : 'null'}`
       );
-      if (
-        loopCfg.enabled &&
-        canUseIncrementalAppend &&
-        !subagentId &&
-        !path.basename(filePath).startsWith('agent-')
-      ) {
+      // live-detection gate shared by all synthetic detectors: main sessions
+      // only (agent files arrive with subagentId and are excluded),
+      // incremental appends only — a first-read/catch-up batch replays
+      // whole-file history and would re-fire events that already ended
+      const liveGate =
+        canUseIncrementalAppend && !subagentId && !path.basename(filePath).startsWith('agent-');
+      if (loopCfg.enabled && liveGate) {
         const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
         const incidentText = incident ? `${incident.key} x${incident.count}` : 'none';
         logger.debug(`loop feed ${path.basename(filePath)}: incident=${incidentText}`);
@@ -758,12 +762,47 @@ export class FileWatcher extends EventEmitter {
               source: 'loop',
               message:
                 `${stallIncident.key} ×${stallIncident.count}` +
-                (stallIncident.tokens > 0 ? ` · ${formatTokensCompact(stallIncident.tokens)}` : '') +
+                (stallIncident.tokens > 0
+                  ? ` · ${formatTokensCompact(stallIncident.tokens)}`
+                  : '') +
                 ' — context not growing (echo-marker loop)',
               timestamp: new Date(),
               cwd: stallIncident.cwd,
               toolUseId: stallIncident.toolUseId || undefined,
               triggerName: 'Stall detected',
+            })
+          );
+        }
+      }
+
+      // Turn-budget mirror of the hook: same transcript, same accounting
+      // core, same config field — the bell's number equals the hook's deny
+      // number by construction. Edge-triggered: one notification per turn.
+      const turnBudgetCfg = ConfigManager.getInstance().getConfig().notifications.turnBudget;
+      if (liveGate && turnBudgetCfg.enabled && turnBudgetCfg.maxInputTokensPerTurn > 0) {
+        const budgetIncident = this.turnBudgetDetector.feed(
+          filePath,
+          newMessages,
+          turnBudgetCfg.maxInputTokensPerTurn
+        );
+        if (budgetIncident) {
+          await this.notificationManager.addError(
+            createDetectedError({
+              sessionId,
+              projectId,
+              filePath,
+              projectName: extractProjectName(projectId, budgetIncident.cwd),
+              lineNumber: lastLineCount + budgetIncident.batchIndex + 1,
+              source: 'turn_budget',
+              message:
+                `Turn budget · ${formatTokensCompact(budgetIncident.spent)} / ` +
+                `${formatTokensCompact(budgetIncident.budget)} — turn re-read crossed the ` +
+                'limit; tool calls are being denied',
+              timestamp: new Date(),
+              cwd: budgetIncident.cwd,
+              toolUseId: budgetIncident.toolUseId || undefined,
+              triggerName: 'Turn budget',
+              triggerColor: '#f59e0b',
             })
           );
         }
@@ -801,6 +840,7 @@ export class FileWatcher extends EventEmitter {
     this.activeSessionFiles.delete(filePath);
     this.loopDetector.reset(filePath);
     this.stallDetector.reset(filePath);
+    this.turnBudgetDetector.reset(filePath);
   }
 
   /**
@@ -812,6 +852,7 @@ export class FileWatcher extends EventEmitter {
     this.activeSessionFiles.clear();
     this.loopDetector.resetAll();
     this.stallDetector.resetAll();
+    this.turnBudgetDetector.resetAll();
   }
 
   /**
