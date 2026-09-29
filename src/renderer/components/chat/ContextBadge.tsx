@@ -211,9 +211,12 @@ export const ContextBadge = ({
     [stats.newInjections]
   );
 
-  // Calculate total new tokens
+  // Calculate total new tokens (re-read excluded — spend, not new content)
   const totalNewTokens = useMemo(
-    () => stats.newInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    () =>
+      stats.newInjections
+        .filter((inj) => inj.category !== 'reread')
+        .reduce((sum, inj) => sum + inj.estimatedTokens, 0),
     [stats.newInjections]
   );
 

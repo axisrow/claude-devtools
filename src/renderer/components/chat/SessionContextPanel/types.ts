@@ -45,6 +45,7 @@ export const SECTION_TASK_COORDINATION = 'task-coordination' as const;
 export const SECTION_USER_MESSAGES = 'user-messages' as const;
 export const SECTION_LOOP = 'loop' as const;
 export const SECTION_WAIT_LOOP = 'wait-loop' as const;
+export const SECTION_REREAD = 'reread' as const;
 
 /** Section identifiers for collapsible panels */
 export type SectionType =
@@ -55,7 +56,8 @@ export type SectionType =
   | typeof SECTION_TASK_COORDINATION
   | typeof SECTION_USER_MESSAGES
   | typeof SECTION_LOOP
-  | typeof SECTION_WAIT_LOOP;
+  | typeof SECTION_WAIT_LOOP
+  | typeof SECTION_REREAD;
 
 /** View mode for the context panel */
 export type ContextViewMode = 'category' | 'ranked';

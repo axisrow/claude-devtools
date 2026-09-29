@@ -46,6 +46,7 @@ import type {
   MentionedFileInfo,
   MentionedFileInjection,
   NewCountsByCategory,
+  RereadInjection,
   RoundFlag,
   TaskCoordinationBreakdown,
   TaskCoordinationInjection,
@@ -1070,6 +1071,22 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     newInjections.push(waitLoopInjection);
   }
 
+  // d1b) Hook-parity per-turn re-read spend (the number the turn-budget hook
+  // enforces and the chat's Re-read pill shows). Multi-request turns only —
+  // a single round is a normal context send, not waste. Spend, not content:
+  // excluded from totalEstimatedTokens below.
+  const turnReread = sumTurnReread(aiGroup.responses ?? []);
+  if (turnReread.requests > 1 && turnReread.tokens > 0) {
+    newInjections.push({
+      id: `reread-${turnGroupId}`,
+      category: 'reread',
+      turnIndex: aiGroup.turnIndex,
+      aiGroupId: turnGroupId,
+      estimatedTokens: turnReread.tokens,
+      requests: turnReread.requests,
+    } satisfies RereadInjection);
+  }
+
   // d2) Aggregate task coordination tokens (SendMessage, TeamCreate, TaskCreate, etc.)
   const taskCoordinationInjection = aggregateTaskCoordination(
     linkedTools,
@@ -1121,6 +1138,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     userMessages: 0,
     loop: 0,
     waitLoop: 0,
+    reread: 0,
   };
 
   const newCounts: NewCountsByCategory = {
@@ -1132,6 +1150,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     userMessages: 0,
     loop: 0,
     waitLoop: 0,
+    reread: 0,
   };
 
   // Count new injections by category
@@ -1161,6 +1180,9 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       case 'wait-loop':
         newCounts.waitLoop += injection.roundCount;
         break;
+      case 'reread':
+        newCounts.reread++;
+        break;
     }
   }
 
@@ -1174,6 +1196,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     userMessages: 0,
     loop: 0,
     waitLoop: 0,
+    reread: 0,
   };
 
   for (const injection of accumulatedInjections) {
@@ -1210,6 +1233,11 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
         tokensByCategory.waitLoop += injection.estimatedTokens;
         accumulatedCounts.waitLoop += injection.roundCount;
         break;
+      case 'reread':
+        // spend, not content — kept out of totalEstimatedTokens below
+        tokensByCategory.reread += injection.estimatedTokens;
+        accumulatedCounts.reread++;
+        break;
     }
   }
 
@@ -1235,9 +1263,6 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       billed: round.billed,
     });
   }
-
-  // hook-parity per-turn re-read (the number the turn-budget hook enforces)
-  const turnReread = sumTurnReread(aiGroup.responses ?? []);
 
   return {
     stats: {
