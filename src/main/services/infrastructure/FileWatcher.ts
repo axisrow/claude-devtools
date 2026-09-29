@@ -38,6 +38,8 @@ const logger = createLogger('Service:FileWatcher');
 const DEBOUNCE_MS = 100;
 /** Retry delay when watched directories are unavailable or watcher errors occur */
 const WATCHER_RETRY_MS = 2000;
+/** Synthetic alerts below this billed-token volume are dust — suppressed */
+const MIN_NOTIFICATION_TOKENS = 1_000_000;
 /** Interval for periodic catch-up scan to detect missed fs.watch events */
 const CATCH_UP_INTERVAL_MS = 30_000;
 /** Only catch-up scan files modified within this window */
@@ -721,7 +723,7 @@ export class FileWatcher extends EventEmitter {
         const incident = this.loopDetector.feed(filePath, newMessages, loopCfg.cycleThreshold);
         const incidentText = incident ? `${incident.key} x${incident.count}` : 'none';
         logger.debug(`loop feed ${path.basename(filePath)}: incident=${incidentText}`);
-        if (incident) {
+        if (incident && incident.tokens >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
             createDetectedError({
               sessionId,
@@ -732,8 +734,7 @@ export class FileWatcher extends EventEmitter {
               lineNumber: lastLineCount + incident.batchIndex + 1,
               source: 'loop',
               message:
-                `${incident.key} ×${incident.count}` +
-                (incident.tokens > 0 ? ` · ${formatTokensCompact(incident.tokens)}` : '') +
+                `${incident.key} ×${incident.count} · ${formatTokensCompact(incident.tokens)}` +
                 ' — possible stuck loop',
               timestamp: new Date(),
               cwd: incident.cwd,
@@ -751,7 +752,7 @@ export class FileWatcher extends EventEmitter {
           newMessages,
           loopCfg.cycleThreshold
         );
-        if (stallIncident) {
+        if (stallIncident && stallIncident.tokens >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
             createDetectedError({
               sessionId,
@@ -761,10 +762,7 @@ export class FileWatcher extends EventEmitter {
               lineNumber: lastLineCount + stallIncident.batchIndex + 1,
               source: 'loop',
               message:
-                `${stallIncident.key} ×${stallIncident.count}` +
-                (stallIncident.tokens > 0
-                  ? ` · ${formatTokensCompact(stallIncident.tokens)}`
-                  : '') +
+                `${stallIncident.key} ×${stallIncident.count} · ${formatTokensCompact(stallIncident.tokens)}` +
                 ' — context not growing (echo-marker loop)',
               timestamp: new Date(),
               cwd: stallIncident.cwd,
@@ -785,7 +783,7 @@ export class FileWatcher extends EventEmitter {
           newMessages,
           turnBudgetCfg.maxInputTokensPerTurn
         );
-        if (budgetIncident) {
+        if (budgetIncident && budgetIncident.spent >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
             createDetectedError({
               sessionId,

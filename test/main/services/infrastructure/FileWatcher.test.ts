@@ -375,7 +375,9 @@ describe('FileWatcher', () => {
       // now a NEW loop develops (3 identical calls appended post-discovery)
       fs.appendFileSync(
         filePath,
-        toolUseLine('a4', 't4') + toolUseLine('a5', 't5') + toolUseLine('a6', 't6'),
+        toolUseLine('a4', 't4', 500_000) +
+          toolUseLine('a5', 't5', 500_000) +
+          toolUseLine('a6', 't6', 500_000),
         'utf8'
       );
       await watcherAny.runCatchUpScan();
@@ -672,7 +674,9 @@ describe('FileWatcher', () => {
       // Incremental append of 3 identical Read calls (threshold 3) -> one incident
       fs.appendFileSync(
         filePath,
-        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+        toolUseLine('a1', 't1', 500_000) +
+          toolUseLine('a2', 't2', 500_000) +
+          toolUseLine('a3', 't3', 500_000),
         'utf8'
       );
       await run();
@@ -682,9 +686,7 @@ describe('FileWatcher', () => {
       expect(loopError.source).toBe('loop');
       expect(loopError.triggerName).toBe('Loop detected');
       expect(loopError.toolUseId).toBe('t3');
-      expect(loopError.message).toContain('Read|/x/f ×3');
-      // no usage in fixture — the token segment must be absent entirely
-      expect(loopError.message).not.toContain(' · ');
+      expect(loopError.message).toContain('Read|/x/f ×3 · 1.5M — possible stuck loop');
       // pre-batch base (1 seed line) + batchIndex 2 + 1
       expect(loopError.lineNumber).toBe(4);
       expect(loopError.sessionId).toBe('session-1');
@@ -699,13 +701,13 @@ describe('FileWatcher', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it('includes the run billed tokens in the alert message', async () => {
+    it('suppresses synthetic alerts below 1M billed tokens as dust', async () => {
       vi.useRealTimers();
       useRealExistsSync();
       mockConfig.notifications.loopDetection.enabled = true;
       vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
 
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-tokens-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-loop-dust-'));
       const projectsDir = path.join(tempDir, 'projects');
       const projectDir = path.join(projectsDir, 'test-project');
       fs.mkdirSync(projectDir, { recursive: true });
@@ -727,16 +729,14 @@ describe('FileWatcher', () => {
 
       await run(); // baseline
 
+      // threshold-crossing loop, but no usage in fixture → 0 billed tokens → dust
       fs.appendFileSync(
         filePath,
-        toolUseLine('a1', 't1', 500) + toolUseLine('a2', 't2', 500) + toolUseLine('a3', 't3', 500),
+        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
         'utf8'
       );
       await run();
-
-      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
-      const loopError = vi.mocked(notificationManager.addError).mock.calls[0][0];
-      expect(loopError.message).toContain('Read|/x/f ×3 · 1.5k — possible stuck loop');
+      expect(notificationManager.addError).not.toHaveBeenCalled();
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -840,7 +840,9 @@ describe('FileWatcher', () => {
 
       fs.appendFileSync(
         filePath,
-        toolUseLine('a1', 't1') + toolUseLine('a2', 't2') + toolUseLine('a3', 't3'),
+        toolUseLine('a1', 't1', 500_000) +
+          toolUseLine('a2', 't2', 500_000) +
+          toolUseLine('a3', 't3', 500_000),
         'utf8'
       );
       await run();
@@ -854,7 +856,9 @@ describe('FileWatcher', () => {
       // Re-append the same loop with fresh ids: a fresh run notifies again, not ×6
       fs.appendFileSync(
         filePath,
-        toolUseLine('b1', 'u1') + toolUseLine('b2', 'u2') + toolUseLine('b3', 'u3'),
+        toolUseLine('b1', 'u1', 500_000) +
+          toolUseLine('b2', 'u2', 500_000) +
+          toolUseLine('b3', 'u3', 500_000),
         'utf8'
       );
       await run();
