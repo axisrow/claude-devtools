@@ -316,7 +316,10 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
 
     // Fetch detail for this session, passing the active tabId for per-tab data
     const state = get();
-    const projectId = state.selectedProjectId;
+    // The session may live in another worktree than the active selection —
+    // its own projectId is the only reliable project for the detail fetch.
+    const session = state.sessions.find((s) => s.id === id);
+    const projectId = session?.projectId ?? state.selectedProjectId;
     if (projectId) {
       const activeTabId = state.activeTabId ?? undefined;
       void state.fetchSessionDetail(projectId, id, activeTabId);

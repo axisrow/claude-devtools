@@ -279,7 +279,9 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
       const cachedTabData = state.tabSessionData[tabId];
       const hasCachedData = cachedTabData?.conversation != null;
 
-      // Find the repository and worktree containing this session
+      // Sidebar sync is best effort: repositoryGroups/projects may not be
+      // loaded yet (e.g. a restored tab activating during app boot), and the
+      // detail fetch below must not depend on this lookup succeeding.
       let foundRepo: string | null = null;
       let foundWorktree: string | null = null;
 
@@ -305,61 +307,43 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
         if (worktreeChanged) {
           void get().fetchSessionsInitial(foundWorktree);
         }
-        if (sessionChanged) {
-          if (hasCachedData) {
-            // Swap global state from per-tab cache (no re-fetch)
-            set({
-              sessionDetail: cachedTabData.sessionDetail,
-              conversation: cachedTabData.conversation,
-              conversationLoading: false,
-              sessionDetailLoading: false,
-              sessionDetailError: null,
-              sessionClaudeMdStats: cachedTabData.sessionClaudeMdStats,
-              sessionContextStats: cachedTabData.sessionContextStats,
-              sessionPhaseInfo: cachedTabData.sessionPhaseInfo,
-              visibleAIGroupId: cachedTabData.visibleAIGroupId,
-              selectedAIGroup: cachedTabData.selectedAIGroup,
-            });
-          } else {
-            void get().fetchSessionDetail(foundWorktree, sessionId, tabId);
+      } else {
+        // Fallback: search in flat projects
+        const project = state.projects.find(
+          (p) => p.id === projectId || p.sessions.includes(sessionId)
+        );
+        if (project) {
+          const projectChanged = state.selectedProjectId !== project.id;
+          set({
+            activeProjectId: project.id,
+            selectedProjectId: project.id,
+          });
+          if (projectChanged) {
+            void get().fetchSessionsInitial(project.id);
           }
         }
-        return;
       }
 
-      // Fallback: search in flat projects
-      const project = state.projects.find(
-        (p) => p.id === projectId || p.sessions.includes(sessionId)
-      );
-      if (project) {
-        const projectChanged = state.selectedProjectId !== project.id;
-        set({
-          activeProjectId: project.id,
-          selectedProjectId: project.id,
-        });
-        if (projectChanged) {
-          void get().fetchSessionsInitial(project.id);
+      if (sessionChanged) {
+        if (hasCachedData) {
+          // Swap global state from per-tab cache (no re-fetch)
+          set({
+            sessionDetail: cachedTabData.sessionDetail,
+            conversation: cachedTabData.conversation,
+            conversationLoading: false,
+            sessionDetailLoading: false,
+            sessionDetailError: null,
+            sessionClaudeMdStats: cachedTabData.sessionClaudeMdStats,
+            sessionContextStats: cachedTabData.sessionContextStats,
+            sessionPhaseInfo: cachedTabData.sessionPhaseInfo,
+            visibleAIGroupId: cachedTabData.visibleAIGroupId,
+            selectedAIGroup: cachedTabData.selectedAIGroup,
+          });
+        } else {
+          // The tab carries its own projectId — fetch from it directly,
+          // regardless of whether the sidebar lookup above found anything.
+          void get().fetchSessionDetail(projectId, sessionId, tabId);
         }
-        if (sessionChanged) {
-          if (hasCachedData) {
-            // Swap global state from per-tab cache (no re-fetch)
-            set({
-              sessionDetail: cachedTabData.sessionDetail,
-              conversation: cachedTabData.conversation,
-              conversationLoading: false,
-              sessionDetailLoading: false,
-              sessionDetailError: null,
-              sessionClaudeMdStats: cachedTabData.sessionClaudeMdStats,
-              sessionContextStats: cachedTabData.sessionContextStats,
-              sessionPhaseInfo: cachedTabData.sessionPhaseInfo,
-              visibleAIGroupId: cachedTabData.visibleAIGroupId,
-              selectedAIGroup: cachedTabData.selectedAIGroup,
-            });
-          } else {
-            void get().fetchSessionDetail(project.id, sessionId, tabId);
-          }
-        }
-        return;
       }
     }
   },
