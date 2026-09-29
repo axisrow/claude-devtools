@@ -17,6 +17,7 @@ import { FlatInjectionList } from './components/FlatInjectionList';
 import { LoopSection } from './components/LoopSection';
 import { MentionedFilesSection } from './components/MentionedFilesSection';
 import { RankedInjectionList } from './components/RankedInjectionList';
+import { RereadSection } from './components/RereadSection';
 import { SessionContextHeader } from './components/SessionContextHeader';
 import { TaskCoordinationSection } from './components/TaskCoordinationSection';
 import { ThinkingTextSection } from './components/ThinkingTextSection';
@@ -27,6 +28,7 @@ import {
   SECTION_CLAUDE_MD,
   SECTION_LOOP,
   SECTION_MENTIONED_FILES,
+  SECTION_REREAD,
   SECTION_TASK_COORDINATION,
   SECTION_THINKING_TEXT,
   SECTION_TOOL_OUTPUTS,
@@ -39,6 +41,7 @@ import type {
   ClaudeMdContextInjection,
   LoopInjection,
   MentionedFileInjection,
+  RereadInjection,
   TaskCoordinationInjection,
   ThinkingTextInjection,
   ToolOutputInjection,
@@ -74,6 +77,7 @@ export const SessionContextPanel = ({
       SECTION_THINKING_TEXT,
       SECTION_LOOP,
       SECTION_WAIT_LOOP,
+      SECTION_REREAD,
     ])
   );
 
@@ -87,6 +91,7 @@ export const SessionContextPanel = ({
     userMessageInjections,
     loopInjections,
     waitLoopInjections,
+    rereadInjections,
   } = useMemo(() => {
     const claudeMd: ClaudeMdContextInjection[] = [];
     const mentionedFiles: MentionedFileInjection[] = [];
@@ -96,6 +101,7 @@ export const SessionContextPanel = ({
     const userMessages: UserMessageInjection[] = [];
     const loop: LoopInjection[] = [];
     const waitLoop: WaitLoopInjection[] = [];
+    const reread: RereadInjection[] = [];
 
     for (const injection of injections) {
       switch (injection.category) {
@@ -123,6 +129,9 @@ export const SessionContextPanel = ({
         case 'wait-loop':
           waitLoop.push(injection);
           break;
+        case 'reread':
+          reread.push(injection);
+          break;
       }
     }
 
@@ -138,6 +147,8 @@ export const SessionContextPanel = ({
     // Loops and wait-loops: biggest burn first
     loop.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
     waitLoop.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+    // Re-read: biggest burn first
+    reread.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
 
     return {
       claudeMdInjections: claudeMd,
@@ -148,13 +159,21 @@ export const SessionContextPanel = ({
       userMessageInjections: userMessages,
       loopInjections: loop,
       waitLoopInjections: waitLoop,
+      rereadInjections: reread,
     };
   }, [injections]);
 
+  // Re-read is spend, not context content — keep it out of the "Visible"
+  // totals, count and the By Size lists; it renders in its own section
+  const contextInjections = useMemo(
+    () => injections.filter((inj) => inj.category !== 'reread'),
+    [injections]
+  );
+
   // Calculate total tokens
   const totalTokens = useMemo(
-    () => injections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
-    [injections]
+    () => contextInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [contextInjections]
   );
 
   // Section token counts
@@ -198,6 +217,11 @@ export const SessionContextPanel = ({
     [waitLoopInjections]
   );
 
+  const rereadTokens = useMemo(
+    () => rereadInjections.reduce((sum, inj) => sum + inj.estimatedTokens, 0),
+    [rereadInjections]
+  );
+
   // Toggle section expansion
   const toggleSection = (section: SectionType): void => {
     setExpandedSections((prev) => {
@@ -220,7 +244,7 @@ export const SessionContextPanel = ({
       }}
     >
       <SessionContextHeader
-        injectionCount={injections.length}
+        injectionCount={contextInjections.length}
         totalTokens={totalTokens}
         totalSessionTokens={totalSessionTokens}
         onClose={onClose}
@@ -308,6 +332,14 @@ export const SessionContextPanel = ({
               onToggle={() => toggleSection(SECTION_WAIT_LOOP)}
               onNavigateToTurn={onNavigateToTurn}
             />
+
+            <RereadSection
+              injections={rereadInjections}
+              tokenCount={rereadTokens}
+              isExpanded={expandedSections.has(SECTION_REREAD)}
+              onToggle={() => toggleSection(SECTION_REREAD)}
+              onNavigateToTurn={onNavigateToTurn}
+            />
           </>
         ) : (
           <>
@@ -336,14 +368,14 @@ export const SessionContextPanel = ({
             </div>
             {flatMode ? (
               <FlatInjectionList
-                injections={injections}
+                injections={contextInjections}
                 onNavigateToTurn={onNavigateToTurn}
                 onNavigateToTool={onNavigateToTool}
                 onNavigateToUserGroup={onNavigateToUserGroup}
               />
             ) : (
               <RankedInjectionList
-                injections={injections}
+                injections={contextInjections}
                 onNavigateToTurn={onNavigateToTurn}
                 onNavigateToTool={onNavigateToTool}
                 onNavigateToUserGroup={onNavigateToUserGroup}

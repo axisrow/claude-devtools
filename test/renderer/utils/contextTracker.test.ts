@@ -324,6 +324,50 @@ describe('contextTracker turn re-read (hook parity)', () => {
     // quiet subset untouched: 2 rounds < WAIT_LOOP_MIN_TICKS gate
     expect(stats!.tokensByCategory.waitLoop).toBe(0);
   });
+
+  it('emits a reread injection for multi-request turns only, outside Visible totals', () => {
+    const frag = (rid: string): ParsedMessage => {
+      const m = assistantMsg({ input: 1000, cacheRead: 133_000, output: 100 });
+      (m as unknown as { requestId?: string }).requestId = rid;
+      return m;
+    };
+    const items = [
+      userGroup(),
+      aiGroup(
+        'ai-0',
+        0,
+        [],
+        [
+          frag('req_a'),
+          assistantMsg({ input: 2000, cacheRead: 60_000, output: 2_000 }), // working round
+        ]
+      ),
+      // single-request turn: normal context send, no re-read flag
+      aiGroup('ai-1', 1, [], [assistantMsg({ input: 1000, cacheRead: 5_000, output: 500 })]),
+    ];
+
+    const stats = lastStats(items);
+
+    const turn0 = stats.get('ai-0')!;
+    const rereadInj = turn0.newInjections.find((inj) => inj.category === 'reread');
+    expect(rereadInj).toBeDefined();
+    if (rereadInj?.category === 'reread') {
+      expect(rereadInj.estimatedTokens).toBe(196_000);
+      expect(rereadInj.requests).toBe(2);
+      expect(rereadInj.aiGroupId).toBe('ai-0');
+    }
+    expect(turn0.tokensByCategory.reread).toBe(196_000);
+    // spend, not content: Visible total stays free of the reread entry
+    // (accumulatedInjections is only populated on the phase's last group)
+    const last = stats.get('ai-1')!;
+    const expectedVisible = last.accumulatedInjections
+      .filter((inj) => inj.category !== 'reread')
+      .reduce((sum, inj) => sum + inj.estimatedTokens, 0);
+    expect(last.totalEstimatedTokens).toBe(expectedVisible);
+
+    const turn1 = stats.get('ai-1')!;
+    expect(turn1.newInjections.some((inj) => inj.category === 'reread')).toBe(false);
+  });
 });
 
 describe('contextTracker compaction reset', () => {

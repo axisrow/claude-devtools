@@ -283,6 +283,33 @@ export interface WaitRoundInfo {
 }
 
 // =============================================================================
+// Re-read Types
+// =============================================================================
+
+/**
+ * Hook-parity per-turn re-read spend: the input-side billed context of ALL
+ * requests in a turn (requestId-deduped) — the same number the turn-budget
+ * hook enforces and the chat's Re-read pill shows. Created only for turns
+ * with more than one billed request, so single-round turns don't flag their
+ * normal context send as waste. Spend, not context content — excluded from
+ * the panel's "Visible" totals.
+ */
+export interface RereadInjection {
+  /** Unique identifier (e.g., "reread-ai-0") */
+  id: string;
+  /** Discriminator for type narrowing */
+  category: 'reread';
+  /** Turn index where this spend occurred */
+  turnIndex: number;
+  /** AI group ID for navigation (e.g., "ai-0") */
+  aiGroupId: string;
+  /** Input-side billed tokens across all requests of the turn */
+  estimatedTokens: number;
+  /** Billed requests in the turn (requestId-deduped) */
+  requests: number;
+}
+
+// =============================================================================
 // Union Types
 // =============================================================================
 
@@ -309,7 +336,8 @@ export type ContextInjection =
   | TaskCoordinationInjection
   | UserMessageInjection
   | LoopInjection
-  | WaitLoopInjection;
+  | WaitLoopInjection
+  | RereadInjection;
 
 // =============================================================================
 // Statistics Types
@@ -335,6 +363,8 @@ export interface TokensByCategory {
   loop: number;
   /** Tokens re-read by quiet wait-loop rounds */
   waitLoop: number;
+  /** Input-side billed context re-read across a turn's requests (spend, not content) */
+  reread: number;
 }
 
 /**
@@ -357,6 +387,8 @@ export interface NewCountsByCategory {
   loop: number;
   /** Count of quiet wait-loop rounds */
   waitLoop: number;
+  /** Count of turns flagged for multi-request re-read */
+  reread: number;
 }
 
 /**

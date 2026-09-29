@@ -261,6 +261,14 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
     newLayout = { ...newLayout, focusedPaneId: pane.id };
     set(syncFromLayout(newLayout));
 
+    // Sidebar highlight follows the active tab unconditionally: a session tab
+    // highlights its session, any other tab clears it. The project lookup below
+    // only decides repo/worktree/project fields and data (re)fetch — it must
+    // never leave a stale session highlighted.
+    if (state.selectedSessionId !== (tab.sessionId ?? null)) {
+      set({ selectedSessionId: tab.sessionId ?? null });
+    }
+
     // For session tabs, sync sidebar state to match
     if (tab.type === 'session' && tab.sessionId && tab.projectId) {
       const sessionId = tab.sessionId;
@@ -291,7 +299,6 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
         set({
           selectedRepositoryId: foundRepo,
           selectedWorktreeId: foundWorktree,
-          selectedSessionId: sessionId,
           activeProjectId: foundWorktree,
           selectedProjectId: foundWorktree,
         });
@@ -329,7 +336,6 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
         set({
           activeProjectId: project.id,
           selectedProjectId: project.id,
-          selectedSessionId: sessionId,
         });
         if (projectChanged) {
           void get().fetchSessionsInitial(project.id);
@@ -694,14 +700,15 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
         fromSearch,
       });
 
-      // Enqueue search navigation on the newly created tab
-      if (searchContext) {
-        const newState = get();
-        const newTabId = newState.activeTabId;
-        if (newTabId) {
-          // Re-focus tab via setActiveTab for proper sidebar sync
-          state.setActiveTab(newTabId);
+      const newState = get();
+      const newTabId = newState.activeTabId;
+      if (newTabId) {
+        // Re-focus tab via setActiveTab for proper sidebar sync — always,
+        // not only with a search context: opening a tab must light the
+        // sidebar highlight even when nothing needs navigating.
+        state.setActiveTab(newTabId);
 
+        if (searchContext) {
           const searchPayload = {
             query: searchContext.query,
             messageTimestamp: searchContext.messageTimestamp,

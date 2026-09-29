@@ -249,7 +249,14 @@ export const SessionItem = React.memo(function SessionItem({
         className={`h-[48px] w-full overflow-hidden border-b px-3 py-2 text-left transition-all duration-150 ${isActive ? '' : 'bg-transparent hover:opacity-80'} `}
         style={{
           borderColor: 'var(--color-border)',
-          ...(isActive ? { backgroundColor: 'var(--color-surface-raised)' } : {}),
+          ...(isActive
+            ? {
+                backgroundColor: 'var(--color-surface-raised)',
+                // accent bar over the left padding — surface-raised alone reads
+                // as hover, the bar is what makes "this one is open" visible
+                boxShadow: 'inset 2px 0 0 0 #818cf8',
+              }
+            : {}),
           ...(isHidden ? { opacity: 0.5 } : {}),
         }}
       >
