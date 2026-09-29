@@ -177,7 +177,11 @@ export const SessionItem = React.memo(function SessionItem({
       {
         type: 'session',
         sessionId: session.id,
-        projectId: activeProjectId,
+        // The tab must reference the session's own project: the sidebar lists
+        // sessions across worktrees, and activeProjectId points at the selected
+        // worktree — using it sends getSessionDetail to the wrong encoded dir
+        // (session not found → "No conversation history").
+        projectId: session.projectId,
         label: session.firstMessage?.slice(0, 50) ?? 'Session',
       },
       forceNewTab ? { forceNewTab } : { replaceActiveTab: true }
@@ -199,13 +203,17 @@ export const SessionItem = React.memo(function SessionItem({
       {
         type: 'session',
         sessionId: session.id,
-        projectId: activeProjectId,
+        // The tab must reference the session's own project: the sidebar lists
+        // sessions across worktrees, and activeProjectId points at the selected
+        // worktree — using it sends getSessionDetail to the wrong encoded dir
+        // (session not found → "No conversation history").
+        projectId: session.projectId,
         label: sessionLabel,
       },
       { replaceActiveTab: true }
     );
     selectSession(session.id);
-  }, [activeProjectId, openTab, selectSession, session.id, sessionLabel]);
+  }, [activeProjectId, openTab, selectSession, session.id, session.projectId, sessionLabel]);
 
   const handleOpenInNewTab = useCallback(() => {
     if (!activeProjectId) return;
@@ -213,13 +221,17 @@ export const SessionItem = React.memo(function SessionItem({
       {
         type: 'session',
         sessionId: session.id,
-        projectId: activeProjectId,
+        // The tab must reference the session's own project: the sidebar lists
+        // sessions across worktrees, and activeProjectId points at the selected
+        // worktree — using it sends getSessionDetail to the wrong encoded dir
+        // (session not found → "No conversation history").
+        projectId: session.projectId,
         label: sessionLabel,
       },
       { forceNewTab: true }
     );
     selectSession(session.id);
-  }, [activeProjectId, openTab, selectSession, session.id, sessionLabel]);
+  }, [activeProjectId, openTab, selectSession, session.id, session.projectId, sessionLabel]);
 
   const handleSplitRightAndOpen = useCallback(() => {
     if (!activeProjectId) return;
@@ -227,7 +239,7 @@ export const SessionItem = React.memo(function SessionItem({
     openTab({
       type: 'session',
       sessionId: session.id,
-      projectId: activeProjectId,
+      projectId: session.projectId,
       label: sessionLabel,
     });
     selectSession(session.id);
@@ -238,7 +250,15 @@ export const SessionItem = React.memo(function SessionItem({
     if (activeTabId) {
       splitPane(focusedPaneId, activeTabId, 'right');
     }
-  }, [activeProjectId, openTab, selectSession, session.id, sessionLabel, splitPane]);
+  }, [
+    activeProjectId,
+    openTab,
+    selectSession,
+    session.id,
+    session.projectId,
+    sessionLabel,
+    splitPane,
+  ]);
 
   // Height must match SESSION_HEIGHT (48px) in DateGroupedSessions.tsx for virtual scroll
   return (
