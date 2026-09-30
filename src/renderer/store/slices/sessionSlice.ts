@@ -307,6 +307,17 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
 
   // Select a session and fetch its detail
   selectSession: (id: string) => {
+    const state = get();
+    // Tab activation (openTab → setActiveTab) already swapped cached data or
+    // started the detail fetch for this session — clearing it and re-fetching
+    // the same thing would double the IPC parse and flicker the chat.
+    if (
+      state.selectedSessionId === id &&
+      (state.sessionDetailLoading || state.sessionDetail != null)
+    ) {
+      return;
+    }
+
     set({
       selectedSessionId: id,
       sessionDetail: null,
@@ -314,8 +325,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       sessionDetailError: null,
     });
 
-    // Fetch detail for this session, passing the active tabId for per-tab data
-    const state = get();
+    // Fetch detail for this session, passing the active tabId for per-tab data.
     // The session may live in another worktree than the active selection —
     // its own projectId is the only reliable project for the detail fetch.
     const session = state.sessions.find((s) => s.id === id);
