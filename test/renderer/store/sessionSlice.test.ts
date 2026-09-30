@@ -171,6 +171,65 @@ describe('sessionSlice', () => {
       expect(store.getState().sessionDetail).toBeNull();
       expect(store.getState().sessionContextStats).toBeNull();
     });
+
+    it('should not refetch when the session is already selected and loading', () => {
+      // Tab activation (setActiveTab) starts the fetch; the SessionItem click
+      // then calls selectSession for the same session — no second IPC.
+      store.setState({
+        selectedProjectId: 'project-1',
+        selectedSessionId: 'session-1',
+        sessionDetailLoading: true,
+      });
+
+      mockAPI.getSessionDetail.mockResolvedValue({
+        session: { id: 'session-1' },
+        chunks: [],
+      } as never);
+
+      store.getState().selectSession('session-1');
+
+      expect(mockAPI.getSessionDetail).not.toHaveBeenCalled();
+      expect(store.getState().sessionDetailLoading).toBe(true);
+    });
+
+    it('should not refetch when the session is already selected and loaded', () => {
+      store.setState({
+        selectedProjectId: 'project-1',
+        selectedSessionId: 'session-1',
+        sessionDetail: { session: { id: 'session-1' } } as never,
+      });
+
+      mockAPI.getSessionDetail.mockResolvedValue({
+        session: { id: 'session-1' },
+        chunks: [],
+      } as never);
+
+      store.getState().selectSession('session-1');
+
+      expect(mockAPI.getSessionDetail).not.toHaveBeenCalled();
+      // Loaded data stays put instead of flickering through null
+      expect(store.getState().sessionDetail).not.toBeNull();
+    });
+
+    it('should refetch when the session is selected but has no data', () => {
+      // Selection without data (e.g. a previous fetch failed) must retry.
+      store.setState({
+        selectedProjectId: 'project-1',
+        selectedSessionId: 'session-1',
+        sessionDetail: null,
+        sessionDetailLoading: false,
+        sessionDetailError: 'boom',
+      });
+
+      mockAPI.getSessionDetail.mockResolvedValue({
+        session: { id: 'session-1' },
+        chunks: [],
+      } as never);
+
+      store.getState().selectSession('session-1');
+
+      expect(mockAPI.getSessionDetail).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('clearSelection', () => {
