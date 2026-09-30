@@ -254,7 +254,7 @@ async function handleGetSessionDetail(
         metadataLevel: fsType === 'ssh' ? 'light' : 'deep',
       });
       if (!session) {
-        logger.error(`Session not found: ${sessionId}`);
+        logger.error(`Session not found: ${sessionId} (projectId: ${safeProjectId})`);
         return null;
       }
 
