@@ -17,7 +17,6 @@ import * as readline from 'readline';
 
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
 import { LocalFileSystemProvider } from '../services/infrastructure/LocalFileSystemProvider';
-import { categorizeMessage } from '../services/parsing/MessageClassifier';
 import {
   type ChatHistoryEntry,
   type ContentBlock,
@@ -429,7 +428,7 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** AI response groups — same count as the "Turn N" chips in the chat */
+  /** User turns (transcript user messages) — same count as the "Turn N" chips in the chat */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
@@ -469,9 +468,9 @@ export async function analyzeSessionFileMetadata(
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
   let awaitingAIGroup = false;
-  // Turn counting mirrors ChunkBuilder.buildChunks exactly: an AI run closed by
-  // a user/system/compact boundary (or EOF) == one AI group == one "Turn N".
-  let aiRunOpen = false;
+  // Turn counting mirrors the transcript: one user message (isUserChunkLine
+  // semantics, sidechain excluded) == one turn == one "Turn N" chip, whether
+  // or not it produced a response.
   let turnCount = 0;
   let gitBranch: string | null = null;
 
@@ -530,6 +529,7 @@ export async function analyzeSessionFileMetadata(
     if (isParsedUserChunkMessage(parsed)) {
       messageCount++;
       awaitingAIGroup = true;
+      if (!parsed.isSidechain) turnCount++;
     } else if (
       awaitingAIGroup &&
       parsed.type === 'assistant' &&
@@ -538,19 +538,6 @@ export async function analyzeSessionFileMetadata(
     ) {
       messageCount++;
       awaitingAIGroup = false;
-    }
-
-    // Same rules as the chunk pipeline: sidechain never reaches the main
-    // thread (SessionParser splits it out), hardNoise is skipped entirely,
-    // a user/system/compact boundary closes the current AI run.
-    if (!parsed.isSidechain) {
-      const category = categorizeMessage(parsed);
-      if (category === 'ai') {
-        aiRunOpen = true;
-      } else if (category !== 'hardNoise' && aiRunOpen) {
-        turnCount++;
-        aiRunOpen = false;
-      }
     }
 
     if (!gitBranch && 'gitBranch' in entry && entry.gitBranch) {
@@ -760,10 +747,6 @@ export async function analyzeSessionFileMetadata(
 
       contextConsumption = total;
     }
-  }
-
-  if (aiRunOpen) {
-    turnCount++;
   }
 
   return {

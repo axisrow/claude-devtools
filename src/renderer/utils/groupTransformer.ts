@@ -118,7 +118,10 @@ export function transformChunksToConversation(
     } else if (isEnhancedAIChunk(chunk)) {
       items.push({
         type: 'ai',
-        group: createAIGroupFromChunk(chunk, aiCount),
+        // Turn N = ordinal of the user message this group answers (0-based);
+        // empty turns consume a number. Fallback to AI-sequence before the
+        // first user chunk (session not starting with a user message).
+        group: createAIGroupFromChunk(chunk, userCount > 0 ? userCount - 1 : aiCount),
       });
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
@@ -279,7 +282,7 @@ export function incrementalUpdateConversation(
     } else if (isEnhancedAIChunk(chunk)) {
       items.push({
         type: 'ai',
-        group: createAIGroupFromChunk(chunk, aiCount),
+        group: createAIGroupFromChunk(chunk, userCount > 0 ? userCount - 1 : aiCount),
       });
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
@@ -619,7 +622,9 @@ function createCompactGroup(chunk: EnhancedCompactChunk): CompactGroup {
  * Creates an AIGroup from an EnhancedAIChunk.
  *
  * @param chunk - The AI chunk to transform
- * @param turnIndex - 0-based index of this AI group within the session
+ * @param turnIndex - 0-based transcript turn = ordinal of the user message this
+ *                    group answers (empty turns consume a number); falls back to
+ *                    AI-sequence numbering for groups preceding the first user chunk
  * @returns AIGroup with semantic steps and metrics
  */
 function createAIGroupFromChunk(chunk: EnhancedAIChunk, turnIndex: number): AIGroup {

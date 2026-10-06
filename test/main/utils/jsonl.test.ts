@@ -11,7 +11,7 @@ import {
   readSessionName,
 } from '../../../src/main/utils/jsonl';
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
-import { isAIChunk } from '../../../src/main/types';
+import { isAIChunk, isUserChunk } from '../../../src/main/types';
 import type { ParsedMessage } from '../../../src/main/types';
 
 // Helper to create a minimal ParsedMessage
@@ -531,7 +531,7 @@ describe('jsonl', () => {
         }
       }
     });
-    it('counts turns — AI response groups, same rule as the chunk pipeline', async () => {
+    it('counts turns — transcript user messages, same rule as the Turn N chips', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-turns-'));
       try {
         const filePath = path.join(tempDir, 'session.jsonl');
@@ -563,9 +563,8 @@ describe('jsonl', () => {
               usage: { input_tokens: 10, output_tokens: 2 },
             },
           });
-        // root (parentUuid null) is hard noise everywhere; an assistant run
-        // closes on user/system/compact and counts exactly one turn —
-        // continuations, synthetic replies and sidechains never break a group
+        // root (parentUuid null) is hard noise everywhere; a turn is one real
+        // user message — empty turns count too, system output/sidechains don't
         const lines = [
           user('u1', null, 'go'),
           assistant('a1', 'u1', 'claude-fable-5-1'),
@@ -573,7 +572,7 @@ describe('jsonl', () => {
           user('u2', 'a1b', 'again'),
           assistant('a2-synthetic', 'u2', '<synthetic>'), // hard noise — no break
           assistant('a2', 'a2-synthetic', 'claude-fable-5-1'),
-          user('sys', 'a2', '<local-command-stdout>ok</local-command-stdout>'), // system break
+          user('sys', 'a2', '<local-command-stdout>ok</local-command-stdout>'), // not a turn
           assistant('a3', 'sys', 'claude-fable-5-1'),
           user('side-u', 'a3', 'sidechat', true), // sidechain — skipped
           assistant('side-a', 'side-u', 'claude-fable-5-1'),
@@ -584,8 +583,8 @@ describe('jsonl', () => {
 
         const result = await analyzeSessionFileMetadata(filePath);
 
-        // groups: [a1,a1b] [a2] [a3] [a4] = 4
-        expect(result.turnCount).toBe(4);
+        // turns: u1, u2, u3 = 3 (system output and sidechain don't count)
+        expect(result.turnCount).toBe(3);
       } finally {
         try {
           fs.rmSync(tempDir, {
@@ -600,7 +599,7 @@ describe('jsonl', () => {
       }
     });
 
-    it('parity — scan turnCount equals the chunk pipeline AIChunk count', async () => {
+    it('parity — scan turnCount equals the chunk pipeline UserChunk count', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-parity-'));
       try {
         const msg = (over: Partial<ParsedMessage>): ParsedMessage => ({
@@ -637,6 +636,7 @@ describe('jsonl', () => {
           ai('a3', 'sys'),
           msg({ uuid: 'c1', parentUuid: 'a3', type: 'user', isCompactSummary: true }), // break
           ai('a4', 'c1'), // closed at EOF
+          msg({ uuid: 'u4', parentUuid: 'a4', type: 'user', content: 'one more' }), // empty turn
         ];
         // Serialize the same objects to JSONL the way the scanner reads them
         const toEntry = (m: ParsedMessage): string =>
@@ -663,11 +663,12 @@ describe('jsonl', () => {
 
         const scan = await analyzeSessionFileMetadata(filePath);
         const chunks = new ChunkBuilder().buildChunks(messages);
-        const aiChunks = chunks.filter(isAIChunk).length;
+        const userChunks = chunks.filter(isUserChunk).length;
 
-        // groups: [a1,a2] [a3] [a4] = 3 on both paths
-        expect(aiChunks).toBe(3);
-        expect(scan.turnCount).toBe(aiChunks);
+        // user turns u1, u2, u4 = 3 (stdout/compact/sidechain are not turns);
+        // AI groups [a1,a2] [a3] [a4] = 3 — equal here, diverges on empty turns
+        expect(userChunks).toBe(3);
+        expect(scan.turnCount).toBe(userChunks);
       } finally {
         try {
           fs.rmSync(tempDir, {
