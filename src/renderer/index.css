@@ -146,6 +146,9 @@
   --path-highlight-bg: rgba(255, 255, 255, 0.08);
   --path-highlight-text: #e4e4e7;
 
+  /* Active session row in the sidebar — indigo tint readable in both themes */
+  --sidebar-active-bg: rgba(99, 102, 241, 0.1);
+
   /* Interruption badge */
   --interruption-bg: rgba(127, 29, 29, 0.3);
   --interruption-border: #b91c1c;

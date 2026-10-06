@@ -275,7 +275,7 @@ export const SessionItem = React.memo(function SessionItem({
             ? {
                 // indigo tint + bar — surface-raised alone reads as hover in
                 // both themes, the open row must stay identifiable at a glance
-                backgroundColor: 'rgba(99, 102, 241, 0.10)',
+                backgroundColor: 'var(--sidebar-active-bg)',
                 boxShadow: 'inset 3px 0 0 0 #6366f1',
               }
             : {}),

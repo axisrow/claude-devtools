@@ -25,6 +25,7 @@ import {
   getProjectsBasePath,
   getTodosBasePath,
 } from '@main/utils/pathDecoder';
+import { isTurnBoundary } from '@shared/turnAccounting';
 import { createLogger } from '@shared/utils/logger';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { EventEmitter } from 'events';
@@ -1027,18 +1028,26 @@ export class FileWatcher extends EventEmitter {
   /**
    * Walks the projects tree for top-level session files (projectDir/<id>.jsonl).
    * Single source of the session-file filters (.jsonl, agent- skip) shared by
-   * seeding, catch-up discovery, and the startup replay.
+   * seeding, catch-up discovery, and the startup replay. Returns null when the
+   * top-level read fails — callers must not treat that as "no files": the
+   * startup replay keeps its cursor behind so the window is retried.
    */
-  private async listSessionFiles(): Promise<
-    { fullPath: string; projectId: string; sessionId: string; size?: number }[]
-  > {
-    const files: { fullPath: string; projectId: string; sessionId: string; size?: number }[] = [];
+  private async listSessionFiles(options?: {
+    includeAgentFiles?: boolean;
+  }): Promise<{ fullPath: string; projectId: string; sessionId: string; size?: number }[] | null> {
+    interface SessionFile {
+      fullPath: string;
+      projectId: string;
+      sessionId: string;
+      size?: number;
+    }
+    const files: SessionFile[] = [];
     let dirs: FsDirent[];
     try {
       dirs = await this.fsProvider.readdir(this.projectsPath);
     } catch (err) {
       logger.error('FileWatcher: Error listing projects directory:', err);
-      return files;
+      return null;
     }
     for (const dir of dirs) {
       if (!dir.isDirectory()) continue;
@@ -1050,7 +1059,10 @@ export class FileWatcher extends EventEmitter {
       }
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-        if (entry.name.startsWith('agent-')) continue;
+        // agent- files are subagent transcripts: the replay and discovery
+        // skip them, but seeding keeps tracking them (SSH polling mode has
+        // no fs.watch to catch their appends otherwise)
+        if (entry.name.startsWith('agent-') && !options?.includeAgentFiles) continue;
         files.push({
           fullPath: path.join(this.projectsPath, dir.name, entry.name),
           projectId: dir.name,
@@ -1074,7 +1086,7 @@ export class FileWatcher extends EventEmitter {
         return;
       }
 
-      for (const file of await this.listSessionFiles()) {
+      for (const file of (await this.listSessionFiles({ includeAgentFiles: true })) ?? []) {
         try {
           const stats = await this.fsProvider.stat(file.fullPath);
           if (now - stats.mtimeMs <= CATCH_UP_MAX_AGE_MS) {
@@ -1111,10 +1123,13 @@ export class FileWatcher extends EventEmitter {
     }
 
     this.catchUpTimer = setInterval(() => {
-      this.advanceCatchupCursorThrottled();
-      this.runCatchUpScan().catch((err) => {
-        logger.error('Error during catch-up scan:', err);
-      });
+      // Advance the cursor only after the scan certifies the window —
+      // advancing first would mark unprocessed growth as processed on a kill
+      this.runCatchUpScan()
+        .then(() => this.advanceCatchupCursorThrottled())
+        .catch((err) => {
+          logger.error('Error during catch-up scan:', err);
+        });
     }, CATCH_UP_INTERVAL_MS);
   }
 
@@ -1135,7 +1150,7 @@ export class FileWatcher extends EventEmitter {
     // Walk the projects tree for untracked session files so nothing is missed;
     // stale files are evicted by the mtime guard in the loop below.
     try {
-      for (const file of await this.listSessionFiles()) {
+      for (const file of (await this.listSessionFiles()) ?? []) {
         if (this.activeSessionFiles.has(file.fullPath)) continue;
         this.activeSessionFiles.set(file.fullPath, {
           projectId: file.projectId,
@@ -1216,9 +1231,12 @@ export class FileWatcher extends EventEmitter {
 
   private writeCatchupCursor(epochMs: number): void {
     try {
-      // no mkdirSync: the dir is ~/.claude (or an override root), it must
-      // exist for the app to work at all; write failures are caught above
-      fs.writeFileSync(this.catchupCursorPath, JSON.stringify({ scannedUntil: epochMs }), 'utf8');
+      // Atomic tmp+rename: a torn write must not read as "no cursor" and
+      // silently re-baseline away the crash gap. No mkdirSync: the dir is
+      // ~/.claude (or an override root), it must exist for the app to work.
+      const tmp = `${this.catchupCursorPath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ scannedUntil: epochMs }), 'utf8');
+      fs.renameSync(tmp, this.catchupCursorPath);
       this.lastCursorWriteAt = Date.now();
     } catch (err) {
       logger.error('FileWatcher: Error writing catch-up cursor:', err);
@@ -1232,6 +1250,11 @@ export class FileWatcher extends EventEmitter {
    * NotificationManager exempts loops).
    */
   private advanceCatchupCursorThrottled(): void {
+    // SSH watchers share the app-global cursor: advancing it from a remote
+    // context would certify local files nobody has processed.
+    if (this.fsProvider.type !== 'local') {
+      return;
+    }
     if (Date.now() - this.lastCursorWriteAt < CATCHUP_CURSOR_WRITE_MS) {
       return;
     }
@@ -1276,11 +1299,14 @@ export class FileWatcher extends EventEmitter {
       kind: DetectorKind,
       incident: LoopIncident | TurnBudgetIncident,
       file: { fullPath: string; projectId: string; sessionId: string },
-      messages: ParsedMessage[]
+      messages: ParsedMessage[],
+      lineNumberBase: number
     ): void => {
       const tokens = 'tokens' in incident ? incident.tokens : incident.spent;
       if (tokens < MIN_NOTIFICATION_TOKENS) return;
       const timestamp = messages[incident.batchIndex]?.timestamp ?? new Date(scanStartedAt);
+      // pre-cursor incidents were already notified by the previous run
+      if (timestamp.getTime() <= scannedUntil) return;
       incidents.push({
         timestamp: timestamp.getTime(),
         error: detectorIncidentToError({
@@ -1289,40 +1315,77 @@ export class FileWatcher extends EventEmitter {
           filePath: file.fullPath,
           projectId: file.projectId,
           sessionId: file.sessionId,
-          lineNumberBase: 0,
+          lineNumberBase,
           timestamp,
         }),
       });
     };
 
-    for (const file of await this.listSessionFiles()) {
+    const sessionFiles = await this.listSessionFiles();
+    if (sessionFiles === null) {
+      // The tree is unreadable — the window is not certified, keep the cursor
+      // behind so the next launch retries it.
+      logger.error('FileWatcher: Startup catch-up skipped, projects tree unreadable');
+      return;
+    }
+
+    for (const file of sessionFiles) {
+      // One unreadable file must not abort the replay for all the others.
       try {
         const stats = await this.fsProvider.stat(file.fullPath);
         if (stats.mtimeMs <= scannedUntil) continue;
-      } catch {
-        continue;
-      }
 
-      // ponytail: full-file replay per window file — fine while windows
-      // are crash/overnight sized; add a per-file byte cursor if multi-week
-      // offline gaps ever make this noticeable
-      const appended = await this.parseAppendedMessages(file.fullPath, 0);
-      const windowMessages = appended.messages.filter((m) => m.timestamp.getTime() > scannedUntil);
-      if (windowMessages.length === 0) continue;
+        // ponytail: full-file replay per window file — fine while windows
+        // are crash/overnight sized; add a per-file byte cursor if multi-week
+        // offline gaps ever make this noticeable
+        const appended = await this.parseAppendedMessages(file.fullPath, 0);
 
-      if (loopEnabled) {
-        const incident = loopDetector.feed(file.fullPath, windowMessages, loopCfg.cycleThreshold);
-        if (incident) collectIncident('loop', incident, file, windowMessages);
-        const stall = stallDetector.feed(file.fullPath, windowMessages, loopCfg.cycleThreshold);
-        if (stall) collectIncident('stall', stall, file, windowMessages);
-      }
-      if (budgetEnabled) {
-        const budget = budgetDetector.feed(
-          file.fullPath,
-          windowMessages,
-          budgetCfg.maxInputTokensPerTurn
-        );
-        if (budget) collectIncident('turn_budget', budget, file, windowMessages);
+        // Anchor the window at the last turn boundary at-or-before the cursor:
+        // the turn in progress at app close must be counted from its start, or
+        // the budget undercounts and the crossing is missed. Post-launch
+        // messages are excluded — the live watcher owns them.
+        let startIdx = 0;
+        for (let i = 0; i < appended.messages.length; i++) {
+          const msg = appended.messages[i];
+          if (isTurnBoundary(msg) && msg.timestamp.getTime() <= scannedUntil) {
+            startIdx = i;
+          }
+        }
+        // Window from the anchor to launch time. The pre-cursor tail of the
+        // turn in progress at close is included so the budget counts the
+        // full turn; incidents anchored to pre-cursor messages were already
+        // notified by the previous run and are dropped at collection.
+        const windowAll = appended.messages
+          .slice(startIdx)
+          .filter((m) => m.timestamp.getTime() <= scanStartedAt);
+        if (windowAll.length === 0) continue;
+
+        // Feed per turn: a detector feed returns at most one incident, and a
+        // long offline gap can hold several crossings. Detector state is
+        // per-file and persists across feeds, so streaks survive chunking.
+        let chunkStart = 0;
+        for (let i = 1; i <= windowAll.length; i++) {
+          if (i !== windowAll.length && !isTurnBoundary(windowAll[i])) continue;
+          const chunkBase = startIdx + chunkStart;
+          const chunk = windowAll.slice(chunkStart, i);
+          chunkStart = i;
+          if (loopEnabled) {
+            const incident = loopDetector.feed(file.fullPath, chunk, loopCfg.cycleThreshold);
+            if (incident) collectIncident('loop', incident, file, chunk, chunkBase);
+            const stall = stallDetector.feed(file.fullPath, chunk, loopCfg.cycleThreshold);
+            if (stall) collectIncident('stall', stall, file, chunk, chunkBase);
+          }
+          if (budgetEnabled) {
+            const budget = budgetDetector.feed(
+              file.fullPath,
+              chunk,
+              budgetCfg.maxInputTokensPerTurn
+            );
+            if (budget) collectIncident('turn_budget', budget, file, chunk, chunkBase);
+          }
+        }
+      } catch (err) {
+        logger.error(`FileWatcher: Startup catch-up failed to replay ${file.fullPath}:`, err);
       }
     }
 
@@ -1338,7 +1401,8 @@ export class FileWatcher extends EventEmitter {
           new Date(scannedUntil).toISOString()
       );
     }
-    this.writeCatchupCursor(scanStartedAt);
+    // Never regress a newer value the 30s tick wrote while this scan ran.
+    this.writeCatchupCursor(Math.max(scanStartedAt, this.lastCursorWriteAt));
   }
 
   // ===========================================================================

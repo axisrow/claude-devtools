@@ -1184,5 +1184,91 @@ describe('FileWatcher', () => {
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
+
+    it('counts the full turn straddling the cursor — crossing while closed still rings', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-straddle-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+
+      // turn opened 90 min ago, 7M re-read before the cursor (60 min ago),
+      // 6M more while the app was closed → 13M ≥ 10M only in full accounting
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(90)) +
+          toolUseLineAt('a1', 't1', 7_000_000, iso(70)) +
+          toolUseLineAt('a2', 't2', 6_000_000, iso(5)),
+        'utf8'
+      );
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const [error] = vi.mocked(notificationManager.addError).mock.calls[0];
+      expect(error.message).toContain('Turn budget · 13.0M / 10.0M');
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('reports every crossing in the window, not only the first', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-multi-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+      // two separate turns, each crossing after the cursor
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(40)) +
+          toolUseLineAt('a1', 't1', 12_000_000, iso(35)) +
+          userLine('u2', iso(30)) +
+          toolUseLineAt('a2', 't2', 12_000_000, iso(25)),
+        'utf8'
+      );
+
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(60, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(2);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
   });
 });
