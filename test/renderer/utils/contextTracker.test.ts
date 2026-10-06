@@ -15,7 +15,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { processSessionContextWithPhases, classifyRounds } from '@renderer/utils/contextTracker';
+import {
+  processSessionContextWithPhases,
+  classifyRounds,
+  findLastTrackedAiGroupId,
+} from '@renderer/utils/contextTracker';
 
 import type { AIGroup, UserGroup } from '@renderer/types/groups';
 import type { ChatItem } from '@renderer/types/groups';
@@ -403,5 +407,30 @@ describe('contextTracker compaction reset', () => {
     // (loop = 2 entries); with the reset the streak restarts: only the 2nd
     // call of the new phase loops — 60.2k, not 120.4k
     expect(stats!.tokensByCategory.loop).toBe(60_200);
+  });
+});
+
+describe('findLastTrackedAiGroupId', () => {
+  it('returns the last AI group that has stats (not just the last AI group)', () => {
+    const items = [userGroup(), aiGroup('a', 0, [], []), userGroup(), aiGroup('b', 1, [], [])];
+    const stats = new Map([['a', { accumulatedInjections: [] } as unknown as ContextStats]]);
+    expect(findLastTrackedAiGroupId(items, stats)).toBe('a');
+  });
+
+  it('returns undefined when stats are empty', () => {
+    const items = [userGroup(), aiGroup('a', 0, [], [])];
+    expect(findLastTrackedAiGroupId(items, new Map())).toBeUndefined();
+  });
+
+  it('returns the last AI group when all of them are tracked', () => {
+    const items = [aiGroup('a', 0, [], []), aiGroup('b', 1, [], [])];
+    const stats = new Map(['a', 'b'].map((id) => [id, {} as unknown as ContextStats]));
+    expect(findLastTrackedAiGroupId(items, stats)).toBe('b');
+  });
+
+  it('skips non-AI items', () => {
+    const items = [aiGroup('a', 0, [], []), userGroup(), userGroup()];
+    const stats = new Map([['a', {} as unknown as ContextStats]]);
+    expect(findLastTrackedAiGroupId(items, stats)).toBe('a');
   });
 });

@@ -322,6 +322,8 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       selectedSessionId: id,
       sessionDetail: null,
       sessionContextStats: null,
+      sessionPhaseInfo: null,
+      sessionClaudeMdStats: null,
       sessionDetailError: null,
     });
 

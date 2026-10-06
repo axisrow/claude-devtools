@@ -6,6 +6,7 @@ import { useTabNavigationController } from '@renderer/hooks/useTabNavigationCont
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
+import { findLastTrackedAiGroupId } from '@renderer/utils/contextTracker';
 import { applyEventFilters, EMPTY_EVENT_FILTER_COUNTS } from '@renderer/utils/eventFilters';
 import { lastAssistantTotalTokens } from '@shared/turnAccounting';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -140,21 +141,23 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     let targetAiGroupId: string | undefined;
     if (effectivePhase !== null && sessionPhaseInfo) {
       const phase = sessionPhaseInfo.phases.find((p) => p.phaseNumber === effectivePhase);
-      if (phase) {
+      // The phase's last AI group must have stats; a live refresh can leave
+      // it untracked (stats recomputed on the next full fetch) — fall back
+      // to the last tracked group instead of rendering an empty pill
+      if (phase && sessionContextStats.has(phase.lastAIGroupId)) {
         targetAiGroupId = phase.lastAIGroupId;
       }
     }
 
-    // Default: use the last AI group overall
+    // Default: the last AI group that actually has stats
     if (!targetAiGroupId) {
-      const lastAiItem = [...conversation.items].reverse().find((item) => item.type === 'ai');
-      if (lastAiItem?.type !== 'ai') {
+      targetAiGroupId = findLastTrackedAiGroupId(conversation.items, sessionContextStats);
+      if (!targetAiGroupId) {
         return {
           allContextInjections: [] as ContextInjection[],
           lastAiGroupTotalTokens: undefined,
         };
       }
-      targetAiGroupId = lastAiItem.group.id;
     }
 
     const stats = sessionContextStats.get(targetAiGroupId);

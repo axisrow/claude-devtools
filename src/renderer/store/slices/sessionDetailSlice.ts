@@ -272,7 +272,9 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         currentState.updateTabLabel(existingTab.id, newLabel);
       }
 
-      // Phase 1 set: conversation renders immediately, stats are null (filled in Phase 2)
+      // Phase 1 set: conversation renders immediately. Context stats are NOT
+      // cleared here — Phase 2 replaces them in place; nulling would unmount
+      // the "Context (N)" pill for a moment on every refetch.
       set({
         sessionDetail: slimDetail,
         sessionDetailLoading: false,
@@ -280,9 +282,6 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         conversationLoading: false,
         visibleAIGroupId: firstAIGroupId,
         selectedAIGroup: firstAIGroup,
-        sessionClaudeMdStats: null,
-        sessionContextStats: null,
-        sessionPhaseInfo: null,
       });
 
       // Auto-expand all AI groups if the setting is enabled
@@ -294,21 +293,19 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         }
       }
 
-      // Store per-tab session data (Phase 1 — stats null)
+      // Store per-tab session data (Phase 1 — stats preserved, filled in Phase 2)
       if (tabId) {
         const prev = get().tabSessionData;
         set({
           tabSessionData: {
             ...prev,
             [tabId]: {
+              ...(prev[tabId] ?? createEmptyTabSessionData()),
               sessionDetail: slimDetail,
               conversation,
               conversationLoading: false,
               sessionDetailLoading: false,
               sessionDetailError: null,
-              sessionClaudeMdStats: null,
-              sessionContextStats: null,
-              sessionPhaseInfo: null,
               visibleAIGroupId: firstAIGroupId,
               selectedAIGroup: firstAIGroup,
             },
