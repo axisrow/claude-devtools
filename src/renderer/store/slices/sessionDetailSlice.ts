@@ -296,11 +296,16 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       // Store per-tab session data (Phase 1 — stats preserved, filled in Phase 2)
       if (tabId) {
         const prev = get().tabSessionData;
+        // Preserve stats only for the same session: selectSession reuses the
+        // active tab id for the NEW session, spreading the previous session's
+        // stats next to the new conversation would render wrong pill data
+        const prevTab = prev[tabId];
+        const sameSession = prevTab?.sessionDetail?.session?.id === sessionId;
         set({
           tabSessionData: {
             ...prev,
             [tabId]: {
-              ...(prev[tabId] ?? createEmptyTabSessionData()),
+              ...(sameSession ? prevTab : createEmptyTabSessionData()),
               sessionDetail: slimDetail,
               conversation,
               conversationLoading: false,

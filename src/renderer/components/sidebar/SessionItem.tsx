@@ -8,7 +8,10 @@ import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useStore } from '@renderer/store';
-import { formatSessionOriginTag } from '@renderer/utils/formatSessionOrigin';
+import {
+  formatSessionOriginTag,
+  formatSessionOriginTooltip,
+} from '@renderer/utils/formatSessionOrigin';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { EyeOff, Pin } from 'lucide-react';
@@ -351,11 +354,7 @@ export const SessionItem = React.memo(function SessionItem({
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="min-w-0 truncate"
-                title={
-                  [session.worktreeName, session.gitBranch, session.projectPath]
-                    .filter(Boolean)
-                    .join(' · ') || undefined
-                }
+                title={formatSessionOriginTooltip(session)}
                 style={{ color: 'var(--color-text-muted)' }}
               >
                 {formatSessionOriginTag(session)}

@@ -7,6 +7,7 @@
  */
 
 import { shortenDisplayPath } from './pathDisplay';
+import { getBaseName } from './pathUtils';
 
 export interface SessionOriginInput {
   /** Full project directory (~/.claude encoded id decoded) */
@@ -19,11 +20,6 @@ export interface SessionOriginInput {
   repoName?: string;
 }
 
-/** Last non-empty path segment, e.g. `/Users/x/proj` → `proj`. */
-function basename(p: string): string {
-  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
-}
-
 const SEPARATOR = ' · ';
 
 /**
@@ -34,7 +30,7 @@ const SEPARATOR = ' · ';
 export function formatSessionOrigin(o: SessionOriginInput): string {
   if (!o.projectPath && !o.repoName) return '';
 
-  const repo = o.repoName ?? basename(o.projectPath ?? '');
+  const repo = o.repoName ?? getBaseName(o.projectPath ?? '');
   const parts = [
     repo,
     o.worktreeName ?? 'main',
@@ -52,4 +48,43 @@ export function formatSessionOrigin(o: SessionOriginInput): string {
 export function formatSessionOriginTag(o: SessionOriginInput): string | null {
   const tag = [o.worktreeName, o.gitBranch].filter(Boolean).join(SEPARATOR);
   return tag.length > 0 ? tag : null;
+}
+
+/**
+ * Full origin parts for tooltips — same parts the tags show, unshortened.
+ * Empty/unknown parts are skipped, so callers can pass everything they have.
+ */
+export function formatSessionOriginTooltip(o: SessionOriginInput): string | undefined {
+  const tooltip = [o.worktreeName, o.gitBranch, o.projectPath]
+    .filter((part): part is string => Boolean(part))
+    .join(SEPARATOR);
+  return tooltip.length > 0 ? tooltip : undefined;
+}
+
+/** Worktree row of the grouped sidebar view, narrowed to what origin needs. */
+export interface WorktreeGroupRef {
+  name: string;
+  worktrees: { id: string; name: string; isMainWorktree?: boolean }[];
+}
+
+/**
+ * Derives repoName and worktreeName from the repository groups by the
+ * session's projectId. SessionDetail.session carries no worktreeName (it is
+ * only tagged onto sidebar list rows), so the strip must resolve it from the
+ * same groups the sidebar uses — main worktree stays unnamed, like the tags.
+ */
+export function resolveSessionOriginGroups(
+  groups: WorktreeGroupRef[],
+  projectId: string
+): { repoName?: string; worktreeName?: string } {
+  for (const group of groups) {
+    const worktree = group.worktrees.find((w) => w.id === projectId);
+    if (worktree) {
+      return {
+        repoName: group.name,
+        worktreeName: worktree.isMainWorktree ? undefined : worktree.name,
+      };
+    }
+  }
+  return {};
 }

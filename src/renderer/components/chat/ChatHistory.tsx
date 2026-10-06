@@ -141,16 +141,20 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     let targetAiGroupId: string | undefined;
     if (effectivePhase !== null && sessionPhaseInfo) {
       const phase = sessionPhaseInfo.phases.find((p) => p.phaseNumber === effectivePhase);
-      // The phase's last AI group must have stats; a live refresh can leave
-      // it untracked (stats recomputed on the next full fetch) — fall back
-      // to the last tracked group instead of rendering an empty pill
+      // The selected phase must resolve within itself: falling back to the
+      // last tracked group of ANOTHER phase would render foreign injections
+      // under the phase the user picked. Untracked → render empty (the stats
+      // recompute lands with the next full fetch).
       if (phase && sessionContextStats.has(phase.lastAIGroupId)) {
         targetAiGroupId = phase.lastAIGroupId;
+      } else {
+        return {
+          allContextInjections: [] as ContextInjection[],
+          lastAiGroupTotalTokens: undefined,
+        };
       }
-    }
-
-    // Default: the last AI group that actually has stats
-    if (!targetAiGroupId) {
+    } else if (!targetAiGroupId) {
+      // Default: the last AI group that actually has stats
       targetAiGroupId = findLastTrackedAiGroupId(conversation.items, sessionContextStats);
       if (!targetAiGroupId) {
         return {

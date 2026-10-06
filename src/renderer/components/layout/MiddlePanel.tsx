@@ -5,7 +5,11 @@
 import React from 'react';
 
 import { useStore } from '@renderer/store';
-import { formatSessionOrigin } from '@renderer/utils/formatSessionOrigin';
+import {
+  formatSessionOrigin,
+  formatSessionOriginTooltip,
+  resolveSessionOriginGroups,
+} from '@renderer/utils/formatSessionOrigin';
 import { useShallow } from 'zustand/react/shallow';
 
 import { ChatHistory } from '../chat/ChatHistory';
@@ -18,34 +22,37 @@ interface MiddlePanelProps {
 }
 
 export const MiddlePanel: React.FC<MiddlePanelProps> = ({ tabId }) => {
-  const { session, repoName } = useStore(
+  const { session, repoName, worktreeName } = useStore(
     useShallow((s) => {
       const detail =
         (tabId ? s.tabSessionData[tabId]?.sessionDetail : undefined) ?? s.sessionDetail;
       const detailSession = detail?.session;
-      const detailRepoName = detailSession
-        ? s.repositoryGroups.find((g) => g.worktrees.some((w) => w.id === detailSession.projectId))
-            ?.name
-        : undefined;
-      return { session: detailSession, repoName: detailRepoName };
+      // detail.session carries no worktreeName (only sidebar list rows are
+      // tagged) — resolve repo/worktree from the same groups the sidebar uses
+      const resolved = detailSession
+        ? resolveSessionOriginGroups(s.repositoryGroups, detailSession.projectId)
+        : {};
+      return {
+        session: detailSession,
+        repoName: resolved.repoName,
+        worktreeName: resolved.worktreeName,
+      };
     })
   );
 
-  const origin = formatSessionOrigin({
+  const originInput = {
     projectPath: session?.projectPath,
     gitBranch: session?.gitBranch,
-    worktreeName: session?.worktreeName,
+    worktreeName,
     repoName,
-  });
+  };
 
   return (
     <div className="relative flex h-full flex-col">
       <SearchBar tabId={tabId} />
       <SessionOriginStrip
-        origin={origin}
-        title={[session?.worktreeName, session?.gitBranch, session?.projectPath]
-          .filter(Boolean)
-          .join(' · ')}
+        origin={formatSessionOrigin(originInput)}
+        title={formatSessionOriginTooltip(originInput)}
       />
       <ChatHistory tabId={tabId} />
     </div>
