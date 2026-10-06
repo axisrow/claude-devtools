@@ -529,7 +529,8 @@ export async function analyzeSessionFileMetadata(
     if (isParsedUserChunkMessage(parsed)) {
       messageCount++;
       awaitingAIGroup = true;
-      if (!parsed.isSidechain) turnCount++;
+      // Compact summaries render as CompactBoundary, not a user turn
+      if (!parsed.isSidechain && !parsed.isCompactSummary) turnCount++;
     } else if (
       awaitingAIGroup &&
       parsed.type === 'assistant' &&

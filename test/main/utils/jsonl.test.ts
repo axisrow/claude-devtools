@@ -539,7 +539,8 @@ describe('jsonl', () => {
           uuid: string,
           parentUuid: string | null,
           content: string,
-          isSidechain = false
+          isSidechain = false,
+          isCompactSummary = false
         ): string =>
           JSON.stringify({
             type: 'user',
@@ -548,6 +549,7 @@ describe('jsonl', () => {
             timestamp: '2026-01-01T00:00:00.000Z',
             isMeta: false,
             isSidechain,
+            ...(isCompactSummary ? { isCompactSummary: true } : {}),
             message: { role: 'user', content },
           });
         const assistant = (uuid: string, parentUuid: string, model: string): string =>
@@ -577,14 +579,27 @@ describe('jsonl', () => {
           user('side-u', 'a3', 'sidechat', true), // sidechain — skipped
           assistant('side-a', 'side-u', 'claude-fable-5-1'),
           user('u3', 'a3', 'more'),
-          assistant('a4', 'u3', 'claude-fable-5-1'), // still open — closed at EOF
+          assistant('a4', 'u3', 'claude-fable-5-1'),
+          // compact boundary: the summary user line is metadata, not a turn
+          user(
+            'u3-cs',
+            'a4',
+            'This session is being continued from a previous conversation',
+            false,
+            true
+          ),
+          assistant('a5', 'u3-cs', 'claude-fable-5-1'),
+          user('u4', 'a5', 'after compact'),
+          assistant('a6', 'u4', 'claude-fable-5-1'), // still open — closed at EOF
         ];
         fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
 
         const result = await analyzeSessionFileMetadata(filePath);
 
-        // turns: u1, u2, u3 = 3 (system output and sidechain don't count)
-        expect(result.turnCount).toBe(3);
+        // turns: u1, u2, u3, u4 = 4 (system output, sidechain and the compact
+        // summary line don't count — the chat renders the summary as a
+        // CompactBoundary, not a user turn)
+        expect(result.turnCount).toBe(4);
       } finally {
         try {
           fs.rmSync(tempDir, {
