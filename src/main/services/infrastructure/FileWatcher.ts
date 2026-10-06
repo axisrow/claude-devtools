@@ -12,8 +12,19 @@
 
 import { type FileChangeEvent, type ParsedMessage } from '@main/types';
 import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
-import { LoopDetector, StallDetector, TurnBudgetDetector } from '@main/utils/loopDetection';
-import { extractProjectName, getProjectsBasePath, getTodosBasePath } from '@main/utils/pathDecoder';
+import {
+  LoopDetector,
+  type LoopIncident,
+  StallDetector,
+  TurnBudgetDetector,
+  type TurnBudgetIncident,
+} from '@main/utils/loopDetection';
+import {
+  extractProjectName,
+  getClaudeBasePath,
+  getProjectsBasePath,
+  getTodosBasePath,
+} from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { EventEmitter } from 'events';
@@ -23,7 +34,7 @@ import * as path from 'path';
 import { projectPathResolver } from '../discovery/ProjectPathResolver';
 import { type ProjectScanner } from '../discovery/ProjectScanner';
 import { errorDetector } from '../error/ErrorDetector';
-import { createDetectedError } from '../error/ErrorMessageBuilder';
+import { createDetectedError, type DetectedError } from '../error/ErrorMessageBuilder';
 
 import { ConfigManager } from './ConfigManager';
 import { type DataCache } from './DataCache';
@@ -44,6 +55,8 @@ const MIN_NOTIFICATION_TOKENS = 1_000_000;
 const CATCH_UP_INTERVAL_MS = 30_000;
 /** Only catch-up scan files modified within this window */
 const CATCH_UP_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+/** Throttle for runtime cursor writes (crash gap bounded to this window) */
+const CATCHUP_CURSOR_WRITE_MS = 120_000;
 
 interface AppendedParseResult {
   messages: ParsedMessage[];
@@ -55,6 +68,61 @@ interface ActiveSessionFile {
   projectId: string;
   sessionId: string;
   subagentId?: string;
+}
+
+type DetectorKind = 'loop' | 'stall' | 'turn_budget';
+
+/**
+ * Builds the bell notification object for a synthetic-detector incident.
+ * Single home of the message templates, trigger names, and the budget color —
+ * the live path and the startup replay must produce identical alerts.
+ */
+function detectorIncidentToError(args: {
+  kind: DetectorKind;
+  incident: LoopIncident | TurnBudgetIncident;
+  filePath: string;
+  projectId: string;
+  sessionId: string;
+  /** live batches start at lastLineCount; the startup replay starts at file start */
+  lineNumberBase: number;
+  /** live: now; replay: the incident message's own timestamp */
+  timestamp: Date;
+}): DetectedError {
+  const { kind, incident, lineNumberBase, timestamp } = args;
+  const common = {
+    sessionId: args.sessionId,
+    projectId: args.projectId,
+    filePath: args.filePath,
+    projectName: extractProjectName(args.projectId, incident.cwd),
+    // ponytail: approximate — deep link targets toolUseId, line is a fallback
+    lineNumber: lineNumberBase + incident.batchIndex + 1,
+    timestamp,
+    cwd: incident.cwd,
+    toolUseId: incident.toolUseId || undefined,
+  };
+  if (kind === 'turn_budget') {
+    const budget = incident as TurnBudgetIncident;
+    return createDetectedError({
+      ...common,
+      source: 'turn_budget',
+      message:
+        `Turn budget · ${formatTokensCompact(budget.spent)} / ` +
+        `${formatTokensCompact(budget.budget)} — turn re-read crossed the ` +
+        'limit; tool calls are being denied',
+      triggerName: 'Turn budget',
+      triggerColor: '#f59e0b',
+    });
+  }
+  const loop = incident as LoopIncident;
+  return createDetectedError({
+    ...common,
+    source: 'loop',
+    message:
+      kind === 'stall'
+        ? `${loop.key} ×${loop.count} · ${formatTokensCompact(loop.tokens)} — context not growing (echo-marker loop)`
+        : `${loop.key} ×${loop.count} · ${formatTokensCompact(loop.tokens)} — possible stuck loop`,
+    triggerName: kind === 'stall' ? 'Stall detected' : 'Loop detected',
+  });
 }
 
 export class FileWatcher extends EventEmitter {
@@ -77,6 +145,10 @@ export class FileWatcher extends EventEmitter {
   private activeSessionFiles = new Map<string, ActiveSessionFile>();
   /** Timer for periodic catch-up scan */
   private catchUpTimer: NodeJS.Timeout | null = null;
+  /** Catch-up cursor file path (injectable for tests) */
+  private catchupCursorPath: string;
+  /** Timestamp of the last cursor write — throttles runtime cursor advance */
+  private lastCursorWriteAt = 0;
   /** Timer for SSH polling mode (replaces fs.watch) */
   private pollingTimer: NodeJS.Timeout | null = null;
   /** Polling interval for SSH mode */
@@ -109,6 +181,15 @@ export class FileWatcher extends EventEmitter {
     this.todosPath = todosPath ?? getTodosBasePath();
     this.dataCache = dataCache;
     this.fsProvider = fsProvider ?? new LocalFileSystemProvider();
+    this.catchupCursorPath = path.join(getClaudeBasePath(), 'claude-devtools-catchup.json');
+  }
+
+  /**
+   * Overrides the catch-up cursor location. The class's convention for
+   * optional collaborators — keeps the constructor positional list short.
+   */
+  setCatchupCursorPath(catchupCursorPath: string): void {
+    this.catchupCursorPath = catchupCursorPath;
   }
 
   /**
@@ -715,8 +796,9 @@ export class FileWatcher extends EventEmitter {
       );
       // live-detection gate shared by all synthetic detectors: main sessions
       // only (agent files arrive with subagentId and are excluded),
-      // incremental appends only — a first-read/catch-up batch replays
-      // whole-file history and would re-fire events that already ended
+      // incremental appends only — a first-read batch replays whole-file
+      // history and would re-fire events that already ended (the offline
+      // report lives in runStartupCatchUpScan, which exists to do this safely)
       const liveGate =
         canUseIncrementalAppend && !subagentId && !path.basename(filePath).startsWith('agent-');
       if (loopCfg.enabled && liveGate) {
@@ -725,21 +807,14 @@ export class FileWatcher extends EventEmitter {
         logger.debug(`loop feed ${path.basename(filePath)}: incident=${incidentText}`);
         if (incident && incident.tokens >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
-            createDetectedError({
-              sessionId,
-              projectId,
+            detectorIncidentToError({
+              kind: 'loop',
+              incident,
               filePath,
-              projectName: extractProjectName(projectId, incident.cwd),
-              // approximate — deep link targets toolUseId, line is a fallback
-              lineNumber: lastLineCount + incident.batchIndex + 1,
-              source: 'loop',
-              message:
-                `${incident.key} ×${incident.count} · ${formatTokensCompact(incident.tokens)}` +
-                ' — possible stuck loop',
+              projectId,
+              sessionId,
+              lineNumberBase: lastLineCount,
               timestamp: new Date(),
-              cwd: incident.cwd,
-              toolUseId: incident.toolUseId || undefined,
-              triggerName: 'Loop detected',
             })
           );
         }
@@ -754,20 +829,14 @@ export class FileWatcher extends EventEmitter {
         );
         if (stallIncident && stallIncident.tokens >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
-            createDetectedError({
-              sessionId,
-              projectId,
+            detectorIncidentToError({
+              kind: 'stall',
+              incident: stallIncident,
               filePath,
-              projectName: extractProjectName(projectId, stallIncident.cwd),
-              lineNumber: lastLineCount + stallIncident.batchIndex + 1,
-              source: 'loop',
-              message:
-                `${stallIncident.key} ×${stallIncident.count} · ${formatTokensCompact(stallIncident.tokens)}` +
-                ' — context not growing (echo-marker loop)',
+              projectId,
+              sessionId,
+              lineNumberBase: lastLineCount,
               timestamp: new Date(),
-              cwd: stallIncident.cwd,
-              toolUseId: stallIncident.toolUseId || undefined,
-              triggerName: 'Stall detected',
             })
           );
         }
@@ -785,22 +854,14 @@ export class FileWatcher extends EventEmitter {
         );
         if (budgetIncident && budgetIncident.spent >= MIN_NOTIFICATION_TOKENS) {
           await this.notificationManager.addError(
-            createDetectedError({
-              sessionId,
-              projectId,
+            detectorIncidentToError({
+              kind: 'turn_budget',
+              incident: budgetIncident,
               filePath,
-              projectName: extractProjectName(projectId, budgetIncident.cwd),
-              lineNumber: lastLineCount + budgetIncident.batchIndex + 1,
-              source: 'turn_budget',
-              message:
-                `Turn budget · ${formatTokensCompact(budgetIncident.spent)} / ` +
-                `${formatTokensCompact(budgetIncident.budget)} — turn re-read crossed the ` +
-                'limit; tool calls are being denied',
+              projectId,
+              sessionId,
+              lineNumberBase: lastLineCount,
               timestamp: new Date(),
-              cwd: budgetIncident.cwd,
-              toolUseId: budgetIncident.toolUseId || undefined,
-              triggerName: 'Turn budget',
-              triggerColor: '#f59e0b',
             })
           );
         }
@@ -964,6 +1025,44 @@ export class FileWatcher extends EventEmitter {
   // ===========================================================================
 
   /**
+   * Walks the projects tree for top-level session files (projectDir/<id>.jsonl).
+   * Single source of the session-file filters (.jsonl, agent- skip) shared by
+   * seeding, catch-up discovery, and the startup replay.
+   */
+  private async listSessionFiles(): Promise<
+    { fullPath: string; projectId: string; sessionId: string; size?: number }[]
+  > {
+    const files: { fullPath: string; projectId: string; sessionId: string; size?: number }[] = [];
+    let dirs: FsDirent[];
+    try {
+      dirs = await this.fsProvider.readdir(this.projectsPath);
+    } catch (err) {
+      logger.error('FileWatcher: Error listing projects directory:', err);
+      return files;
+    }
+    for (const dir of dirs) {
+      if (!dir.isDirectory()) continue;
+      let entries: FsDirent[];
+      try {
+        entries = await this.fsProvider.readdir(path.join(this.projectsPath, dir.name));
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+        if (entry.name.startsWith('agent-')) continue;
+        files.push({
+          fullPath: path.join(this.projectsPath, dir.name, entry.name),
+          projectId: dir.name,
+          sessionId: path.basename(entry.name, '.jsonl'),
+          size: typeof entry.size === 'number' ? entry.size : undefined,
+        });
+      }
+    }
+    return files;
+  }
+
+  /**
    * Seeds activeSessionFiles with recently modified .jsonl files so the
    * catch-up scan can detect growth in sessions that were already active
    * before the FileWatcher started.
@@ -975,34 +1074,17 @@ export class FileWatcher extends EventEmitter {
         return;
       }
 
-      const projectDirs = await this.fsProvider.readdir(this.projectsPath);
-      for (const dir of projectDirs) {
-        if (!dir.isDirectory()) continue;
-
-        const projectPath = path.join(this.projectsPath, dir.name);
-        let entries: FsDirent[];
+      for (const file of await this.listSessionFiles()) {
         try {
-          entries = await this.fsProvider.readdir(projectPath);
+          const stats = await this.fsProvider.stat(file.fullPath);
+          if (now - stats.mtimeMs <= CATCH_UP_MAX_AGE_MS) {
+            this.activeSessionFiles.set(file.fullPath, {
+              projectId: file.projectId,
+              sessionId: file.sessionId,
+            });
+          }
         } catch {
           continue;
-        }
-
-        for (const entry of entries) {
-          if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-
-          const fullPath = path.join(projectPath, entry.name);
-          try {
-            const stats = await this.fsProvider.stat(fullPath);
-            if (now - stats.mtimeMs <= CATCH_UP_MAX_AGE_MS) {
-              const sessionId = path.basename(entry.name, '.jsonl');
-              this.activeSessionFiles.set(fullPath, {
-                projectId: dir.name,
-                sessionId,
-              });
-            }
-          } catch {
-            continue;
-          }
         }
       }
 
@@ -1029,6 +1111,7 @@ export class FileWatcher extends EventEmitter {
     }
 
     this.catchUpTimer = setInterval(() => {
+      this.advanceCatchupCursorThrottled();
       this.runCatchUpScan().catch((err) => {
         logger.error('Error during catch-up scan:', err);
       });
@@ -1052,38 +1135,22 @@ export class FileWatcher extends EventEmitter {
     // Walk the projects tree for untracked session files so nothing is missed;
     // stale files are evicted by the mtime guard in the loop below.
     try {
-      const dirs = await this.fsProvider.readdir(this.projectsPath);
-      for (const dir of dirs) {
-        if (!dir.isDirectory()) continue;
-        let entries: FsDirent[];
+      for (const file of await this.listSessionFiles()) {
+        if (this.activeSessionFiles.has(file.fullPath)) continue;
+        this.activeSessionFiles.set(file.fullPath, {
+          projectId: file.projectId,
+          sessionId: file.sessionId,
+        });
+        // Baseline silently: the file's history predates this watcher, so
+        // the bell must only ring for calls that happen after discovery.
+        // Pin the size cursor; line count is a >0 placeholder — the byte
+        // offset is the real cursor for incremental appends.
         try {
-          entries = await this.fsProvider.readdir(path.join(this.projectsPath, dir.name));
+          const observed = file.size ?? (await this.fsProvider.stat(file.fullPath)).size;
+          this.lastProcessedSize.set(file.fullPath, observed);
+          this.lastProcessedLineCount.set(file.fullPath, 1);
         } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-          if (entry.name.startsWith('agent-')) continue;
-          const fullPath = path.join(this.projectsPath, dir.name, entry.name);
-          if (this.activeSessionFiles.has(fullPath)) continue;
-          this.activeSessionFiles.set(fullPath, {
-            projectId: dir.name,
-            sessionId: path.basename(entry.name, '.jsonl'),
-          });
-          // Baseline silently: the file's history predates this watcher, so
-          // the bell must only ring for calls that happen after discovery.
-          // Pin the size cursor; line count is a >0 placeholder — the byte
-          // offset is the real cursor for incremental appends.
-          try {
-            const observed =
-              typeof entry.size === 'number'
-                ? entry.size
-                : (await this.fsProvider.stat(fullPath)).size;
-            this.lastProcessedSize.set(fullPath, observed);
-            this.lastProcessedLineCount.set(fullPath, 1);
-          } catch {
-            this.activeSessionFiles.delete(fullPath);
-          }
+          this.activeSessionFiles.delete(file.fullPath);
         }
       }
     } catch (err) {
@@ -1124,6 +1191,154 @@ export class FileWatcher extends EventEmitter {
         }
       }
     }
+  }
+
+  // ===========================================================================
+  // Startup Catch-Up Scan
+  // ===========================================================================
+
+  /**
+   * Reads the catch-up cursor (epoch ms): everything at or before it was
+   * processed by a previous startup scan or by live watching. Missing or
+   * corrupt cursor file = no cursor yet.
+   */
+  private readCatchupCursor(): number | null {
+    try {
+      // ENOENT lands in the catch — no existsSync double-stat
+      const parsed = JSON.parse(fs.readFileSync(this.catchupCursorPath, 'utf8')) as {
+        scannedUntil?: number;
+      };
+      return typeof parsed.scannedUntil === 'number' ? parsed.scannedUntil : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeCatchupCursor(epochMs: number): void {
+    try {
+      // no mkdirSync: the dir is ~/.claude (or an override root), it must
+      // exist for the app to work at all; write failures are caught above
+      fs.writeFileSync(this.catchupCursorPath, JSON.stringify({ scannedUntil: epochMs }), 'utf8');
+      this.lastCursorWriteAt = Date.now();
+    } catch (err) {
+      logger.error('FileWatcher: Error writing catch-up cursor:', err);
+    }
+  }
+
+  /**
+   * Advances the cursor during live operation so the next startup's scan
+   * window only covers the crash gap, not the whole uptime — replaying
+   * uptime would re-fire loop incidents (the toolUseId dedup in
+   * NotificationManager exempts loops).
+   */
+  private advanceCatchupCursorThrottled(): void {
+    if (Date.now() - this.lastCursorWriteAt < CATCHUP_CURSOR_WRITE_MS) {
+      return;
+    }
+    this.writeCatchupCursor(Date.now());
+  }
+
+  /**
+   * Offline replay of the window since the previous run: session files
+   * modified while the app was closed are fed through throwaway detector
+   * instances and the incidents land in the bell without native toasts.
+   * First run (no cursor) baselines silently — nothing counts as "new" yet.
+   *
+   * Invoked once per app launch from index.ts, AFTER setNotificationManager —
+   * deliberately not from start(): start() re-enters on SSH connects and
+   * context switches, and this cursor is app-global.
+   */
+  async runStartupCatchUpScan(): Promise<void> {
+    const scannedUntil = this.readCatchupCursor();
+    if (scannedUntil === null) {
+      this.writeCatchupCursor(Date.now());
+      return;
+    }
+
+    const scanStartedAt = Date.now();
+    const cfg = ConfigManager.getInstance().getConfig();
+    const loopCfg = cfg.notifications.loopDetection;
+    const budgetCfg = cfg.notifications.turnBudget;
+    const loopEnabled = loopCfg.enabled;
+    const budgetEnabled = budgetCfg.enabled && budgetCfg.maxInputTokensPerTurn > 0;
+    if (!loopEnabled && !budgetEnabled) {
+      this.writeCatchupCursor(scanStartedAt);
+      return;
+    }
+
+    // Throwaway detectors: replay state must never mix with live per-file state.
+    const loopDetector = new LoopDetector();
+    const stallDetector = new StallDetector();
+    const budgetDetector = new TurnBudgetDetector();
+
+    const incidents: { error: DetectedError; timestamp: number }[] = [];
+    const collectIncident = (
+      kind: DetectorKind,
+      incident: LoopIncident | TurnBudgetIncident,
+      file: { fullPath: string; projectId: string; sessionId: string },
+      messages: ParsedMessage[]
+    ): void => {
+      const tokens = 'tokens' in incident ? incident.tokens : incident.spent;
+      if (tokens < MIN_NOTIFICATION_TOKENS) return;
+      const timestamp = messages[incident.batchIndex]?.timestamp ?? new Date(scanStartedAt);
+      incidents.push({
+        timestamp: timestamp.getTime(),
+        error: detectorIncidentToError({
+          kind,
+          incident,
+          filePath: file.fullPath,
+          projectId: file.projectId,
+          sessionId: file.sessionId,
+          lineNumberBase: 0,
+          timestamp,
+        }),
+      });
+    };
+
+    for (const file of await this.listSessionFiles()) {
+      try {
+        const stats = await this.fsProvider.stat(file.fullPath);
+        if (stats.mtimeMs <= scannedUntil) continue;
+      } catch {
+        continue;
+      }
+
+      // ponytail: full-file replay per window file — fine while windows
+      // are crash/overnight sized; add a per-file byte cursor if multi-week
+      // offline gaps ever make this noticeable
+      const appended = await this.parseAppendedMessages(file.fullPath, 0);
+      const windowMessages = appended.messages.filter((m) => m.timestamp.getTime() > scannedUntil);
+      if (windowMessages.length === 0) continue;
+
+      if (loopEnabled) {
+        const incident = loopDetector.feed(file.fullPath, windowMessages, loopCfg.cycleThreshold);
+        if (incident) collectIncident('loop', incident, file, windowMessages);
+        const stall = stallDetector.feed(file.fullPath, windowMessages, loopCfg.cycleThreshold);
+        if (stall) collectIncident('stall', stall, file, windowMessages);
+      }
+      if (budgetEnabled) {
+        const budget = budgetDetector.feed(
+          file.fullPath,
+          windowMessages,
+          budgetCfg.maxInputTokensPerTurn
+        );
+        if (budget) collectIncident('turn_budget', budget, file, windowMessages);
+      }
+    }
+
+    // The scan is invoked from index.ts after setNotificationManager — the
+    // guard is defensive; a missing manager must not lose the cursor advance.
+    if (this.notificationManager && incidents.length > 0) {
+      incidents.sort((a, b) => a.timestamp - b.timestamp);
+      for (const { error } of incidents) {
+        await this.notificationManager.addError(error, { silent: true });
+      }
+      logger.info(
+        `FileWatcher: Startup catch-up scan found ${incidents.length} incident(s) since ` +
+          new Date(scannedUntil).toISOString()
+      );
+    }
+    this.writeCatchupCursor(scanStartedAt);
   }
 
   // ===========================================================================

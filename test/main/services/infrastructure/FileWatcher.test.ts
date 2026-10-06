@@ -80,6 +80,21 @@ function createMockNotificationManager() {
   } as unknown as Parameters<FileWatcher['setNotificationManager']>[0];
 }
 
+/** Cursor path for startup catch-up scan tests — temp, never the real ~/.claude */
+const CURSOR_PATH = path.join(os.tmpdir(), 'filewatcher-test-catchup-cursor.json');
+
+/** Standard watcher: real temp cursor path injected via the setter */
+function makeWatcher(
+  dataCache: DataCache,
+  projectsPath: string,
+  todosPath: string,
+  cursorPath: string = CURSOR_PATH
+): FileWatcher {
+  const watcher = new FileWatcher(dataCache, projectsPath, todosPath);
+  watcher.setCatchupCursorPath(cursorPath);
+  return watcher;
+}
+
 /** Helper to write a valid JSONL line */
 function jsonlLine(uuid: string, text: string): string {
   return (
@@ -131,6 +146,7 @@ describe('FileWatcher', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     mockConfig.notifications.loopDetection.enabled = false;
+    fs.rmSync(CURSOR_PATH, { force: true });
   });
 
   it('retries and starts watchers when directories appear later', () => {
@@ -148,7 +164,7 @@ describe('FileWatcher', () => {
     const watchMock = vi.mocked(fs.watch);
     watchMock.mockImplementation(() => createFakeWatcher());
 
-    const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+    const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
     watcher.start();
 
     expect(watchMock).toHaveBeenCalledTimes(0);
@@ -177,7 +193,7 @@ describe('FileWatcher', () => {
       .mockImplementationOnce(() => todoWatcher)
       .mockImplementationOnce(() => replacementProjectWatcher);
 
-    const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+    const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
     watcher.start();
     expect(watchMock).toHaveBeenCalledTimes(2);
 
@@ -196,7 +212,7 @@ describe('FileWatcher', () => {
     fs.writeFileSync(filePath, firstLine, 'utf8');
 
     const dataCache = new DataCache(50, 10, false);
-    const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+    const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
 
     const firstPass = await (
       watcher as unknown as {
@@ -262,7 +278,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       // Simulate having previously processed the file by directly setting tracking state
@@ -323,7 +339,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const watcherAny = watcher as unknown as {
@@ -360,7 +376,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const watcherAny = watcher as unknown as {
@@ -406,7 +422,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const watcherAny = watcher as unknown as {
@@ -453,7 +469,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const watcherAny = watcher as unknown as {
@@ -481,7 +497,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+      const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
       watcher.setNotificationManager(notificationManager);
 
       const filePath = '/tmp/projects/test-project/nonexistent.jsonl';
@@ -530,7 +546,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       // Make detectErrors slow to simulate long processing
@@ -608,7 +624,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
@@ -657,7 +673,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const run = (): Promise<void> =>
@@ -717,7 +733,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const run = (): Promise<void> =>
@@ -755,7 +771,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const runWith = (file: string, subagentId?: string): Promise<void> =>
@@ -826,7 +842,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const run = (): Promise<void> =>
@@ -886,7 +902,7 @@ describe('FileWatcher', () => {
 
       const dataCache = new DataCache(50, 10, false);
       const notificationManager = createMockNotificationManager();
-      const watcher = new FileWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
       watcher.setNotificationManager(notificationManager);
 
       const run = (): Promise<void> =>
@@ -948,7 +964,7 @@ describe('FileWatcher', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.watch).mockImplementation(() => createFakeWatcher());
 
-      const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+      const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
 
       const watcherAny = watcher as unknown as {
         catchUpTimer: NodeJS.Timeout | null;
@@ -969,7 +985,7 @@ describe('FileWatcher', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.watch).mockImplementation(() => createFakeWatcher());
 
-      const watcher = new FileWatcher(dataCache, '/tmp/projects', '/tmp/todos');
+      const watcher = makeWatcher(dataCache, '/tmp/projects', '/tmp/todos');
 
       const watcherAny = watcher as unknown as {
         activeSessionFiles: Map<string, unknown>;
@@ -992,6 +1008,181 @@ describe('FileWatcher', () => {
       expect(watcherAny.activeSessionFiles.size).toBe(0);
       expect(watcherAny.processingInProgress.size).toBe(0);
       expect(watcherAny.pendingReprocess.size).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // Startup Catch-Up Scan
+  // ===========================================================================
+
+  describe('startup catch-up scan', () => {
+    /** Assistant JSONL line with explicit timestamp and optional usage */
+    const toolUseLineAt = (
+      uuid: string,
+      toolUseId: string,
+      inputTokens: number,
+      timestamp: string
+    ): string =>
+      JSON.stringify({
+        type: 'assistant',
+        uuid,
+        timestamp,
+        cwd: '/tmp/loop-project',
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-5',
+          content: [
+            { type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: '/x/f' } },
+          ],
+          usage: {
+            input_tokens: inputTokens,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 0,
+            service_tier: 'standard',
+          },
+        },
+      }) + '\n';
+
+    /** Real-user JSONL line (turn boundary) */
+    const userLine = (uuid: string, timestamp: string): string =>
+      JSON.stringify({
+        type: 'user',
+        uuid,
+        timestamp,
+        isMeta: false,
+        message: { role: 'user', content: 'go' },
+      }) + '\n';
+
+    afterEach(() => {
+      mockConfig.notifications.turnBudget = { enabled: false, maxInputTokensPerTurn: 0 };
+    });
+
+    it('first run without cursor: baselines silently and writes cursor', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      // even a budget-crossing history must stay silent on first run
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', '2026-01-01T00:00:00.000Z') +
+          toolUseLineAt('a1', 't1', 6_000_000, '2026-01-01T00:00:01.000Z') +
+          toolUseLineAt('a2', 't2', 6_000_000, '2026-01-01T01:00:00.000Z'),
+        'utf8'
+      );
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const cursorPath = path.join(tempDir, 'cursor.json');
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'), cursorPath);
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+      expect(JSON.parse(fs.readFileSync(cursorPath, 'utf8')).scannedUntil).toBeGreaterThan(0);
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('fires one silent turn_budget notification for a crossing that happened while the app was closed', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-budget-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+
+      // one turn: 6M + 6M rounds cross the 10M budget, everything after the cursor
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(30)) +
+          toolUseLineAt('a1', 't1', 6_000_000, iso(20)) +
+          toolUseLineAt('a2', 't2', 6_000_000, iso(10)),
+        'utf8'
+      );
+
+      // cursor set to 1 hour ago — the crossing is "offline"
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const [error, opts] = vi.mocked(notificationManager.addError).mock.calls[0];
+      expect(error.source).toBe('turn_budget');
+      expect(error.triggerName).toBe('Turn budget');
+      expect(error.message).toContain('Turn budget · 12.0M / 10.0M');
+      expect(opts).toEqual({ silent: true });
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('stays silent for messages older than the cursor even if they cross the budget', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-old-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+
+      // whole turn predates the cursor (2h ago) — window filter must drop it
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(120)) +
+          toolUseLineAt('a1', 't1', 6_000_000, iso(115)) +
+          toolUseLineAt('a2', 't2', 6_000_000, iso(105)),
+        'utf8'
+      );
+
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     });
   });
 });

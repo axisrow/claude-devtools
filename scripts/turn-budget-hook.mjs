@@ -27,6 +27,9 @@
 
 import {
   appendFileSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
   openSync,
   readSync,
   closeSync,
@@ -119,8 +122,12 @@ export function main() {
   } catch {
     return;
   }
+  if (hook.hook_event_name === 'UserPromptSubmit') {
+    handleToggle(hook);
+    return;
+  }
   const { enabled, budget } = readConfig(readConfigSafely());
-  if (!enabled) return;
+  if (!enabled || isSessionOff(hook.session_id)) return;
 
   const transcript = hook.transcript_path;
   if (typeof transcript !== 'string' || !existsSync(transcript)) return;
@@ -163,6 +170,46 @@ function logDecision(sessionId, spent, budget, denied, kind) {
   } catch {
     // logging must never break the hook
   }
+}
+
+// Per-session switch: a marker file per session id. Typing `budget off` /
+// `budget on` as a prompt toggles it for THAT session only (long sessions).
+const OFF_DIR = join(homedir(), '.claude', 'claude-devtools-turnbudget-off');
+
+function offMarker(sessionId) {
+  // ponytail: ids are UUIDs; reject anything else rather than sanitise
+  return typeof sessionId === 'string' && /^[\w-]+$/.test(sessionId)
+    ? join(OFF_DIR, sessionId)
+    : null;
+}
+
+export function isSessionOff(sessionId) {
+  const m = offMarker(sessionId);
+  return m !== null && existsSync(m);
+}
+
+/** UserPromptSubmit: `budget on|off` flips the marker and swallows the prompt. */
+function handleToggle(hook) {
+  const m = /^\s*budget\s+(on|off)\s*$/i.exec(hook.prompt ?? '');
+  const marker = offMarker(hook.session_id);
+  if (!m || !marker) return;
+  const off = m[1].toLowerCase() === 'off';
+  try {
+    if (off) {
+      mkdirSync(OFF_DIR, { recursive: true });
+      writeFileSync(marker, '');
+    } else {
+      rmSync(marker, { force: true });
+    }
+  } catch {
+    return; // fail-open: prompt goes through to the model
+  }
+  process.stdout.write(
+    JSON.stringify({
+      decision: 'block',
+      reason: `Turn budget hook ${off ? 'OFF' : 'ON'} for this session.`,
+    })
+  );
 }
 
 function readConfigSafely() {

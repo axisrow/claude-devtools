@@ -726,7 +726,9 @@ export const CommandPalette = (): React.JSX.Element | null => {
                     sessionIdMatch.projectId ??
                     'Unknown'
                   }
-                  sessionTitle={sessionIdMatch.session.firstMessage ?? ''}
+                  sessionTitle={
+                    sessionIdMatch.session.name ?? sessionIdMatch.session.firstMessage ?? ''
+                  }
                   messageCount={sessionIdMatch.session.messageCount}
                   createdAt={sessionIdMatch.session.createdAt}
                   sessionId={query.trim()}
@@ -747,7 +749,7 @@ export const CommandPalette = (): React.JSX.Element | null => {
                   <SessionIdMatchItem
                     key={match.session.id}
                     projectName={projectNameByWorktreeId.get(match.projectId) ?? match.projectId}
-                    sessionTitle={match.session.firstMessage ?? ''}
+                    sessionTitle={match.session.name ?? match.session.firstMessage ?? ''}
                     messageCount={match.session.messageCount}
                     createdAt={match.session.createdAt}
                     sessionId={match.session.id}
