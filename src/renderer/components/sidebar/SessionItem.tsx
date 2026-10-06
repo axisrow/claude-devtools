@@ -8,6 +8,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useStore } from '@renderer/store';
+import { formatSessionOriginTag } from '@renderer/utils/formatSessionOrigin';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { EyeOff, Pin } from 'lucide-react';
@@ -316,7 +317,7 @@ export const SessionItem = React.memo(function SessionItem({
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="tabular-nums"
-                title="Turns — AI response groups (same count as Turn chips in the transcript)"
+                title="Turns — transcript user messages (same count as Turn chips in the transcript)"
               >
                 {formatTokensCompact(session.turnCount)} turns
               </span>
@@ -345,15 +346,19 @@ export const SessionItem = React.memo(function SessionItem({
               />
             </>
           )}
-          {session.worktreeName && (
+          {formatSessionOriginTag(session) && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="min-w-0 truncate"
-                title={`Worktree: ${session.worktreeName}`}
+                title={
+                  [session.worktreeName, session.gitBranch, session.projectPath]
+                    .filter(Boolean)
+                    .join(' · ') || undefined
+                }
                 style={{ color: 'var(--color-text-muted)' }}
               >
-                {session.worktreeName}
+                {formatSessionOriginTag(session)}
               </span>
             </>
           )}
