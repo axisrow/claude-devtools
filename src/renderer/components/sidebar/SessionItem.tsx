@@ -182,7 +182,9 @@ export const SessionItem = React.memo(function SessionItem({
         // worktree — using it sends getSessionDetail to the wrong encoded dir
         // (session not found → "No conversation history").
         projectId: session.projectId,
-        label: session.firstMessage?.slice(0, 50) ?? 'Session',
+        // Same source the sidebar title renders — a tab titled with the raw
+        // first prompt never matches the list entry it was opened from
+        label: (session.name ?? session.firstMessage)?.slice(0, 50) ?? 'Session',
       },
       forceNewTab ? { forceNewTab } : { replaceActiveTab: true }
     );
@@ -195,7 +197,7 @@ export const SessionItem = React.memo(function SessionItem({
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  const sessionLabel = session.firstMessage?.slice(0, 50) ?? 'Session';
+  const sessionLabel = (session.name ?? session.firstMessage)?.slice(0, 50) ?? 'Session';
 
   const handleOpenInCurrentPane = useCallback(() => {
     if (!activeProjectId) return;
@@ -271,10 +273,10 @@ export const SessionItem = React.memo(function SessionItem({
           borderColor: 'var(--color-border)',
           ...(isActive
             ? {
-                backgroundColor: 'var(--color-surface-raised)',
-                // accent bar over the left padding — surface-raised alone reads
-                // as hover, the bar is what makes "this one is open" visible
-                boxShadow: 'inset 2px 0 0 0 #818cf8',
+                // indigo tint + bar — surface-raised alone reads as hover in
+                // both themes, the open row must stay identifiable at a glance
+                backgroundColor: 'var(--sidebar-active-bg)',
+                boxShadow: 'inset 3px 0 0 0 #6366f1',
               }
             : {}),
           ...(isHidden ? { opacity: 0.5 } : {}),

@@ -448,9 +448,15 @@ export class NotificationManager extends EventEmitter {
   /**
    * Adds an error and shows a notification if enabled.
    * @param error - The detected error to add
+   * @param opts - silent: skip the native toast but still store and emit IPC
+   *   (startup catch-up scan replays incidents that happened while the app
+   *   was closed — they belong in the bell, not in toast spam)
    * @returns The stored notification, or null if filtered/throttled
    */
-  async addError(error: DetectedError): Promise<StoredNotification | null> {
+  async addError(
+    error: DetectedError,
+    opts?: { silent?: boolean }
+  ): Promise<StoredNotification | null> {
     // Deduplicate by toolUseId: the same tool call can appear in both the
     // subagent JSONL file and the parent session JSONL (as a progress event).
     // Keep the subagent-annotated version (with subagentId) when possible.
@@ -495,7 +501,7 @@ export class NotificationManager extends EventEmitter {
     this.emitNotificationUpdated();
 
     // Show native notification if enabled and not filtered
-    if (await this.shouldNotify(error)) {
+    if (!opts?.silent && (await this.shouldNotify(error))) {
       this.showNativeNotification(error);
     }
 
