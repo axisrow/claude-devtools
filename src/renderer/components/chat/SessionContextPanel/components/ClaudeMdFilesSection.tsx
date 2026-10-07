@@ -18,7 +18,7 @@ interface ClaudeMdFilesSectionProps {
   isExpanded: boolean;
   onToggle: () => void;
   projectRoot: string;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const ClaudeMdFilesSection = ({

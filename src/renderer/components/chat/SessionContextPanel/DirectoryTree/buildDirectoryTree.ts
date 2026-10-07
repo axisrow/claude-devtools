@@ -36,6 +36,7 @@ export function buildDirectoryTree(
           isFile: isLast && part === 'CLAUDE.md',
           tokens: isLast ? injection.estimatedTokens : undefined,
           firstSeenInGroup: isLast ? injection.firstSeenInGroup : undefined,
+          firstSeenTurnIndex: isLast ? injection.firstSeenTurnIndex : undefined,
           children: new Map(),
         });
       }

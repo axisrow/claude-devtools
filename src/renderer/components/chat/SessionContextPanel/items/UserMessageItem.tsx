@@ -13,7 +13,7 @@ import type { UserMessageInjection } from '@renderer/types/contextInjection';
 
 interface UserMessageItemProps {
   injection: UserMessageInjection;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const UserMessageItem = ({
@@ -21,7 +21,8 @@ export const UserMessageItem = ({
   onNavigateToTurn,
 }: Readonly<UserMessageItemProps>): React.ReactElement => {
   const turnIndex = injection.turnIndex;
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.aiGroupId;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
 
   return (
     <div className="rounded px-2 py-1.5">
@@ -38,10 +39,10 @@ export const UserMessageItem = ({
               textDecorationStyle: 'dotted' as const,
               textUnderlineOffset: '2px',
             }}
-            onClick={() => onNavigateToTurn(turnIndex)}
+            onClick={() => onNavigateToTurn(groupId)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
-                onNavigateToTurn(turnIndex);
+                onNavigateToTurn(groupId);
               }
             }}
           >

@@ -13,7 +13,6 @@ import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssV
 import { ChevronRight } from 'lucide-react';
 
 import { formatTokens } from '../utils/formatting';
-import { parseTurnIndex } from '../utils/pathParsing';
 
 import type { ContextInjection, ToolOutputInjection } from '@renderer/types/contextInjection';
 
@@ -39,9 +38,9 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string 
 
 interface RankedInjectionListProps {
   injections: ContextInjection[];
-  onNavigateToTurn?: (turnIndex: number) => void;
-  onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
-  onNavigateToUserGroup?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
+  onNavigateToTool?: (groupId: string, toolUseId: string) => void;
+  onNavigateToUserGroup?: (groupId: string) => void;
 }
 
 // =============================================================================
@@ -71,20 +70,14 @@ function getInjectionDescription(injection: ContextInjection): string {
   }
 }
 
-function getInjectionTurnIndex(injection: ContextInjection): number {
+/** Navigation identity: the AI group this injection belongs to (real group id). */
+function getInjectionGroupId(injection: ContextInjection): string {
   switch (injection.category) {
     case 'claude-md':
-      return parseTurnIndex(injection.firstSeenInGroup);
     case 'mentioned-file':
-      return injection.firstSeenTurnIndex;
-    case 'tool-output':
-    case 'thinking-text':
-    case 'task-coordination':
-    case 'user-message':
-    case 'loop':
-    case 'wait-loop':
-    case 'reread':
-      return injection.turnIndex;
+      return injection.firstSeenInGroup;
+    default:
+      return injection.aiGroupId;
   }
 }
 
@@ -106,8 +99,8 @@ const ToolOutputRankedItem = ({
   onNavigateToTool,
 }: Readonly<{
   injection: ToolOutputInjection;
-  onNavigateToTurn?: (turnIndex: number) => void;
-  onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
+  onNavigateToTurn?: (groupId: string) => void;
+  onNavigateToTool?: (groupId: string, toolUseId: string) => void;
 }>): React.ReactElement => {
   const [expanded, setExpanded] = useState(false);
   const hasBreakdown = injection.toolBreakdown.length > 0;
@@ -125,8 +118,8 @@ const ToolOutputRankedItem = ({
           if (hasBreakdown) {
             setExpanded(!expanded);
           } else if (onNavigateToTurn) {
-            const turnIndex = getInjectionTurnIndex(injection);
-            if (turnIndex >= 0) onNavigateToTurn(turnIndex);
+            const groupId = getInjectionGroupId(injection);
+            if (groupId) onNavigateToTurn(groupId);
           }
         }}
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5"
@@ -166,9 +159,9 @@ const ToolOutputRankedItem = ({
               key={`${tool.toolName}-${idx}`}
               onClick={() => {
                 if (tool.toolUseId && onNavigateToTool) {
-                  onNavigateToTool(injection.turnIndex, tool.toolUseId);
+                  onNavigateToTool(injection.aiGroupId, tool.toolUseId);
                 } else if (onNavigateToTurn) {
-                  onNavigateToTurn(injection.turnIndex);
+                  onNavigateToTurn(injection.aiGroupId);
                 }
               }}
               className="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left text-xs transition-colors hover:bg-white/5"
@@ -244,13 +237,13 @@ export const RankedInjectionList = ({
         const copyPath = getCopyablePath(inj);
 
         const handleClick = (): void => {
-          const turnIndex = getInjectionTurnIndex(inj);
-          if (turnIndex < 0) return;
+          const groupId = getInjectionGroupId(inj);
+          if (!groupId) return;
           // User messages → navigate to user group; others → navigate to AI group
           if (inj.category === 'user-message' && onNavigateToUserGroup) {
-            onNavigateToUserGroup(turnIndex);
+            onNavigateToUserGroup(groupId);
           } else if (onNavigateToTurn) {
-            onNavigateToTurn(turnIndex);
+            onNavigateToTurn(groupId);
           }
         };
 

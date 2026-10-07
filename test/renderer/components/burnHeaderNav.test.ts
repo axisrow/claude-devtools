@@ -10,16 +10,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+import { ClaudeMdItem } from '../../../src/renderer/components/chat/SessionContextPanel/items/ClaudeMdItem';
 import { LoopSection } from '../../../src/renderer/components/chat/SessionContextPanel/components/LoopSection';
 import { WaitLoopSection } from '../../../src/renderer/components/chat/SessionContextPanel/components/WaitLoopSection';
 
-import type { LoopInjection, WaitLoopInjection } from '@renderer/types/contextInjection';
+import type {
+  ClaudeMdContextInjection,
+  LoopInjection,
+  WaitLoopInjection,
+} from '@renderer/types/contextInjection';
 
 const waitInjection = {
   id: 'wait-loop-ai-0',
   category: 'wait-loop',
   turnIndex: 0,
-  aiGroupId: 'ai-0',
+  aiGroupId: 'ai-11111111-uuid',
   estimatedTokens: 4_284_616,
   roundCount: 58,
   rounds: [{ uuid: 'r1', index: 7, outputTokens: 118, billed: 4_284_616 }],
@@ -29,7 +34,7 @@ const loopInjection = {
   id: 'loop-ai-0',
   category: 'loop',
   turnIndex: 0,
-  aiGroupId: 'ai-0',
+  aiGroupId: 'ai-11111111-uuid',
   estimatedTokens: 2300,
   breakdown: [{ key: 'Edit|/Users/x/prompt_test.go', count: 3, tokenCount: 938 }],
   rounds: [{ uuid: 'r2', index: 9, billed: 2300, keys: ['Edit|/Users/x/prompt_test.go'] }],
@@ -89,7 +94,7 @@ describe('burn navigation targets the aggregate', () => {
 
     clickEntryByTitle(host, 'Turn 1');
 
-    expect(onNavigateToTurn).toHaveBeenCalledWith(0, { flashHeader: true });
+    expect(onNavigateToTurn).toHaveBeenCalledWith('ai-11111111-uuid', { flashHeader: true });
     unmount();
   });
 
@@ -109,7 +114,7 @@ describe('burn navigation targets the aggregate', () => {
 
     clickEntryByTitle(host, 'Edit|/Users/x/prompt_test.go');
 
-    expect(onNavigateToTurn).toHaveBeenCalledWith(0, { flashHeader: true });
+    expect(onNavigateToTurn).toHaveBeenCalledWith('ai-11111111-uuid', { flashHeader: true });
     expect(onNavigateToTool).not.toHaveBeenCalled();
     unmount();
   });
@@ -130,8 +135,34 @@ describe('burn navigation targets the aggregate', () => {
 
     clickEntryByTitle(host, 'Edit|/Users/x/prompt_test.go');
 
-    expect(onNavigateToTool).toHaveBeenCalledWith(0, 'toolu-1');
+    expect(onNavigateToTool).toHaveBeenCalledWith('ai-11111111-uuid', 'toolu-1');
     expect(onNavigateToTurn).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('ClaudeMdItem navigates by its real first-seen group id', async () => {
+    const onNavigateToTurn = vi.fn();
+    const injection = {
+      id: 'cm-1',
+      category: 'claude-md',
+      path: '/proj/CLAUDE.md',
+      source: 'project-memory',
+      displayName: 'CLAUDE.md',
+      isGlobal: true,
+      estimatedTokens: 5000,
+      firstSeenInGroup: 'ai-22222222-uuid',
+      firstSeenTurnIndex: 3,
+    } as unknown as ClaudeMdContextInjection;
+    const { host, unmount } = await mount(
+      React.createElement(ClaudeMdItem, {
+        injection,
+        onNavigateToTurn,
+      })
+    );
+
+    clickEntryByTitle(host, '@Turn 4');
+
+    expect(onNavigateToTurn).toHaveBeenCalledWith('ai-22222222-uuid');
     unmount();
   });
 });

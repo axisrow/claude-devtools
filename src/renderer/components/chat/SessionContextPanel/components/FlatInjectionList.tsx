@@ -10,7 +10,6 @@ import { CopyButton } from '@renderer/components/common/CopyButton';
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
 
 import { formatTokens } from '../utils/formatting';
-import { parseTurnIndex } from '../utils/pathParsing';
 
 import type { ContextInjection } from '@renderer/types/contextInjection';
 
@@ -39,7 +38,7 @@ interface FlatRow {
   label: string;
   description: string;
   tokens: number;
-  turnIndex: number;
+  groupId: string;
   toolUseId?: string;
   isError?: boolean;
   copyPath?: string;
@@ -48,9 +47,9 @@ interface FlatRow {
 
 interface FlatInjectionListProps {
   injections: ContextInjection[];
-  onNavigateToTurn?: (turnIndex: number) => void;
-  onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
-  onNavigateToUserGroup?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
+  onNavigateToTool?: (groupId: string, toolUseId: string) => void;
+  onNavigateToUserGroup?: (groupId: string) => void;
 }
 
 // =============================================================================
@@ -71,7 +70,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
               label: tool.toolName,
               description: `Turn ${inj.turnIndex + 1}`,
               tokens: tool.tokenCount,
-              turnIndex: inj.turnIndex,
+              groupId: inj.aiGroupId,
               toolUseId: tool.toolUseId,
               isError: tool.isError,
               navigationType: tool.toolUseId ? 'tool' : 'turn',
@@ -84,7 +83,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
             label: `${inj.toolCount} tool${inj.toolCount !== 1 ? 's' : ''}`,
             description: `Turn ${inj.turnIndex + 1}`,
             tokens: inj.estimatedTokens,
-            turnIndex: inj.turnIndex,
+            groupId: inj.aiGroupId,
             navigationType: 'turn',
           });
         }
@@ -98,7 +97,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
             label: item.type === 'thinking' ? 'Thinking' : 'Text',
             description: `Turn ${inj.turnIndex + 1}`,
             tokens: item.tokenCount,
-            turnIndex: inj.turnIndex,
+            groupId: inj.aiGroupId,
             navigationType: 'turn',
           });
         }
@@ -112,7 +111,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
             label: item.toolName ?? item.label,
             description: `Turn ${inj.turnIndex + 1}`,
             tokens: item.tokenCount,
-            turnIndex: inj.turnIndex,
+            groupId: inj.aiGroupId,
             navigationType: 'turn',
           });
         }
@@ -125,7 +124,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
           label: inj.displayName || inj.path,
           description: '',
           tokens: inj.estimatedTokens,
-          turnIndex: parseTurnIndex(inj.firstSeenInGroup),
+          groupId: inj.firstSeenInGroup,
           copyPath: inj.path,
           navigationType: 'turn',
         });
@@ -138,7 +137,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
           label: inj.displayName,
           description: '',
           tokens: inj.estimatedTokens,
-          turnIndex: inj.firstSeenTurnIndex,
+          groupId: inj.firstSeenInGroup,
           copyPath: inj.path,
           navigationType: 'turn',
         });
@@ -152,7 +151,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
             label: `${item.key} ×${item.count}`,
             description: `Turn ${inj.turnIndex + 1}`,
             tokens: item.tokenCount,
-            turnIndex: inj.turnIndex,
+            groupId: inj.aiGroupId,
             toolUseId: item.toolUseId,
             navigationType: item.toolUseId ? 'tool' : 'turn',
           });
@@ -166,7 +165,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
           label: `${inj.roundCount} quiet round${inj.roundCount !== 1 ? 's' : ''}`,
           description: `Turn ${inj.turnIndex + 1}`,
           tokens: inj.estimatedTokens,
-          turnIndex: inj.turnIndex,
+          groupId: inj.aiGroupId,
           navigationType: 'turn',
         });
         break;
@@ -178,7 +177,7 @@ function flattenInjections(injections: ContextInjection[]): FlatRow[] {
           label: inj.textPreview,
           description: '',
           tokens: inj.estimatedTokens,
-          turnIndex: inj.turnIndex,
+          groupId: inj.aiGroupId,
           navigationType: 'user-group',
         });
         break;
@@ -210,13 +209,13 @@ export const FlatInjectionList = ({
         };
 
         const handleClick = (): void => {
-          if (row.turnIndex < 0) return;
+          if (!row.groupId) return;
           if (row.navigationType === 'tool' && row.toolUseId && onNavigateToTool) {
-            onNavigateToTool(row.turnIndex, row.toolUseId);
+            onNavigateToTool(row.groupId, row.toolUseId);
           } else if (row.navigationType === 'user-group' && onNavigateToUserGroup) {
-            onNavigateToUserGroup(row.turnIndex);
+            onNavigateToUserGroup(row.groupId);
           } else if (onNavigateToTurn) {
-            onNavigateToTurn(row.turnIndex);
+            onNavigateToTurn(row.groupId);
           }
         };
 

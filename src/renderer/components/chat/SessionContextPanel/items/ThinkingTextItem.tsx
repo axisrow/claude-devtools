@@ -13,7 +13,7 @@ import type { ThinkingTextInjection } from '@renderer/types/contextInjection';
 
 interface ThinkingTextItemProps {
   injection: ThinkingTextInjection;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const ThinkingTextItem = ({
@@ -22,7 +22,8 @@ export const ThinkingTextItem = ({
 }: Readonly<ThinkingTextItemProps>): React.ReactElement => {
   const [expanded, setExpanded] = useState(false);
   const turnIndex = injection.turnIndex;
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.aiGroupId;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
 
   return (
     <div className="rounded px-2 py-1.5">
@@ -56,12 +57,12 @@ export const ThinkingTextItem = ({
             }}
             onClick={(e) => {
               e.stopPropagation();
-              onNavigateToTurn(turnIndex);
+              onNavigateToTurn(groupId);
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.stopPropagation();
-                onNavigateToTurn(turnIndex);
+                onNavigateToTurn(groupId);
               }
             }}
           >

@@ -15,7 +15,7 @@ import type { ToolOutputInjection } from '@renderer/types/contextInjection';
 
 interface ToolOutputItemProps {
   injection: ToolOutputInjection;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const ToolOutputItem = ({
@@ -24,7 +24,8 @@ export const ToolOutputItem = ({
 }: Readonly<ToolOutputItemProps>): React.ReactElement => {
   const [expanded, setExpanded] = useState(false);
   const turnIndex = injection.turnIndex;
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.aiGroupId;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
   const hasBreakdown = injection.toolBreakdown.length > 0;
 
   const containerContent = (
@@ -49,12 +50,12 @@ export const ToolOutputItem = ({
           }}
           onClick={(e) => {
             e.stopPropagation();
-            onNavigateToTurn(turnIndex);
+            onNavigateToTurn(groupId);
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.stopPropagation();
-              onNavigateToTurn(turnIndex);
+              onNavigateToTurn(groupId);
             }
           }}
         >

@@ -17,7 +17,7 @@ interface WaitLoopSectionProps {
   tokenCount: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
+  onNavigateToTurn?: (groupId: string, opts?: { flashHeader?: boolean }) => void;
 }
 
 export const WaitLoopSection = ({
@@ -72,7 +72,7 @@ export const WaitLoopSection = ({
                 type="button"
                 onClick={() => {
                   if (onNavigateToTurn) {
-                    onNavigateToTurn(injection.turnIndex, { flashHeader: true });
+                    onNavigateToTurn(injection.aiGroupId, { flashHeader: true });
                   }
                 }}
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"

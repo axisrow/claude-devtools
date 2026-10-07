@@ -3,21 +3,10 @@
  */
 
 /**
- * Format the firstSeenInGroup value into a human-readable string.
- * Converts "ai-0" -> "Turn 1", "ai-1" -> "Turn 2", etc.
+ * Format a turn index (0-based) into a human-readable label.
+ * 0 -> "Turn 1"; negative (unknown) -> ''.
  */
-export function formatFirstSeen(groupId: string): string {
-  const turnIndex = parseTurnIndex(groupId);
-  if (turnIndex < 0) return groupId;
+export function formatFirstSeen(turnIndex: number): string {
+  if (turnIndex < 0) return '';
   return `Turn ${turnIndex + 1}`;
-}
-
-/**
- * Extract turn index from groupId. Returns -1 if invalid.
- * "ai-0" -> 0, "ai-1" -> 1, etc.
- */
-export function parseTurnIndex(groupId: string): number {
-  const match = /^ai-(\d+)$/.exec(groupId);
-  if (!match) return -1;
-  return parseInt(match[1], 10);
 }
