@@ -95,7 +95,9 @@ function detail(sessionId: string, chunks: unknown[]): SessionDetail {
     session: {
       id: sessionId,
       projectId: 'project-1',
-      projectPath: '/tmp/proj-54',
+      // unique per session: sessionDetailSlice caches agent-config fetches by
+      // projectPath at module level, shared across tests in this file
+      projectPath: `/tmp/proj-54-${sessionId}`,
       createdAt: 0,
       hasSubagents: false,
       messageCount: chunks.length,
@@ -112,7 +114,6 @@ function detail(sessionId: string, chunks: unknown[]): SessionDetail {
 
 const TURN1 = [userChunk('c-u1', 'u1'), aiChunk('c-ai-1')];
 const TURN2 = [...TURN1, userChunk('c-u2', 'u2'), aiChunk('c-ai-2')];
-const TURN3 = [...TURN2, userChunk('c-u3', 'u3'), aiChunk('c-ai-3')];
 
 describe('sessionDetailSlice — Phase 2 on refresh (issue #54)', () => {
   let store: TestStore;
@@ -186,6 +187,42 @@ describe('sessionDetailSlice — Phase 2 on refresh (issue #54)', () => {
     });
   });
 
+  it('a no-op refresh does not abandon the in-flight Phase-2 of the last commit', async () => {
+    await seedAndFetch('s-noop', TURN1);
+    await vi.waitFor(() => {
+      expect(store.getState().sessionContextStats?.has('c-ai-1')).toBe(true);
+    });
+
+    // R1 commits TURN2; its Phase-2 stalls on readClaudeMdFiles.
+    let resolveClaudeMd: (v: object) => void = () => {};
+    mockAPI.getSessionDetail.mockResolvedValueOnce(detail('s-noop', TURN2));
+    mockAPI.readClaudeMdFiles.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClaudeMd = resolve;
+        })
+    );
+    void store.getState().refreshSessionInPlace('project-1', 's-noop');
+    await vi.waitFor(() => {
+      expect(
+        store.getState().conversation?.items.some((i) => i.type === 'ai' && i.group.id === 'c-ai-2')
+      ).toBe(true);
+    });
+
+    // R2: a duplicate watcher event — main answers `unchanged`, a pure no-op
+    // that commits nothing and fires no Phase-2 of its own.
+    mockAPI.getSessionDetail.mockResolvedValueOnce({ unchanged: true } as unknown as SessionDetail);
+    await store.getState().refreshSessionInPlace('project-1', 's-noop');
+
+    // R1's stalled IPC resolves — its Phase-2 must still commit: the
+    // conversation it computed over is still the current one. RED pre-fix:
+    // R2's generation bump invalidates R1's run, stats stay at TURN1 forever.
+    resolveClaudeMd({});
+    await vi.waitFor(() => {
+      expect(store.getState().sessionContextStats?.has('c-ai-2')).toBe(true);
+    });
+  });
+
   it('a newer Phase-2 run wins over a still-in-flight older one', async () => {
     await seedAndFetch('s-race', TURN1);
     await vi.waitFor(() => {
@@ -208,9 +245,10 @@ describe('sessionDetailSlice — Phase 2 on refresh (issue #54)', () => {
       ).toBe(true);
     });
 
-    // A full fetch of ANOTHER session — its Phase-2 must invalidate A's
-    // in-flight computation. Refresh generation alone cannot do that (A's
-    // refresh generation never changed), the shared epoch can.
+    // A full fetch of ANOTHER session replaces the global conversation —
+    // A's write-time identity check must drop its result: A computed over
+    // s-race TURN2, so if A wrote, c-ai-2 would leak into the other
+    // session's stats map.
     store.setState({ selectedSessionId: 's-other' });
     mockAPI.getSessionDetail.mockResolvedValueOnce(detail('s-other', TURN1));
     await store.getState().fetchSessionDetail('project-1', 's-other');
@@ -223,15 +261,6 @@ describe('sessionDetailSlice — Phase 2 on refresh (issue #54)', () => {
     // session's stats map.
     resolveClaudeMdA({});
     await new Promise((r) => setTimeout(r, 50));
-    console.log(
-      'final keys:',
-      [...(store.getState().sessionContextStats?.keys() ?? [])],
-      'conv:',
-      store
-        .getState()
-        .conversation?.items.filter((i) => i.type === 'ai')
-        .map((i) => i.group.id)
-    );
     expect(store.getState().sessionContextStats?.has('c-ai-2')).toBe(false);
   });
 });

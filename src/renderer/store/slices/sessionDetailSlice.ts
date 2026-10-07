@@ -41,14 +41,6 @@ const sessionChunkFingerprint = new Map<string, string>();
  */
 const sessionFileFingerprint = new Map<string, string>();
 let sessionDetailFetchGeneration = 0;
-/**
- * Epoch of Phase-2 context-stat computations (fetch and refresh paths alike).
- * Bumped on every `runContextPhase2` start; in-flight runs drop their results
- * when a newer computation has started. Mutually invalidates fetch↔fetch,
- * fetch↔refresh and refresh↔refresh so stats are never written in reverse
- * conversation order.
- */
-let sessionPhase2Generation = 0;
 let agentConfigsCachedForProject = '';
 
 import { getAllTabs } from '../utils/paneHelpers';
@@ -111,10 +103,12 @@ function createEmptyTabSessionData(): TabSessionData {
  * `refreshSessionInPlace`: without the recompute the Context pill and per-turn
  * cost stay frozen at fetch-time values for the rest of a long session.
  *
- * Concurrent runs are mutually invalidated through the module-level epoch
- * `sessionPhase2Generation`: starting a new computation makes in-flight ones
- * drop their results before every store write. Callers add their own
- * staleness check (fetch generation / refresh generation) via `isStale`.
+ * Runs are bound to the conversation they compute over by reference identity:
+ * before every store write the run checks the live conversation still IS the
+ * items array it was given, and drops its result otherwise. A superseded run
+ * (newer fetch, newer refresh, another session displayed) therefore never
+ * writes stale stats — while a no-op refresh that commits nothing does not
+ * invalidate the pending run.
  */
 function runContextPhase2(
   set: StoreApi<AppState>['setState'],
@@ -123,12 +117,15 @@ function runContextPhase2(
     items: ChatItem[];
     projectRoot: string;
     tabIds: string[];
-    isStale: () => boolean;
+    /** Optional compute-saving abort for superseded fetches (not writes). */
+    isStale?: () => boolean;
   }
 ): void {
   const { items, projectRoot, tabIds } = params;
-  const phase2Gen = ++sessionPhase2Generation;
-  const isStale = () => phase2Gen !== sessionPhase2Generation || params.isStale();
+  const isStale = () => params.isStale?.() ?? false;
+
+  // CLAUDE.md / mentioned-file reads must hit the local filesystem.
+  if (get().connectionMode === 'ssh') return;
 
   void (async () => {
     try {
@@ -283,31 +280,32 @@ function runContextPhase2(
         directoryTokenData
       );
 
-      // Phase 2 set: update only the context stats
-      if (isStale()) return;
+      // Write-time identity guards: a run whose conversation was replaced by
+      // a newer commit (fetch, refresh, another session) drops its result.
+      if (get().conversation?.items !== items) return;
       set({
         sessionClaudeMdStats: claudeMdStats,
         sessionContextStats: phaseResult.statsMap,
         sessionPhaseInfo: phaseResult.phaseInfo,
       });
 
-      // Update per-tab stats
+      // Per-tab stats: only tabs still showing this exact conversation.
+      const prev = get().tabSessionData;
+      const nextTabSessionData = { ...prev };
+      let tabsChanged = false;
       for (const tabId of tabIds) {
-        const prev = get().tabSessionData;
         const tabData = prev[tabId];
-        if (tabData) {
-          set({
-            tabSessionData: {
-              ...prev,
-              [tabId]: {
-                ...tabData,
-                sessionClaudeMdStats: claudeMdStats,
-                sessionContextStats: phaseResult.statsMap,
-                sessionPhaseInfo: phaseResult.phaseInfo,
-              },
-            },
-          });
-        }
+        if (!tabData || tabData.conversation?.items !== items) continue;
+        nextTabSessionData[tabId] = {
+          ...tabData,
+          sessionClaudeMdStats: claudeMdStats,
+          sessionContextStats: phaseResult.statsMap,
+          sessionPhaseInfo: phaseResult.phaseInfo,
+        };
+        tabsChanged = true;
+      }
+      if (tabsChanged) {
+        set({ tabSessionData: nextTabSessionData });
       }
     } catch (err) {
       logger.error('Phase 2 context tracking error:', err);
@@ -549,7 +547,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       // refreshSessionInPlace (see runContextPhase2).
       // =====================================================================
 
-      if (connectionMode !== 'ssh' && conversation?.items) {
+      if (conversation?.items) {
         runContextPhase2(set, get, {
           items: conversation.items,
           projectRoot,
@@ -798,15 +796,13 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       // Issue #54: the conversation changed, so context stats must change
       // with it — otherwise the Context pill (findLastTrackedAiGroupId) and
       // per-turn cost stay frozen at fetch-time values until the next full
-      // fetch, which for a long-running session may never come.
-      if (get().connectionMode !== 'ssh' && newConversation.items.length > 0) {
-        runContextPhase2(set, get, {
-          items: newConversation.items,
-          projectRoot: slimDetail.session?.projectPath ?? '',
-          tabIds: phase2TabIds,
-          isStale: () => sessionRefreshGeneration.get(refreshKey) !== generation,
-        });
-      }
+      // fetch, which for a long-running session may never come. Empty items
+      // clear the stats, matching the fetch path.
+      runContextPhase2(set, get, {
+        items: newConversation.items,
+        projectRoot: slimDetail.session?.projectPath ?? '',
+        tabIds: phase2TabIds,
+      });
     } catch (error) {
       logger.error('refreshSessionInPlace error:', error);
       // Don't set error state - this is a background refresh
