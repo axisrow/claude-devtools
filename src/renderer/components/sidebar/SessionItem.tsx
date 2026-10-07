@@ -321,7 +321,7 @@ export const SessionItem = React.memo(function SessionItem({
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="tabular-nums"
-                title="Turns — user messages and teammate relays; empty turns count too, the last unanswered turn has no chip yet"
+                title="Turns — user messages and teammate relays; empty turns count too; the last unanswered user turn has no chip yet"
               >
                 {formatTokensCompact(session.turnCount)} turns
               </span>

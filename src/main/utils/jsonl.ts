@@ -430,8 +430,10 @@ export interface SessionFileMetadata {
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
   /** Turns (user messages and teammate relays, sidechains/compact summaries
-   *  excluded) — the chat numbers chips the same way, but a session's last
-   *  turn without a response has no chip yet */
+   *  excluded) — the chat numbers chips the same way. A group's chip shows
+   *  the last turn it opened, so an unanswered trailing user turn has no
+   *  chip yet, while an unanswered trailing relay does (glued into the last
+   *  AI group) */
   turnCount: number;
   hasDisplayableContent: boolean;
 }

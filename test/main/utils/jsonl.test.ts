@@ -618,7 +618,7 @@ describe('jsonl', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay-'));
       try {
         const filePath = path.join(tempDir, 'session.jsonl');
-        const relay = (uuid: string, parentUuid: string): string =>
+        const relay = (uuid: string, parentUuid: string | null): string =>
           JSON.stringify({
             type: 'user',
             uuid,
@@ -728,6 +728,13 @@ describe('jsonl', () => {
           }), // break? no — glue
           msg({ uuid: 'u4', parentUuid: 'r1', type: 'user', content: 'one more' }), // empty turn
           ai('a5', 'u4'),
+          // unanswered trailing relay: glues into the a5 AI run, still a turn
+          msg({
+            uuid: 'r2',
+            parentUuid: 'a5',
+            type: 'user',
+            content: '<teammate-message teammate_id="a">status?</teammate-message>',
+          }), // glue, no break
         ];
         // Serialize the same objects to JSONL the way the scanner reads them
         const toEntry = (m: ParsedMessage): string =>
@@ -758,13 +765,13 @@ describe('jsonl', () => {
         const aiChunks = chunks.filter(isAIChunk).length;
         const relayCount = messages.filter(isParsedTeammateRelayMessage).length;
 
-        // user turns u1, u2, u4 = 3, plus the r1 relay (issue #55) = 4.
-        // The trailing assistant closes u4's empty turn into an AI group, so
-        // AI-run counting would give 4 — this line is what makes the test
-        // catch a regression to AI-run semantics (the old bug this fixes).
+        // user turns u1, u2, u4 = 3, plus relays r1, r2 (issue #55) = 5.
+        // AI runs stay at 4 (r1 glues into a4's run, r2 into a5's), so a
+        // regression to AI-run semantics yields 4 != 5 — this mismatch is
+        // what makes the test catch the old bug this fixes.
         expect(aiChunks).toBe(4);
         expect(userChunks).toBe(3);
-        expect(relayCount).toBe(1);
+        expect(relayCount).toBe(2);
         expect(scan.turnCount).toBe(userChunks + relayCount);
       } finally {
         try {
