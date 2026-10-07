@@ -82,7 +82,8 @@ const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)"/;
  * Canonical user-line predicate: a user message that starts a new turn.
  * Port of isParsedUserChunkMessage (main/types/messages.ts), which now
  * delegates here — one definition, no drift. System output (stdout/stderr/
- * caveat/system-reminder) and teammate relays do NOT start a turn;
+ * caveat/system-reminder) and teammate relays do NOT start a hook turn;
+ * relays are transcript turns — see isTeammateRelayLine / isTranscriptTurnLine.
  * user-initiated slash commands (<command-name>) DO.
  */
 export function isUserChunkLine(m) {
@@ -123,6 +124,38 @@ export function isUserChunkLine(m) {
     return true;
   }
   return false;
+}
+
+/**
+ * Teammate relay: a non-meta user line whose content is/contains a
+ * <teammate-message ...> wrapper — inter-agent traffic. Symmetric with
+ * the relay exclusions inside isUserChunkLine (same two checks, inverted):
+ * any matching string content or text block makes the whole line a relay.
+ * Transcript turn input (isTranscriptTurnLine) but NOT a hook-turn boundary
+ * (isUserChunkLine) — the relay bills to the leader's turn (issue #55).
+ */
+export function isTeammateRelayLine(m) {
+  if (m.type !== 'user' || m.isMeta === true) return false;
+  const c = (m.message ?? m).content;
+  const texts =
+    typeof c === 'string'
+      ? [c]
+      : Array.isArray(c)
+        ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text)
+        : [];
+  return texts.some((t) => {
+    const s = t.trim();
+    return isTeammateText(s) || TEAMMATE_MESSAGE_REGEX.test(s);
+  });
+}
+
+/**
+ * Transcript turn input: a real user message or a teammate relay. What the
+ * app counts as "turns" (jsonl.ts turnCount, chat Turn N chips) — strictly
+ * wider than the hook's isUserChunkLine, which relays must not open.
+ */
+export function isTranscriptTurnLine(m) {
+  return isUserChunkLine(m) || isTeammateRelayLine(m);
 }
 
 /** Real user message (raw hook line or flattened ParsedMessage): not meta,

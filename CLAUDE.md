@@ -58,7 +58,7 @@ Keep orphaned Task calls (no matching subagent) for visibility.
 ### Agent Teams
 Claude Code's "Orchestrate Teams" feature: multiple sessions coordinate as a team.
 - **Process.team?** `{ teamName, memberName, memberColor }` — enriched by SubagentResolver from Task call inputs and `teammate_spawned` tool results
-- **Teammate messages** arrive as `<teammate-message teammate_id="..." color="..." summary="...">content</teammate-message>` in user messages (isMeta: false). Detected by `isParsedTeammateMessage()` — excluded from UserChunks, rendered as `TeammateMessageItem` cards
+- **Teammate messages** arrive as `<teammate-message teammate_id="..." color="..." summary="...">content</teammate-message>` in user messages (isMeta: false). Excluded from UserChunks by `isParsedUserChunkMessage` (canonical `isTeammateRelayLine` in turn-accounting core; a relay still opens a transcript turn, issue #55), rendered as `TeammateMessageItem` cards via `parseAllTeammateMessages()`
 - **Session ongoing detection** treats `SendMessage` shutdown_response (approve: true) and its tool_result as ending events, not ongoing activity
 - **Display summary** counts distinct teammates (by name) separately from regular subagents
 - **Team tools**: TeamCreate, TaskCreate, TaskUpdate, TaskList, TaskGet, SendMessage, TeamDelete — have readable summaries in `toolSummaryHelpers.ts`

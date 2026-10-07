@@ -22,6 +22,7 @@ import {
   type ContentBlock,
   EMPTY_METRICS,
   isConversationalEntry,
+  isParsedTeammateRelayMessage,
   isParsedUserChunkMessage,
   isTextContent,
   type MessageType,
@@ -428,9 +429,9 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** User turns (transcript user messages, sidechains/compact summaries excluded) —
-   *  the chat numbers chips the same way, but a session's last turn without a
-   *  response has no chip yet */
+  /** Turns (user messages and teammate relays, sidechains/compact summaries
+   *  excluded) — the chat numbers chips the same way, but a session's last
+   *  turn without a response has no chip yet */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
@@ -472,9 +473,9 @@ export async function analyzeSessionFileMetadata(
   // the ongoing-detection heuristics; no longer drives turn counting)
   let awaitingAIGroup = false;
   // Turn counting mirrors the transcript: one user message (isUserChunkLine
-  // semantics — the canonical predicate shared with the turn-budget hook —
-  // plus sidechain/compact-summary exclusions) == one turn, whether or not
-  // it produced a response.
+  // semantics — the canonical predicate shared with the turn-budget hook) or
+  // teammate relay (isTeammateRelayLine — issue #55), sidechain/compact-summary
+  // exclusions apply, == one turn, whether or not it produced a response.
   let turnCount = 0;
   let gitBranch: string | null = null;
 
@@ -530,9 +531,14 @@ export async function analyzeSessionFileMetadata(
       }
     }
 
-    if (isParsedUserChunkMessage(parsed)) {
-      messageCount++;
-      awaitingAIGroup = true;
+    const isUserTurn = isParsedUserChunkMessage(parsed);
+    // A teammate relay also opens a transcript turn (issue #55) though it is
+    // not a user message — messageCount/awaitingAIGroup stay user-only
+    if (isUserTurn || isParsedTeammateRelayMessage(parsed)) {
+      if (isUserTurn) {
+        messageCount++;
+        awaitingAIGroup = true;
+      }
       // Compact summaries render as CompactBoundary, not a user turn
       if (!parsed.isSidechain && !parsed.isCompactSummary) turnCount++;
     } else if (

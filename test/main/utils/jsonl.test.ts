@@ -11,7 +11,7 @@ import {
   readSessionName,
 } from '../../../src/main/utils/jsonl';
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
-import { isAIChunk, isUserChunk } from '../../../src/main/types';
+import { isAIChunk, isParsedTeammateRelayMessage, isUserChunk } from '../../../src/main/types';
 import type { ParsedMessage } from '../../../src/main/types';
 
 // Helper to create a minimal ParsedMessage
@@ -614,6 +614,73 @@ describe('jsonl', () => {
       }
     });
 
+    it('counts teammate relays as transcript turns — teammates-only session (issue #55)', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const relay = (uuid: string, parentUuid: string): string =>
+          JSON.stringify({
+            type: 'user',
+            uuid,
+            parentUuid,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            isMeta: false,
+            message: {
+              role: 'user',
+              content: '<teammate-message teammate_id="a">do it</teammate-message>',
+            },
+          });
+        const assistant = (uuid: string, parentUuid: string): string =>
+          JSON.stringify({
+            type: 'assistant',
+            uuid,
+            parentUuid,
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: { input_tokens: 10, output_tokens: 2 },
+            },
+          });
+        const lines = [
+          relay('r1', null),
+          assistant('a1', 'r1'),
+          relay('r2', 'a1'),
+          assistant('a2', 'r2'),
+          relay('r3', 'a2'),
+          assistant('a3', 'r3'),
+          // sidechain relay — skipped, like a sidechain user message
+          relay('side-r', 'a3').replace('"isMeta":false', '"isMeta":false,"isSidechain":true'),
+          assistant('side-a', 'side-r'),
+          // meta line with relay text — internal, not a turn
+          '{"type":"user","uuid":"meta-r","parentUuid":"side-a","timestamp":"2026-01-01T00:00:02.000Z","isMeta":true,"message":{"role":"user","content":"<teammate-message teammate_id=\\"a\\">internal</teammate-message>"}}',
+        ];
+
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        // 3 main-thread relays open turns; the sidechain relay and the meta
+        // line don't. RED pre-fix: turnCount stays 0.
+        expect(result.turnCount).toBe(3);
+        // messageCount stays user-only — the relay must not leak into it
+        // (RED pre-fix: 0; a mutant counting relays here makes it 3)
+        expect(result.messageCount).toBe(0);
+      } finally {
+        try {
+          fs.rmSync(tempDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 200,
+          });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
+
     it('parity — scan turnCount equals the chunk pipeline UserChunk count', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-parity-'));
       try {
@@ -650,8 +717,16 @@ describe('jsonl', () => {
           }), // break
           ai('a3', 'sys'),
           msg({ uuid: 'c1', parentUuid: 'a3', type: 'user', isCompactSummary: true }), // break
-          ai('a4', 'c1'), // closed at EOF
-          msg({ uuid: 'u4', parentUuid: 'a4', type: 'user', content: 'one more' }), // empty turn
+          ai('a4', 'c1'),
+          // issue #55: a relay is not a User chunk (glued into the a4 AI run)
+          // but DOES open a transcript turn
+          msg({
+            uuid: 'r1',
+            parentUuid: 'a4',
+            type: 'user',
+            content: '<teammate-message teammate_id="a">do it</teammate-message>',
+          }), // break? no — glue
+          msg({ uuid: 'u4', parentUuid: 'r1', type: 'user', content: 'one more' }), // empty turn
           ai('a5', 'u4'),
         ];
         // Serialize the same objects to JSONL the way the scanner reads them
@@ -681,14 +756,16 @@ describe('jsonl', () => {
         const chunks = new ChunkBuilder().buildChunks(messages);
         const userChunks = chunks.filter(isUserChunk).length;
         const aiChunks = chunks.filter(isAIChunk).length;
+        const relayCount = messages.filter(isParsedTeammateRelayMessage).length;
 
-        // user turns u1, u2, u4 = 3 (stdout/compact/sidechain are not turns).
+        // user turns u1, u2, u4 = 3, plus the r1 relay (issue #55) = 4.
         // The trailing assistant closes u4's empty turn into an AI group, so
         // AI-run counting would give 4 — this line is what makes the test
         // catch a regression to AI-run semantics (the old bug this fixes).
         expect(aiChunks).toBe(4);
         expect(userChunks).toBe(3);
-        expect(scan.turnCount).toBe(userChunks);
+        expect(relayCount).toBe(1);
+        expect(scan.turnCount).toBe(userChunks + relayCount);
       } finally {
         try {
           fs.rmSync(tempDir, {

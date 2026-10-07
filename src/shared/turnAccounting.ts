@@ -17,6 +17,8 @@ export {
   firstAssistantTotalTokens,
   inputSideTokens,
   isRealUserLine,
+  isTeammateRelayLine,
+  isTranscriptTurnLine,
   isTurnBoundary,
   isUserChunkLine,
   lastAssistantTotalTokens,

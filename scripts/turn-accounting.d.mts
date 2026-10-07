@@ -49,6 +49,13 @@ export declare const SYSTEM_OUTPUT_TAGS: string[];
 /** Canonical user-turn predicate: port of isParsedUserChunkMessage. */
 export declare function isUserChunkLine(m: AccountableMessage): boolean;
 
+/** Teammate relay: non-meta user line carrying a <teammate-message> wrapper
+ * — transcript turn input but NOT a hook-turn boundary (issue #55). */
+export declare function isTeammateRelayLine(m: AccountableMessage): boolean;
+
+/** Transcript turn input: a real user message or a teammate relay. */
+export declare function isTranscriptTurnLine(m: AccountableMessage): boolean;
+
 /** Turn boundary: user-initiated message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
