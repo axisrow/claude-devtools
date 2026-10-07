@@ -315,7 +315,8 @@ export function detectClaudeMdFromFilePath(filePath: string, projectRoot: string
 export function createGlobalInjections(
   projectRoot: string,
   aiGroupId: string,
-  tokenData?: Record<string, ClaudeMdFileInfo>
+  tokenData?: Record<string, ClaudeMdFileInfo>,
+  turnIndex: number = 0
 ): ClaudeMdInjection[] {
   const injections: ClaudeMdInjection[] = [];
 
@@ -337,6 +338,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: enterpriseTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -353,6 +355,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: userTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -370,6 +373,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: projectTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
   // Also add the .claude folder variant
@@ -383,6 +387,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: projectAltTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -398,6 +403,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: projectRulesTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -413,6 +419,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: projectLocalTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -428,6 +435,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: userRulesTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -444,6 +452,7 @@ export function createGlobalInjections(
       isGlobal: true,
       estimatedTokens: autoMemoryTokens,
       firstSeenInGroup: aiGroupId,
+      firstSeenTurnIndex: turnIndex,
     });
   }
 
@@ -453,7 +462,11 @@ export function createGlobalInjections(
 /**
  * Create an injection entry for a directory-specific CLAUDE.md.
  */
-function createDirectoryInjection(path: string, aiGroupId: string): ClaudeMdInjection {
+function createDirectoryInjection(
+  path: string,
+  aiGroupId: string,
+  turnIndex: number
+): ClaudeMdInjection {
   return {
     id: generateInjectionId(path),
     path,
@@ -462,6 +475,7 @@ function createDirectoryInjection(path: string, aiGroupId: string): ClaudeMdInje
     isGlobal: false,
     estimatedTokens: DEFAULT_ESTIMATED_TOKENS,
     firstSeenInGroup: aiGroupId,
+    firstSeenTurnIndex: turnIndex,
   };
 }
 
@@ -508,10 +522,16 @@ function computeClaudeMdStats(params: ComputeClaudeMdStatsParams): ComputeClaude
   const newInjections: ClaudeMdInjection[] = [];
 
   // For the first group, add global injections
-  // Use "ai-N" format for firstSeenInGroup to enable turn navigation in SessionClaudeMdPanel
-  const turnGroupId = `ai-${aiGroup.turnIndex}`;
+  // firstSeenInGroup carries the real group id (navigation identity); display
+  // "Turn N" labels come from turnIndex fields
+  const turnGroupId = aiGroup.id;
   if (isFirstGroup) {
-    const globalInjections = createGlobalInjections(projectRoot, turnGroupId, tokenData);
+    const globalInjections = createGlobalInjections(
+      projectRoot,
+      turnGroupId,
+      tokenData,
+      aiGroup.turnIndex
+    );
     for (const injection of globalInjections) {
       if (!previousPaths.has(injection.path)) {
         newInjections.push(injection);
@@ -564,7 +584,7 @@ function computeClaudeMdStats(params: ComputeClaudeMdStatsParams): ComputeClaude
       }
 
       // Create directory injection
-      const injection = createDirectoryInjection(claudeMdPath, turnGroupId);
+      const injection = createDirectoryInjection(claudeMdPath, turnGroupId, aiGroup.turnIndex);
       newInjections.push(injection);
       previousPaths.add(claudeMdPath);
     }

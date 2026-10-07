@@ -48,6 +48,8 @@ export interface ClaudeMdInjection {
   estimatedTokens: number;
   /** ID of the AI group where this injection was first seen */
   firstSeenInGroup: string;
+  /** turnIndex (0-based) of that group — display label only ("@Turn N"), not an identity */
+  firstSeenTurnIndex: number;
 }
 
 // =============================================================================
