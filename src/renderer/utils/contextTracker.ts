@@ -914,8 +914,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     const globalInjections = createGlobalInjections(
       projectRoot,
       turnGroupId,
-      claudeMdTokenData,
-      aiGroup.turnIndex
+      aiGroup.turnIndex,
+      claudeMdTokenData
     );
     for (const injection of globalInjections) {
       if (!previousPaths.has(injection.path)) {

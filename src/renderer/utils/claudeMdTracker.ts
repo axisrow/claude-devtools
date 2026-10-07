@@ -315,8 +315,8 @@ export function detectClaudeMdFromFilePath(filePath: string, projectRoot: string
 export function createGlobalInjections(
   projectRoot: string,
   aiGroupId: string,
-  tokenData?: Record<string, ClaudeMdFileInfo>,
-  turnIndex: number = 0
+  turnIndex: number,
+  tokenData?: Record<string, ClaudeMdFileInfo>
 ): ClaudeMdInjection[] {
   const injections: ClaudeMdInjection[] = [];
 
@@ -529,8 +529,8 @@ function computeClaudeMdStats(params: ComputeClaudeMdStatsParams): ComputeClaude
     const globalInjections = createGlobalInjections(
       projectRoot,
       turnGroupId,
-      tokenData,
-      aiGroup.turnIndex
+      aiGroup.turnIndex,
+      tokenData
     );
     for (const injection of globalInjections) {
       if (!previousPaths.has(injection.path)) {

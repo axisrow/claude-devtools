@@ -8,8 +8,7 @@ import { CopyablePath } from '@renderer/components/common/CopyablePath';
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
 import { ChevronRight } from 'lucide-react';
 
-import { formatTokens } from '../utils/formatting';
-import { formatFirstSeen } from '../utils/pathParsing';
+import { formatFirstSeen, formatTokens } from '../utils/formatting';
 
 import type { TreeNode } from './types';
 

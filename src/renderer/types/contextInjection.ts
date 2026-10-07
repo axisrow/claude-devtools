@@ -37,7 +37,7 @@ export interface MentionedFileInjection {
   estimatedTokens: number;
   /** Turn index where this file was first mentioned */
   firstSeenTurnIndex: number;
-  /** AI group ID (e.g., "ai-0") where this file was first seen, for navigation */
+  /** AI group ID (e.g., "ai-<group uuid>") where this file was first seen, for navigation */
   firstSeenInGroup: string;
   /** Whether the file exists on disk */
   exists: boolean;
@@ -81,13 +81,13 @@ export interface ToolTokenBreakdown {
  * Multiple tools may execute in one turn; this aggregates their token contributions.
  */
 export interface ToolOutputInjection {
-  /** Unique identifier (e.g., "tool-output-ai-0") */
+  /** Unique identifier (e.g., "tool-output-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'tool-output';
   /** Turn index where these tool outputs occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Total estimated tokens from all tools in this turn */
   estimatedTokens: number;
@@ -116,13 +116,13 @@ export interface ThinkingTextBreakdown {
  * Aggregates all thinking blocks and text outputs within one AI response turn.
  */
 export interface ThinkingTextInjection {
-  /** Unique identifier (e.g., "thinking-text-ai-0") */
+  /** Unique identifier (e.g., "thinking-text-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'thinking-text';
   /** Turn index where this content occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Total estimated tokens from thinking + text in this turn */
   estimatedTokens: number;
@@ -140,13 +140,13 @@ export interface ThinkingTextInjection {
  * provides a more complete picture of what consumes tokens.
  */
 export interface UserMessageInjection {
-  /** Unique identifier (e.g., "user-msg-ai-0") */
+  /** Unique identifier (e.g., "user-msg-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'user-message';
   /** Turn index where this user message occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Estimated token count for the user message content */
   estimatedTokens: number;
@@ -178,13 +178,13 @@ export interface TaskCoordinationBreakdown {
  * from generic tool outputs.
  */
 export interface TaskCoordinationInjection {
-  /** Unique identifier (e.g., "task-coord-ai-0") */
+  /** Unique identifier (e.g., "task-coord-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'task-coordination';
   /** Turn index where these task coordination items occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Total estimated tokens from all task coordination items in this turn */
   estimatedTokens: number;
@@ -215,13 +215,13 @@ export interface LoopTokenBreakdown {
  * Calls 2..N of a streak land here; the first call stays in tool-output.
  */
 export interface LoopInjection {
-  /** Unique identifier (e.g., "loop-ai-0") */
+  /** Unique identifier (e.g., "loop-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'loop';
   /** Turn index where these repeats occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Total estimated tokens from repeat calls in this turn */
   estimatedTokens: number;
@@ -254,13 +254,13 @@ export interface LoopRoundInfo {
  * wait_loop findings.
  */
 export interface WaitLoopInjection {
-  /** Unique identifier (e.g., "wait-loop-ai-0") */
+  /** Unique identifier (e.g., "wait-loop-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'wait-loop';
   /** Turn index where these quiet rounds occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Total billed context re-read by quiet rounds in this turn */
   estimatedTokens: number;
@@ -295,13 +295,13 @@ export interface WaitRoundInfo {
  * the panel's "Visible" totals.
  */
 export interface RereadInjection {
-  /** Unique identifier (e.g., "reread-ai-0") */
+  /** Unique identifier (e.g., "reread-<group id>") */
   id: string;
   /** Discriminator for type narrowing */
   category: 'reread';
   /** Turn index where this spend occurred */
   turnIndex: number;
-  /** AI group ID for navigation (e.g., "ai-0") */
+  /** AI group ID for navigation (e.g., "ai-<group uuid>") */
   aiGroupId: string;
   /** Input-side billed tokens across all requests of the turn */
   estimatedTokens: number;

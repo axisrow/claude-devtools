@@ -7,8 +7,7 @@ import React from 'react';
 import { CopyablePath } from '@renderer/components/common/CopyablePath';
 import { resolveAbsolutePath, shortenDisplayPath } from '@renderer/utils/pathDisplay';
 
-import { formatTokens } from '../utils/formatting';
-import { formatFirstSeen } from '../utils/pathParsing';
+import { formatFirstSeen, formatTokens } from '../utils/formatting';
 
 import type { ClaudeMdContextInjection } from '@renderer/types/contextInjection';
 
@@ -57,7 +56,7 @@ export const ClaudeMdItem = ({
             }}
             onClick={() => onNavigateToTurn(groupId)}
           >
-            @{formatFirstSeen(injection.firstSeenTurnIndex)}
+            @{formatFirstSeen(injection.firstSeenTurnIndex ?? -1)}
           </button>
         ) : (
           <span
@@ -67,7 +66,7 @@ export const ClaudeMdItem = ({
               opacity: 0.7,
             }}
           >
-            @{formatFirstSeen(injection.firstSeenTurnIndex)}
+            @{formatFirstSeen(injection.firstSeenTurnIndex ?? -1)}
           </span>
         )}
       </div>

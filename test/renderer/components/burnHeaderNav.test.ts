@@ -21,7 +21,7 @@ import type {
 } from '@renderer/types/contextInjection';
 
 const waitInjection = {
-  id: 'wait-loop-ai-0',
+  id: 'wait-loop-ai-11111111-uuid',
   category: 'wait-loop',
   turnIndex: 0,
   aiGroupId: 'ai-11111111-uuid',
@@ -31,7 +31,7 @@ const waitInjection = {
 } as WaitLoopInjection;
 
 const loopInjection = {
-  id: 'loop-ai-0',
+  id: 'loop-ai-11111111-uuid',
   category: 'loop',
   turnIndex: 0,
   aiGroupId: 'ai-11111111-uuid',
