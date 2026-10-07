@@ -16,12 +16,12 @@ export interface SessionContextPanelProps {
   onClose?: () => void;
   /** Project root for relative path display */
   projectRoot?: string;
-  /** Click Turn N to navigate to that turn; flashHeader lights the group header (burn pills) */
-  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
-  /** Navigate to a specific tool within a turn by toolUseId */
-  onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
-  /** Navigate to the user message group preceding the AI group at turnIndex */
-  onNavigateToUserGroup?: (turnIndex: number) => void;
+  /** Navigate to the AI group by its id; flashHeader lights the group header (burn pills) */
+  onNavigateToTurn?: (groupId: string, opts?: { flashHeader?: boolean }) => void;
+  /** Navigate to a specific tool within the group by toolUseId */
+  onNavigateToTool?: (groupId: string, toolUseId: string) => void;
+  /** Navigate to the user message group preceding the AI group with this id */
+  onNavigateToUserGroup?: (groupId: string) => void;
   /** Total session tokens (input + output + cache) for comparison */
   totalSessionTokens?: number;
   /** Phase information for phase selector */

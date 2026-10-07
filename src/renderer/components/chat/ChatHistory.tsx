@@ -412,32 +412,32 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [registerAIGroupRef]
   );
 
-  // Handler to navigate to a specific turn (AI group) from CLAUDE.md panel
+  // Handler to navigate to a specific turn (AI group) by its id from context panel
   const handleNavigateToTurn = useCallback(
-    (turnIndex: number, opts?: { flashHeader?: boolean }) => {
+    (groupId: string, opts?: { flashHeader?: boolean }) => {
       if (!conversation) return;
       const targetItem = conversation.items.find(
-        (item) => item.type === 'ai' && item.group.turnIndex === turnIndex
+        (item) => item.type === 'ai' && item.group.id === groupId
       );
       if (targetItem?.type !== 'ai') return;
 
       const run = async (): Promise<void> => {
-        const groupId = targetItem.group.id;
+        const targetGroupId = targetItem.group.id;
         // navigating to a turn means reading it — expand the collapsed group
-        expandAIGroup(groupId);
+        expandAIGroup(targetGroupId);
         // the header with burn pills must be on screen — align the group top
-        await ensureGroupVisible(groupId, opts?.flashHeader ? 'start' : 'center');
-        const element = aiGroupRefs.current.get(groupId);
+        await ensureGroupVisible(targetGroupId, opts?.flashHeader ? 'start' : 'center');
+        const element = aiGroupRefs.current.get(targetGroupId);
         if (!element) return;
 
         element.scrollIntoView({
           behavior: 'smooth',
           block: opts?.flashHeader ? 'start' : 'center',
         });
-        setHighlightedGroupId(groupId);
+        setHighlightedGroupId(targetGroupId);
         setIsNavigationHighlight(true);
         if (opts?.flashHeader) {
-          setHeaderFlashGroupId(groupId);
+          setHeaderFlashGroupId(targetGroupId);
           if (headerFlashTimerRef.current) clearTimeout(headerFlashTimerRef.current);
           headerFlashTimerRef.current = setTimeout(() => {
             setHeaderFlashGroupId(null);
@@ -458,12 +458,12 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [conversation, ensureGroupVisible, expandAIGroup, setHighlightedGroupId]
   );
 
-  // Handler to navigate to a user message group (preceding the AI group at turnIndex)
+  // Handler to navigate to the user message group preceding the AI group with this id
   const handleNavigateToUserGroup = useCallback(
-    (turnIndex: number) => {
+    (groupId: string) => {
       if (!conversation) return;
       const aiItemIndex = conversation.items.findIndex(
-        (item) => item.type === 'ai' && item.group.turnIndex === turnIndex
+        (item) => item.type === 'ai' && item.group.id === groupId
       );
       if (aiItemIndex < 0) return;
 
@@ -472,13 +472,13 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       if (prevItem?.type !== 'user') return;
 
       const run = async (): Promise<void> => {
-        const groupId = prevItem.group.id;
-        await ensureGroupVisible(groupId);
-        const element = chatItemRefs.current.get(groupId);
+        const targetGroupId = prevItem.group.id;
+        await ensureGroupVisible(targetGroupId);
+        const element = chatItemRefs.current.get(targetGroupId);
         if (!element) return;
 
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setHighlightedGroupId(groupId);
+        setHighlightedGroupId(targetGroupId);
         setIsNavigationHighlight(true);
         if (navigationHighlightTimerRef.current) {
           clearTimeout(navigationHighlightTimerRef.current);
@@ -494,21 +494,21 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [conversation, ensureGroupVisible, setHighlightedGroupId]
   );
 
-  // Handler to navigate to a specific tool within a turn from context panel
+  // Handler to navigate to a specific tool within an AI group from context panel
   const handleNavigateToTool = useCallback(
-    (turnIndex: number, toolUseId: string) => {
+    (groupId: string, toolUseId: string) => {
       if (!conversation) return;
       const targetItem = conversation.items.find(
-        (item) => item.type === 'ai' && item.group.turnIndex === turnIndex
+        (item) => item.type === 'ai' && item.group.id === groupId
       );
       if (targetItem?.type !== 'ai') return;
 
       const run = async (): Promise<void> => {
-        const groupId = targetItem.group.id;
-        await ensureGroupVisible(groupId);
+        const targetGroupId = targetItem.group.id;
+        await ensureGroupVisible(targetGroupId);
 
         // Set group + tool highlight immediately
-        setHighlightedGroupId(groupId);
+        setHighlightedGroupId(targetGroupId);
         setIsNavigationHighlight(true);
         setContextNavToolUseId(toolUseId);
 
@@ -522,7 +522,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
         }
 
         // Scroll to tool element, or fall back to AI group
-        const scrollTarget = toolElement ?? aiGroupRefs.current.get(groupId);
+        const scrollTarget = toolElement ?? aiGroupRefs.current.get(targetGroupId);
         if (scrollTarget) {
           scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }

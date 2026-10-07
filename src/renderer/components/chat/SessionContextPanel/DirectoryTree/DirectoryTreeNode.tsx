@@ -8,15 +8,14 @@ import { CopyablePath } from '@renderer/components/common/CopyablePath';
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
 import { ChevronRight } from 'lucide-react';
 
-import { formatTokens } from '../utils/formatting';
-import { formatFirstSeen, parseTurnIndex } from '../utils/pathParsing';
+import { formatFirstSeen, formatTokens } from '../utils/formatting';
 
 import type { TreeNode } from './types';
 
 interface DirectoryTreeNodeProps {
   node: TreeNode;
   depth?: number;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const DirectoryTreeNode = ({
@@ -34,8 +33,8 @@ export const DirectoryTreeNode = ({
   });
 
   if (node.isFile) {
-    const turnIndex = node.firstSeenInGroup ? parseTurnIndex(node.firstSeenInGroup) : -1;
-    const isClickable = onNavigateToTurn && turnIndex >= 0;
+    const groupId = node.firstSeenInGroup ?? '';
+    const isClickable = onNavigateToTurn && groupId.length > 0;
 
     return (
       <div
@@ -65,9 +64,9 @@ export const DirectoryTreeNode = ({
                 font: 'inherit',
                 fontSize: '12px',
               }}
-              onClick={() => onNavigateToTurn(turnIndex)}
+              onClick={() => onNavigateToTurn(groupId)}
             >
-              @{formatFirstSeen(node.firstSeenInGroup)}
+              @{formatFirstSeen(node.firstSeenTurnIndex ?? -1)}
             </button>
           ) : (
             <span
@@ -77,7 +76,7 @@ export const DirectoryTreeNode = ({
                 opacity: 0.7,
               }}
             >
-              @{formatFirstSeen(node.firstSeenInGroup)}
+              @{formatFirstSeen(node.firstSeenTurnIndex ?? -1)}
             </span>
           ))}
       </div>

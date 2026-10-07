@@ -13,7 +13,7 @@ import type { TaskCoordinationInjection } from '@renderer/types/contextInjection
 
 interface TaskCoordinationItemProps {
   injection: TaskCoordinationInjection;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const TaskCoordinationItem = ({
@@ -22,7 +22,8 @@ export const TaskCoordinationItem = ({
 }: Readonly<TaskCoordinationItemProps>): React.ReactElement => {
   const [expanded, setExpanded] = useState(false);
   const turnIndex = injection.turnIndex;
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.aiGroupId;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
   const hasBreakdown = injection.breakdown.length > 0;
 
   const containerContent = (
@@ -47,12 +48,12 @@ export const TaskCoordinationItem = ({
           }}
           onClick={(e) => {
             e.stopPropagation();
-            onNavigateToTurn(turnIndex);
+            onNavigateToTurn(groupId);
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.stopPropagation();
-              onNavigateToTurn(turnIndex);
+              onNavigateToTurn(groupId);
             }
           }}
         >

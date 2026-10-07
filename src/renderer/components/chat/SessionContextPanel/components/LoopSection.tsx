@@ -16,8 +16,8 @@ interface LoopSectionProps {
   tokenCount: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onNavigateToTool?: (turnIndex: number, toolUseId: string) => void;
-  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
+  onNavigateToTool?: (groupId: string, toolUseId: string) => void;
+  onNavigateToTurn?: (groupId: string, opts?: { flashHeader?: boolean }) => void;
 }
 
 export const LoopSection = ({
@@ -76,9 +76,9 @@ export const LoopSection = ({
                   type="button"
                   onClick={() => {
                     if (item.toolUseId && onNavigateToTool) {
-                      onNavigateToTool(injection.turnIndex, item.toolUseId);
+                      onNavigateToTool(injection.aiGroupId, item.toolUseId);
                     } else if (onNavigateToTurn) {
-                      onNavigateToTurn(injection.turnIndex, { flashHeader: true });
+                      onNavigateToTurn(injection.aiGroupId, { flashHeader: true });
                     }
                   }}
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"

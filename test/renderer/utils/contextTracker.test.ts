@@ -464,3 +464,47 @@ describe('resolveContextTargetAiGroupId', () => {
     expect(resolveContextTargetAiGroupId(items, stats, null, null)).toBe('a');
   });
 });
+
+describe('contextTracker injection identity on group.id (issue #53)', () => {
+  // post-#52 shape: a compact/system boundary tears one turn into two AI
+  // groups sharing the same turnIndex
+  it('two AI groups of one turn keep distinct injection ids and their own aiGroupId', () => {
+    const items = [
+      userGroup(),
+      aiGroup('ai-xxx', 0, toolCall('t1', '/src/a.ts', 1000), [
+        assistantMsg({ input: 1000, cacheRead: 5000, output: 100 }, ['t1']),
+      ]),
+      aiGroup('ai-yyy', 0, toolCall('t2', '/src/b.ts', 1000), [
+        assistantMsg({ input: 1000, cacheRead: 5000, output: 100 }, ['t2']),
+      ]),
+    ];
+
+    const stats = lastStats(items);
+    const first = stats.get('ai-xxx')!;
+    const second = stats.get('ai-yyy')!;
+
+    // every injection carrying aiGroupId points at its OWN group, not "ai-<turnIndex>"
+    for (const [groupId, entry] of [
+      ['ai-xxx', first],
+      ['ai-yyy', second],
+    ] as const) {
+      for (const inj of entry.newInjections) {
+        if ('aiGroupId' in inj) expect(inj.aiGroupId).toBe(groupId);
+      }
+    }
+
+    // no shared ids between the two groups of the same turn
+    const firstIds = new Set(first.newInjections.map((inj) => inj.id));
+    for (const inj of second.newInjections) {
+      expect(firstIds.has(inj.id)).toBe(false);
+    }
+
+    // claude-md keeps its display metadata: real first-seen group + turn label
+    const claudeMd = first.newInjections.find((inj) => inj.category === 'claude-md');
+    expect(claudeMd).toBeDefined();
+    if (claudeMd?.category === 'claude-md') {
+      expect(claudeMd.firstSeenInGroup).toBe('ai-xxx');
+      expect(claudeMd.firstSeenTurnIndex).toBe(0);
+    }
+  });
+});

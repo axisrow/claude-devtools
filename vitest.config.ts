@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import os from 'node:os';
 import { resolve } from 'path';
 
 export default defineConfig({
@@ -8,6 +9,13 @@ export default defineConfig({
     testTimeout: 15000,
     setupFiles: ['./test/setup.ts'],
     include: ['test/**/*.test.ts'],
+    pool: 'threads',
+    poolOptions: {
+      threads: {
+        minThreads: 1,
+        maxThreads: Math.max(1, os.cpus().length - 1),
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

@@ -15,7 +15,7 @@ interface TaskCoordinationSectionProps {
   tokenCount: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const TaskCoordinationSection = ({

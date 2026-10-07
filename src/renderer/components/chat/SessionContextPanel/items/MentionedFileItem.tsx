@@ -15,7 +15,7 @@ import type { MentionedFileInjection } from '@renderer/types/contextInjection';
 interface MentionedFileItemProps {
   injection: MentionedFileInjection;
   projectRoot?: string;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const MentionedFileItem = ({
@@ -24,7 +24,8 @@ export const MentionedFileItem = ({
   onNavigateToTurn,
 }: Readonly<MentionedFileItemProps>): React.ReactElement => {
   const turnIndex = injection.firstSeenTurnIndex;
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.firstSeenInGroup;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
   const displayPath = shortenDisplayPath(injection.path, projectRoot);
   const absolutePath = resolveAbsolutePath(injection.path, projectRoot);
 
@@ -65,10 +66,10 @@ export const MentionedFileItem = ({
               textDecorationStyle: 'dotted' as const,
               textUnderlineOffset: '2px',
             }}
-            onClick={() => onNavigateToTurn(turnIndex)}
+            onClick={() => onNavigateToTurn(groupId)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
-                onNavigateToTurn(turnIndex);
+                onNavigateToTurn(groupId);
               }
             }}
           >

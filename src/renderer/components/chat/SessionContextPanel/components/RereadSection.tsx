@@ -15,7 +15,7 @@ interface RereadSectionProps {
   tokenCount: number;
   isExpanded: boolean;
   onToggle: () => void;
-  onNavigateToTurn?: (turnIndex: number, opts?: { flashHeader?: boolean }) => void;
+  onNavigateToTurn?: (groupId: string, opts?: { flashHeader?: boolean }) => void;
 }
 
 export const RereadSection = ({
@@ -41,7 +41,7 @@ export const RereadSection = ({
           type="button"
           onClick={() => {
             if (onNavigateToTurn) {
-              onNavigateToTurn(injection.turnIndex, { flashHeader: true });
+              onNavigateToTurn(injection.aiGroupId, { flashHeader: true });
             }
           }}
           className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-white/5"

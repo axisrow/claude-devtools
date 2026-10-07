@@ -7,15 +7,14 @@ import React from 'react';
 import { CopyablePath } from '@renderer/components/common/CopyablePath';
 import { resolveAbsolutePath, shortenDisplayPath } from '@renderer/utils/pathDisplay';
 
-import { formatTokens } from '../utils/formatting';
-import { formatFirstSeen, parseTurnIndex } from '../utils/pathParsing';
+import { formatFirstSeen, formatTokens } from '../utils/formatting';
 
 import type { ClaudeMdContextInjection } from '@renderer/types/contextInjection';
 
 interface ClaudeMdItemProps {
   injection: ClaudeMdContextInjection;
   projectRoot?: string;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const ClaudeMdItem = ({
@@ -23,8 +22,8 @@ export const ClaudeMdItem = ({
   projectRoot,
   onNavigateToTurn,
 }: Readonly<ClaudeMdItemProps>): React.ReactElement => {
-  const turnIndex = parseTurnIndex(injection.firstSeenInGroup);
-  const isClickable = onNavigateToTurn && turnIndex >= 0;
+  const groupId = injection.firstSeenInGroup;
+  const isClickable = onNavigateToTurn && groupId.length > 0;
   const displayPath = shortenDisplayPath(injection.path, projectRoot);
   const absolutePath = resolveAbsolutePath(injection.path, projectRoot);
 
@@ -55,9 +54,9 @@ export const ClaudeMdItem = ({
               font: 'inherit',
               fontSize: '12px',
             }}
-            onClick={() => onNavigateToTurn(turnIndex)}
+            onClick={() => onNavigateToTurn(groupId)}
           >
-            @{formatFirstSeen(injection.firstSeenInGroup)}
+            @{formatFirstSeen(injection.firstSeenTurnIndex ?? -1)}
           </button>
         ) : (
           <span
@@ -67,7 +66,7 @@ export const ClaudeMdItem = ({
               opacity: 0.7,
             }}
           >
-            @{formatFirstSeen(injection.firstSeenInGroup)}
+            @{formatFirstSeen(injection.firstSeenTurnIndex ?? -1)}
           </span>
         )}
       </div>

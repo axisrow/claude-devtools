@@ -18,7 +18,7 @@ interface ClaudeMdSubSectionProps {
   injections: ClaudeMdContextInjection[];
   isDirectory: boolean;
   projectRoot: string;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const ClaudeMdSubSection = ({

@@ -16,7 +16,7 @@ interface MentionedFilesSectionProps {
   isExpanded: boolean;
   onToggle: () => void;
   projectRoot?: string;
-  onNavigateToTurn?: (turnIndex: number) => void;
+  onNavigateToTurn?: (groupId: string) => void;
 }
 
 export const MentionedFilesSection = ({

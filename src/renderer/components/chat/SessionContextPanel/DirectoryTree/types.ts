@@ -8,5 +8,6 @@ export interface TreeNode {
   isFile: boolean;
   tokens?: number;
   firstSeenInGroup?: string;
+  firstSeenTurnIndex?: number;
   children: Map<string, TreeNode>;
 }

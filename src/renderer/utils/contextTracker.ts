@@ -106,45 +106,46 @@ function generateMentionedFileId(path: string): string {
 }
 
 /**
- * Generate a unique ID for a tool output injection.
+ * Generate a unique ID for a tool output injection. Keyed by the group's real
+ * id (stable chunk id) — two AI groups of one turn share turnIndex but never id.
  */
-function generateToolOutputId(turnIndex: number): string {
-  return `tool-output-ai-${turnIndex}`;
+function generateToolOutputId(groupId: string): string {
+  return `tool-output-${groupId}`;
 }
 
 /**
  * Generate unique ID for thinking-text injection.
  */
-function generateThinkingTextId(turnIndex: number): string {
-  return `thinking-text-ai-${turnIndex}`;
+function generateThinkingTextId(groupId: string): string {
+  return `thinking-text-${groupId}`;
 }
 
 /**
  * Generate unique ID for task coordination injection.
  */
-function generateTaskCoordinationId(turnIndex: number): string {
-  return `task-coord-ai-${turnIndex}`;
+function generateTaskCoordinationId(groupId: string): string {
+  return `task-coord-${groupId}`;
 }
 
 /**
  * Generate unique ID for user message injection.
  */
-function generateUserMessageId(turnIndex: number): string {
-  return `user-msg-ai-${turnIndex}`;
+function generateUserMessageId(groupId: string): string {
+  return `user-msg-${groupId}`;
 }
 
 /**
  * Generate unique ID for loop injection.
  */
-function generateLoopId(turnIndex: number): string {
-  return `loop-ai-${turnIndex}`;
+function generateLoopId(groupId: string): string {
+  return `loop-${groupId}`;
 }
 
 /**
  * Generate unique ID for wait-loop injection.
  */
-function generateWaitLoopId(turnIndex: number): string {
-  return `wait-loop-ai-${turnIndex}`;
+function generateWaitLoopId(groupId: string): string {
+  return `wait-loop-${groupId}`;
 }
 
 /**
@@ -338,7 +339,7 @@ function aggregateToolOutputs(
   let loop: LoopInjection | null = null;
   if (loopTokens > 0) {
     loop = {
-      id: generateLoopId(turnIndex),
+      id: generateLoopId(aiGroupId),
       category: 'loop',
       turnIndex,
       aiGroupId,
@@ -354,7 +355,7 @@ function aggregateToolOutputs(
 
   return {
     toolOutput: {
-      id: generateToolOutputId(turnIndex),
+      id: generateToolOutputId(aiGroupId),
       category: 'tool-output',
       turnIndex,
       aiGroupId,
@@ -486,7 +487,7 @@ function aggregateWaitLoopRounds(
   if (rounds.length < WAIT_LOOP_MIN_TICKS) return null;
 
   return {
-    id: generateWaitLoopId(turnIndex),
+    id: generateWaitLoopId(aiGroupId),
     category: 'wait-loop',
     turnIndex,
     aiGroupId,
@@ -599,7 +600,7 @@ function aggregateTaskCoordination(
   }
 
   return {
-    id: generateTaskCoordinationId(turnIndex),
+    id: generateTaskCoordinationId(aiGroupId),
     category: 'task-coordination',
     turnIndex,
     aiGroupId,
@@ -633,7 +634,7 @@ function createUserMessageInjection(
   const textPreview = text.length > 80 ? text.slice(0, 80) + '…' : text;
 
   return {
-    id: generateUserMessageId(turnIndex),
+    id: generateUserMessageId(aiGroupId),
     category: 'user-message',
     turnIndex,
     aiGroupId,
@@ -687,7 +688,7 @@ function aggregateThinkingText(
   }
 
   return {
-    id: generateThinkingTextId(turnIndex),
+    id: generateThinkingTextId(aiGroupId),
     category: 'thinking-text',
     turnIndex,
     aiGroupId,
@@ -865,7 +866,11 @@ function normalizeForComparison(input: string): string {
 /**
  * Create a directory injection for a CLAUDE.md file discovered via file paths.
  */
-function createDirectoryInjection(path: string, aiGroupId: string): ClaudeMdInjection {
+function createDirectoryInjection(
+  path: string,
+  aiGroupId: string,
+  turnIndex: number
+): ClaudeMdInjection {
   return {
     id: generateInjectionId(path),
     path,
@@ -874,6 +879,7 @@ function createDirectoryInjection(path: string, aiGroupId: string): ClaudeMdInje
     isGlobal: false,
     estimatedTokens: 500, // Default estimated tokens
     firstSeenInGroup: aiGroupId,
+    firstSeenTurnIndex: turnIndex,
   };
 }
 
@@ -899,12 +905,18 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
 
   const newInjections: ContextInjection[] = [];
 
-  // Use "ai-N" format for firstSeenInGroup to enable turn navigation
-  const turnGroupId = `ai-${aiGroup.turnIndex}`;
+  // firstSeenInGroup / aiGroupId carry the real group id — stable chunk id,
+  // unique even when two groups share a turnIndex (issue #53)
+  const turnGroupId = aiGroup.id;
 
   // a) For FIRST group only: Add CLAUDE.md global injections
   if (isFirstGroup) {
-    const globalInjections = createGlobalInjections(projectRoot, turnGroupId, claudeMdTokenData);
+    const globalInjections = createGlobalInjections(
+      projectRoot,
+      turnGroupId,
+      aiGroup.turnIndex,
+      claudeMdTokenData
+    );
     for (const injection of globalInjections) {
       if (!previousPaths.has(injection.path)) {
         newInjections.push(wrapClaudeMdInjection(injection));
@@ -966,13 +978,13 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
           continue;
         }
         // Use validated token count from directoryTokenData
-        const injection = createDirectoryInjection(claudeMdPath, turnGroupId);
+        const injection = createDirectoryInjection(claudeMdPath, turnGroupId, aiGroup.turnIndex);
         injection.estimatedTokens = fileInfo.estimatedTokens;
         newInjections.push(wrapClaudeMdInjection(injection));
         previousPaths.add(claudeMdPath);
       } else {
         // Fallback: if no directoryTokenData provided, create with default tokens (legacy behavior)
-        const injection = createDirectoryInjection(claudeMdPath, turnGroupId);
+        const injection = createDirectoryInjection(claudeMdPath, turnGroupId, aiGroup.turnIndex);
         newInjections.push(wrapClaudeMdInjection(injection));
         previousPaths.add(claudeMdPath);
       }
