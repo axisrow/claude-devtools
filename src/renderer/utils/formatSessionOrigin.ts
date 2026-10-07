@@ -24,7 +24,10 @@ const SEPARATOR = ' · ';
 
 /**
  * One-line origin for the strip above the chat:
- * `repo · worktree · branch · ~/short/path`. Worktree defaults to `main`.
+ * `repo · worktree · branch · ~/short/path`. The worktree segment renders
+ * only when explicitly known — a synthetic "main" would assert the main
+ * worktree for sessions whose origin cannot be resolved (flat sidebar mode)
+ * and duplicate the branch for main-worktree sessions on branch "main".
  * Returns '' when nothing is known — callers should render nothing.
  */
 export function formatSessionOrigin(o: SessionOriginInput): string {
@@ -33,7 +36,7 @@ export function formatSessionOrigin(o: SessionOriginInput): string {
   const repo = o.repoName ?? getBaseName(o.projectPath ?? '');
   const parts = [
     repo,
-    o.worktreeName ?? 'main',
+    o.worktreeName,
     o.gitBranch,
     o.projectPath ? shortenDisplayPath(o.projectPath) : undefined,
   ].filter(Boolean);

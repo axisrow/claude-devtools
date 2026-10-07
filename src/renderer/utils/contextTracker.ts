@@ -1326,6 +1326,26 @@ export function findLastTrackedAiGroupId(
 }
 
 /**
+ * Resolves which AI group's stats the context pill should show. An explicitly
+ * selected phase resolves within itself only — an untracked phase target
+ * returns undefined (render empty) instead of falling back to the last
+ * tracked group of ANOTHER phase. Without a selection the last tracked
+ * group wins.
+ */
+export function resolveContextTargetAiGroupId(
+  items: ChatItem[],
+  stats: Map<string, ContextStats>,
+  phaseInfo: ContextPhaseInfo | null,
+  selectedPhase: number | null
+): string | undefined {
+  if (selectedPhase !== null && phaseInfo) {
+    const phase = phaseInfo.phases.find((p) => p.phaseNumber === selectedPhase);
+    return phase && stats.has(phase.lastAIGroupId) ? phase.lastAIGroupId : undefined;
+  }
+  return findLastTrackedAiGroupId(items, stats);
+}
+
+/**
  * Process all chat items in a session and compute context stats with phase information.
  * Returns both the stats map and session-wide phase info.
  */

@@ -8,9 +8,9 @@ import {
 } from '@renderer/utils/formatSessionOrigin';
 
 describe('formatSessionOrigin', () => {
-  it('renders repo · worktree · branch · shortened path for a main-worktree session', () => {
+  it('renders repo · branch · shortened path for a main-worktree session', () => {
     expect(formatSessionOrigin({ projectPath: '/Users/test/project', gitBranch: 'main' })).toBe(
-      'project · main · main · ~/project'
+      'project · main · ~/project'
     );
   });
 
@@ -32,7 +32,7 @@ describe('formatSessionOrigin', () => {
       projectPath: '/Users/test/w/very-long-repo/deep/nested/directory/x',
     });
     expect(out).toContain('…');
-    expect(out.startsWith('x · main · ~/w/…')).toBe(true);
+    expect(out.startsWith('x · ~/w/…')).toBe(true);
   });
 
   it('returns an empty string when nothing is known', () => {

@@ -267,6 +267,7 @@ export const SessionItem = React.memo(function SessionItem({
   ]);
 
   // Height must match SESSION_HEIGHT (48px) in DateGroupedSessions.tsx for virtual scroll
+  const originTag = formatSessionOriginTag(session);
   return (
     <>
       <button
@@ -320,7 +321,7 @@ export const SessionItem = React.memo(function SessionItem({
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="tabular-nums"
-                title="Turns — transcript user messages (same count as Turn chips in the transcript)"
+                title="Turns — transcript user messages; empty turns count too, the last unanswered turn has no chip yet"
               >
                 {formatTokensCompact(session.turnCount)} turns
               </span>
@@ -349,7 +350,7 @@ export const SessionItem = React.memo(function SessionItem({
               />
             </>
           )}
-          {formatSessionOriginTag(session) && (
+          {originTag && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
               <span
@@ -357,7 +358,7 @@ export const SessionItem = React.memo(function SessionItem({
                 title={formatSessionOriginTooltip(session)}
                 style={{ color: 'var(--color-text-muted)' }}
               >
-                {formatSessionOriginTag(session)}
+                {originTag}
               </span>
             </>
           )}

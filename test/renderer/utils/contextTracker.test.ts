@@ -19,13 +19,14 @@ import {
   processSessionContextWithPhases,
   classifyRounds,
   findLastTrackedAiGroupId,
+  resolveContextTargetAiGroupId,
 } from '@renderer/utils/contextTracker';
 
 import type { AIGroup, UserGroup } from '@renderer/types/groups';
 import type { ChatItem } from '@renderer/types/groups';
 import type { ParsedMessage } from '@renderer/types/data';
 import type { SemanticStep } from '@main/types/chunks';
-import type { ContextStats } from '@renderer/types/contextInjection';
+import type { ContextPhaseInfo, ContextStats } from '@renderer/types/contextInjection';
 
 // Minimal assistant message with usage for wait-loop accounting
 function assistantMsg(
@@ -432,5 +433,34 @@ describe('findLastTrackedAiGroupId', () => {
     const items = [aiGroup('a', 0, [], []), userGroup(), userGroup()];
     const stats = new Map([['a', {} as unknown as ContextStats]]);
     expect(findLastTrackedAiGroupId(items, stats)).toBe('a');
+  });
+});
+
+describe('resolveContextTargetAiGroupId', () => {
+  const phaseInfo = {
+    phases: [
+      { phaseNumber: 1, firstAIGroupId: 'a', lastAIGroupId: 'a', compactGroupId: null },
+      { phaseNumber: 2, firstAIGroupId: 'b', lastAIGroupId: 'b', compactGroupId: 'c1' },
+    ],
+    compactionCount: 1,
+  } as unknown as ContextPhaseInfo;
+
+  it('selected phase resolves within itself when tracked', () => {
+    const items = [aiGroup('a', 0, [], []), aiGroup('b', 1, [], [])];
+    const stats = new Map(['a', 'b'].map((id) => [id, {} as unknown as ContextStats]));
+    expect(resolveContextTargetAiGroupId(items, stats, phaseInfo, 2)).toBe('b');
+  });
+
+  it('selected but untracked phase renders empty — never another phase', () => {
+    const items = [aiGroup('a', 0, [], []), aiGroup('b', 1, [], [])];
+    const stats = new Map([['a', {} as unknown as ContextStats]]);
+    // 'a' is tracked, but it belongs to phase 1 — must not leak into phase 2
+    expect(resolveContextTargetAiGroupId(items, stats, phaseInfo, 2)).toBeUndefined();
+  });
+
+  it('no selection: last tracked group wins', () => {
+    const items = [aiGroup('a', 0, [], []), aiGroup('b', 1, [], [])];
+    const stats = new Map([['a', {} as unknown as ContextStats]]);
+    expect(resolveContextTargetAiGroupId(items, stats, null, null)).toBe('a');
   });
 });

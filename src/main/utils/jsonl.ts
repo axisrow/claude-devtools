@@ -428,7 +428,9 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** User turns (transcript user messages) — same count as the "Turn N" chips in the chat */
+  /** User turns (transcript user messages, sidechains/compact summaries excluded) —
+   *  the chat numbers chips the same way, but a session's last turn without a
+   *  response has no chip yet */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
@@ -466,11 +468,13 @@ export async function analyzeSessionFileMetadata(
   const lastAiTitle: string | null = null;
   let messageCount = 0;
   let hasDisplayableContent = false;
-  // After a UserGroup, await the first main-thread assistant message to count the AIGroup
+  // After a UserGroup, await the first main-thread assistant message (used by
+  // the ongoing-detection heuristics; no longer drives turn counting)
   let awaitingAIGroup = false;
   // Turn counting mirrors the transcript: one user message (isUserChunkLine
-  // semantics, sidechain excluded) == one turn == one "Turn N" chip, whether
-  // or not it produced a response.
+  // semantics — the canonical predicate shared with the turn-budget hook —
+  // plus sidechain/compact-summary exclusions) == one turn, whether or not
+  // it produced a response.
   let turnCount = 0;
   let gitBranch: string | null = null;
 

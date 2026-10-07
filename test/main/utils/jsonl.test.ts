@@ -652,6 +652,7 @@ describe('jsonl', () => {
           msg({ uuid: 'c1', parentUuid: 'a3', type: 'user', isCompactSummary: true }), // break
           ai('a4', 'c1'), // closed at EOF
           msg({ uuid: 'u4', parentUuid: 'a4', type: 'user', content: 'one more' }), // empty turn
+          ai('a5', 'u4'),
         ];
         // Serialize the same objects to JSONL the way the scanner reads them
         const toEntry = (m: ParsedMessage): string =>
@@ -679,9 +680,13 @@ describe('jsonl', () => {
         const scan = await analyzeSessionFileMetadata(filePath);
         const chunks = new ChunkBuilder().buildChunks(messages);
         const userChunks = chunks.filter(isUserChunk).length;
+        const aiChunks = chunks.filter(isAIChunk).length;
 
-        // user turns u1, u2, u4 = 3 (stdout/compact/sidechain are not turns);
-        // AI groups [a1,a2] [a3] [a4] = 3 — equal here, diverges on empty turns
+        // user turns u1, u2, u4 = 3 (stdout/compact/sidechain are not turns).
+        // The trailing assistant closes u4's empty turn into an AI group, so
+        // AI-run counting would give 4 — this line is what makes the test
+        // catch a regression to AI-run semantics (the old bug this fixes).
+        expect(aiChunks).toBe(4);
         expect(userChunks).toBe(3);
         expect(scan.turnCount).toBe(userChunks);
       } finally {

@@ -348,6 +348,8 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
       sessions: [],
       sessionDetail: null,
       sessionContextStats: null,
+      sessionPhaseInfo: null,
+      sessionClaudeMdStats: null,
     });
   },
 

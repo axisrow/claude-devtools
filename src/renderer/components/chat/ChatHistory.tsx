@@ -6,7 +6,7 @@ import { useTabNavigationController } from '@renderer/hooks/useTabNavigationCont
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
-import { findLastTrackedAiGroupId } from '@renderer/utils/contextTracker';
+import { resolveContextTargetAiGroupId } from '@renderer/utils/contextTracker';
 import { applyEventFilters, EMPTY_EVENT_FILTER_COUNTS } from '@renderer/utils/eventFilters';
 import { lastAssistantTotalTokens } from '@shared/turnAccounting';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -26,6 +26,12 @@ import { ChatHistoryLoadingState } from './ChatHistoryLoadingState';
 import { EventFilterBar } from './EventFilterBar';
 
 import type { ContextInjection } from '@renderer/types/contextInjection';
+
+/** Shared empty shape of the context-pill memo result (EMPTY_EVENT_FILTER_COUNTS precedent). */
+const EMPTY_CONTEXT_RESULT: {
+  allContextInjections: ContextInjection[];
+  lastAiGroupTotalTokens: number | undefined;
+} = { allContextInjections: [], lastAiGroupTotalTokens: undefined };
 
 /**
  * Waits for two requestAnimationFrame cycles, allowing the virtualizer to render.
@@ -131,37 +137,19 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Compute all accumulated context injections (phase-aware)
   const { allContextInjections, lastAiGroupTotalTokens } = useMemo(() => {
     if (!sessionContextStats || !conversation?.items.length) {
-      return { allContextInjections: [] as ContextInjection[], lastAiGroupTotalTokens: undefined };
+      return EMPTY_CONTEXT_RESULT;
     }
 
-    // Determine which phase to show
-    const effectivePhase = selectedContextPhase;
-
-    // If a specific phase is selected, find the last AI group in that phase
-    let targetAiGroupId: string | undefined;
-    if (effectivePhase !== null && sessionPhaseInfo) {
-      const phase = sessionPhaseInfo.phases.find((p) => p.phaseNumber === effectivePhase);
-      // The selected phase must resolve within itself: falling back to the
-      // last tracked group of ANOTHER phase would render foreign injections
-      // under the phase the user picked. Untracked → render empty (the stats
-      // recompute lands with the next full fetch).
-      if (phase && sessionContextStats.has(phase.lastAIGroupId)) {
-        targetAiGroupId = phase.lastAIGroupId;
-      } else {
-        return {
-          allContextInjections: [] as ContextInjection[],
-          lastAiGroupTotalTokens: undefined,
-        };
-      }
-    } else if (!targetAiGroupId) {
-      // Default: the last AI group that actually has stats
-      targetAiGroupId = findLastTrackedAiGroupId(conversation.items, sessionContextStats);
-      if (!targetAiGroupId) {
-        return {
-          allContextInjections: [] as ContextInjection[],
-          lastAiGroupTotalTokens: undefined,
-        };
-      }
+    // Which AI group's stats the pill shows: selected phase resolves within
+    // itself; otherwise the last tracked group
+    const targetAiGroupId = resolveContextTargetAiGroupId(
+      conversation.items,
+      sessionContextStats,
+      sessionPhaseInfo,
+      selectedContextPhase
+    );
+    if (!targetAiGroupId) {
+      return EMPTY_CONTEXT_RESULT;
     }
 
     const stats = sessionContextStats.get(targetAiGroupId);

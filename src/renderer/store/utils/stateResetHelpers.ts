@@ -15,6 +15,8 @@ export function getSessionResetState(): Partial<AppState> {
     selectedSessionId: null,
     sessionDetail: null,
     sessionContextStats: null,
+    sessionPhaseInfo: null,
+    sessionClaudeMdStats: null,
     sessions: [],
     sessionsError: null,
     sessionsCursor: null,
