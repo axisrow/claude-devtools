@@ -557,6 +557,8 @@ export default defineConfig([
                 'firstAssistantTotalTokens',
                 'inputSideTokens',
                 'isRealUserLine',
+                'isTeammateRelayLine',
+                'isTranscriptTurnLine',
                 'isTurnBoundary',
                 'isUserChunkLine',
                 'lastAssistantTotalTokens',

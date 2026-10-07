@@ -190,4 +190,107 @@ describe('groupTransformer turn numbering', () => {
     const aiItems = grown.items.filter((item) => item.type === 'ai');
     expect(aiItems.map((item) => (item.group as { turnIndex: number }).turnIndex)).toEqual([0, 2]);
   });
+
+  // ---------------------------------------------------------------------------
+  // Teammate relays open transcript turns (issue #55)
+  // ---------------------------------------------------------------------------
+
+  /** Flattened user-ParsedMessage carrying a relay wrapper (AI-chunk form). */
+  function makeRelayParsed(id: string) {
+    return {
+      uuid: `relay-${id}`,
+      parentUuid: null,
+      type: 'user' as const,
+      timestamp: new Date('2025-01-15T10:00:00Z'),
+      content: `<teammate-message teammate_id="${id}">do it</teammate-message>`,
+      isMeta: false,
+      isSidechain: false,
+    };
+  }
+
+  /** Flattened assistant-ParsedMessage answer (AI-chunk responses partner). */
+  function makeAssistantParsed(id: string) {
+    return {
+      uuid: `assistant-${id}`,
+      parentUuid: null,
+      type: 'assistant' as const,
+      timestamp: new Date('2025-01-15T10:00:01Z'),
+      content: [{ type: 'text', text: 'answer' }],
+      isMeta: false,
+      isSidechain: false,
+    };
+  }
+
+  it('numbers a teammates-only session starting at Turn 1', () => {
+    // [AI(relay, assistant)] → Turn 1 (was aiCount-fallback territory pre-#55)
+    expect(
+      aiTurnIndexes([makeAIChunk({ responses: [makeRelayParsed('1'), makeAssistantParsed('1')] })])
+    ).toEqual([0]);
+  });
+
+  it('numbers a giant AI chunk holding several relays by its last opened turn', () => {
+    // [AI(r1, a1, r2, a2)] — one group, two relays → last opened turn = Turn 2
+    const chunk = makeAIChunk({
+      responses: [
+        makeRelayParsed('1'),
+        makeAssistantParsed('1'),
+        makeRelayParsed('2'),
+        makeAssistantParsed('2'),
+      ],
+    });
+    expect(aiTurnIndexes([chunk])).toEqual([1]);
+  });
+
+  it('a relay after user turns shifts the numbering', () => {
+    // [U, A, AI(relay, a2)] → U1 opens Turn 1, the relay opens Turn 2
+    expect(
+      aiTurnIndexes([
+        makeUserChunk(),
+        makeAIChunk(),
+        makeAIChunk({ responses: [makeRelayParsed('2'), makeAssistantParsed('2')] }),
+      ])
+    ).toEqual([0, 1]);
+  });
+
+  it('a relay with no answer still consumes a turn number', () => {
+    // [AI(relay), U, AI(a)] → relay = Turn 1, U = Turn 2 → [0, 1]
+    expect(
+      aiTurnIndexes([
+        makeAIChunk({ responses: [makeRelayParsed('1')] }),
+        makeUserChunk(),
+        makeAIChunk(),
+      ])
+    ).toEqual([0, 1]);
+  });
+
+  it('incremental path recounts relays from reused AI groups', () => {
+    // base [AI(r1,a1), U] grows with [AI(r2,a2)] → [0, 2]: the reused relay
+    // must be re-counted or the new group would get Turn 2 instead of Turn 3
+    const base = [
+      makeAIChunk({ responses: [makeRelayParsed('1'), makeAssistantParsed('1')] }),
+      makeUserChunk(),
+    ];
+    const prev = transformChunksToConversation(base, [], false);
+    const grown = incrementalUpdateConversation(
+      prev,
+      [...base, makeAIChunk({ responses: [makeRelayParsed('2'), makeAssistantParsed('2')] })],
+      [],
+      false
+    );
+    const aiItems = grown.items.filter((item) => item.type === 'ai');
+    expect(aiItems.map((item) => (item.group as { turnIndex: number }).turnIndex)).toEqual([0, 2]);
+  });
+
+  it('incremental path numbers a relay appended after user turns', () => {
+    const base = [makeUserChunk(), makeAIChunk()];
+    const prev = transformChunksToConversation(base, [], false);
+    const grown = incrementalUpdateConversation(
+      prev,
+      [...base, makeAIChunk({ responses: [makeRelayParsed('2'), makeAssistantParsed('2')] })],
+      [],
+      false
+    );
+    const aiItems = grown.items.filter((item) => item.type === 'ai');
+    expect(aiItems.map((item) => (item.group as { turnIndex: number }).turnIndex)).toEqual([0, 1]);
+  });
 });

@@ -75,24 +75,24 @@ export const SYSTEM_OUTPUT_TAGS = [
   '<system-reminder>',
 ];
 
-/** Teammate relay detection — same shape as main/types/messages.ts. */
-const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)"/;
-
 /**
  * Canonical user-line predicate: a user message that starts a new turn.
  * Port of isParsedUserChunkMessage (main/types/messages.ts), which now
  * delegates here — one definition, no drift. System output (stdout/stderr/
- * caveat/system-reminder) and teammate relays do NOT start a turn;
+ * caveat/system-reminder) and teammate relays do NOT start a hook turn;
+ * relays are transcript turns — see isTeammateRelayLine / isTranscriptTurnLine.
  * user-initiated slash commands (<command-name>) DO.
  */
 export function isUserChunkLine(m) {
   if (m.type !== 'user' || m.isMeta === true) return false;
+  // one relay definition, no hand-synced copies: the string/array relay
+  // exclusions below and isTeammateRelayLine are the same two checks
+  if (isTeammateRelayLine(m)) return false;
   // raw JSONL lines wrap content in .message (ParsedMessage flattens it)
   const c = (m.message ?? m).content;
   if (typeof c === 'string') {
     const t = c.trim();
     if (t === '' || t.startsWith('[Request interrupted')) return false;
-    if (isTeammateText(t) || TEAMMATE_MESSAGE_REGEX.test(t)) return false;
     for (const tag of SYSTEM_OUTPUT_TAGS) {
       if (t.startsWith(tag)) return false;
     }
@@ -114,7 +114,6 @@ export function isUserChunkLine(m) {
     for (const b of c) {
       if (b && b.type === 'text' && typeof b.text === 'string') {
         const t = b.text.trim();
-        if (isTeammateText(t) || TEAMMATE_MESSAGE_REGEX.test(t)) return false;
         for (const tag of SYSTEM_OUTPUT_TAGS) {
           if (t.startsWith(tag)) return false;
         }
@@ -123,6 +122,36 @@ export function isUserChunkLine(m) {
     return true;
   }
   return false;
+}
+
+/**
+ * Teammate relay: a non-meta user line whose content is/contains a
+ * <teammate-message ...> wrapper — inter-agent traffic. The single relay
+ * definition: isUserChunkLine delegates its relay exclusion here, so the
+ * two predicates cannot drift. Transcript turn input (isTranscriptTurnLine)
+ * but NOT a hook-turn boundary (isUserChunkLine) — the relay bills to the
+ * leader's turn (issue #55).
+ */
+export function isTeammateRelayLine(m) {
+  if (m.type !== 'user' || m.isMeta === true) return false;
+  const c = (m.message ?? m).content;
+  const texts =
+    typeof c === 'string'
+      ? [c]
+      : Array.isArray(c)
+        ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text)
+        : [];
+  return texts.some((t) => isTeammateText(t.trim()));
+}
+
+/**
+ * Transcript turn input: a real user message or a teammate relay. The
+ * semantics jsonl.ts turnCount and the chat Turn N chips implement —
+ * strictly wider than the hook's isUserChunkLine, which relays must not
+ * open.
+ */
+export function isTranscriptTurnLine(m) {
+  return isUserChunkLine(m) || isTeammateRelayLine(m);
 }
 
 /** Real user message (raw hook line or flattened ParsedMessage): not meta,

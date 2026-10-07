@@ -6,7 +6,7 @@
  * parsed messages into categories for chunk building.
  */
 
-import { isUserChunkLine } from '@shared/turnAccounting';
+import { isTeammateRelayLine, isUserChunkLine } from '@shared/turnAccounting';
 
 import {
   EMPTY_STDERR,
@@ -169,6 +169,14 @@ export function isParsedUserChunkMessage(msg: ParsedMessage): boolean {
   // canonical predicate lives in the accounting core — one definition for
   // the hook, the calibration CLI and the parser (no drift)
   return isUserChunkLine(msg);
+}
+
+/**
+ * Type guard for teammate relays (issue #55): a relay is not a User chunk
+ * (see isParsedUserChunkMessage) but DOES open a transcript turn.
+ */
+export function isParsedTeammateRelayMessage(msg: ParsedMessage): boolean {
+  return isTeammateRelayLine(msg);
 }
 
 /**

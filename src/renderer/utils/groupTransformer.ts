@@ -17,7 +17,11 @@ import {
   isEnhancedUserChunk,
 } from '@renderer/types/data';
 import { getFirstSegment, hasPathSeparator, isRelativePath } from '@renderer/utils/pathUtils';
-import { firstAssistantTotalTokens, lastAssistantTotalTokens } from '@shared/turnAccounting';
+import {
+  firstAssistantTotalTokens,
+  isTeammateRelayLine,
+  lastAssistantTotalTokens,
+} from '@shared/turnAccounting';
 import { isCommandContent, sanitizeDisplayContent } from '@shared/utils/contentSanitizer';
 import { createLogger } from '@shared/utils/logger';
 
@@ -102,6 +106,9 @@ export function transformChunksToConversation(
   let systemCount = 0;
   let aiCount = 0;
   let compactCount = 0;
+  // Teammate relays open transcript turns (issue #55) but land in AI chunks —
+  // count them so the chips agree with the scanner's turnCount.
+  let relayCount = 0;
 
   for (const chunk of chunks) {
     if (isEnhancedUserChunk(chunk)) {
@@ -116,12 +123,16 @@ export function transformChunksToConversation(
       });
       systemCount++;
     } else if (isEnhancedAIChunk(chunk)) {
+      // Count the chunk's relays BEFORE numbering it: a relay opens the turn
+      // its own group answers.
+      relayCount += countTeammateRelays(chunk.responses);
       items.push({
         type: 'ai',
-        // Turn N = ordinal of the user message this group answers (0-based);
-        // empty turns consume a number. Fallback to AI-sequence before the
-        // first user chunk (session not starting with a user message).
-        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount, aiCount)),
+        // Turn N = ordinal of the user message or teammate relay this group
+        // answers (0-based); empty turns consume a number. Fallback to
+        // AI-sequence before the first turn input (session not starting with
+        // a user message or relay).
+        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount + relayCount, aiCount)),
       });
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
@@ -229,6 +240,7 @@ export function incrementalUpdateConversation(
   let systemCount = 0;
   let aiCount = 0;
   let compactCount = 0;
+  let relayCount = 0;
   for (const item of items) {
     switch (item.type) {
       case 'user':
@@ -239,6 +251,9 @@ export function incrementalUpdateConversation(
         break;
       case 'ai':
         aiCount++;
+        // Relays of reused groups must re-count or appended groups get a
+        // stale number (issue #55).
+        relayCount += countTeammateRelays(item.group.responses);
         break;
       case 'compact':
         compactCount++;
@@ -280,9 +295,10 @@ export function incrementalUpdateConversation(
       });
       systemCount++;
     } else if (isEnhancedAIChunk(chunk)) {
+      relayCount += countTeammateRelays(chunk.responses);
       items.push({
         type: 'ai',
-        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount, aiCount)),
+        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount + relayCount, aiCount)),
       });
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
@@ -619,13 +635,23 @@ function createCompactGroup(chunk: EnhancedCompactChunk): CompactGroup {
 // =============================================================================
 
 /**
- * Turn-index policy for AI groups: the ordinal of the user message the group
- * answers (empty turns consume a number); falls back to AI-sequence numbering
- * before the first user chunk. Single definition — full and incremental
- * transforms must number the same transcript identically.
+ * Teammate relays among an AI chunk's responses — each opens a transcript
+ * turn (issue #55); the relay lands in the AI buffer because it is not a
+ * User chunk.
  */
-function aiTurnIndex(userCount: number, aiCount: number): number {
-  return userCount > 0 ? userCount - 1 : aiCount;
+function countTeammateRelays(responses: ParsedMessage[] | undefined): number {
+  return (responses ?? []).filter((m) => isTeammateRelayLine(m)).length;
+}
+
+/**
+ * Turn-index policy for AI groups: the ordinal of the user message or
+ * teammate relay the group answers (empty turns consume a number); falls
+ * back to AI-sequence numbering before the first turn input. Single
+ * definition — full and incremental transforms must number the same
+ * transcript identically.
+ */
+function aiTurnIndex(turnInputs: number, aiCount: number): number {
+  return turnInputs > 0 ? turnInputs - 1 : aiCount;
 }
 
 /**

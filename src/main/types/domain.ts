@@ -115,7 +115,7 @@ export interface Session {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in the transcript (in+cache+out) */
   totalTokens?: number;
-  /** Completed user→assistant exchanges (turns / AI groups) */
+  /** Completed transcript turns: user messages + teammate relays (issue #55) */
   turnCount?: number;
   /** Worktree name tag set by the renderer when listing a whole repository */
   worktreeName?: string;
