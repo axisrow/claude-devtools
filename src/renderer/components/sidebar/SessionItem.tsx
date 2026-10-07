@@ -8,6 +8,10 @@ import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useStore } from '@renderer/store';
+import {
+  formatSessionOriginTag,
+  formatSessionOriginTooltip,
+} from '@renderer/utils/formatSessionOrigin';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { EyeOff, Pin } from 'lucide-react';
@@ -263,6 +267,7 @@ export const SessionItem = React.memo(function SessionItem({
   ]);
 
   // Height must match SESSION_HEIGHT (48px) in DateGroupedSessions.tsx for virtual scroll
+  const originTag = formatSessionOriginTag(session);
   return (
     <>
       <button
@@ -316,7 +321,7 @@ export const SessionItem = React.memo(function SessionItem({
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="tabular-nums"
-                title="Turns — AI response groups (same count as Turn chips in the transcript)"
+                title="Turns — transcript user messages; empty turns count too, the last unanswered turn has no chip yet"
               >
                 {formatTokensCompact(session.turnCount)} turns
               </span>
@@ -345,15 +350,15 @@ export const SessionItem = React.memo(function SessionItem({
               />
             </>
           )}
-          {session.worktreeName && (
+          {originTag && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
               <span
                 className="min-w-0 truncate"
-                title={`Worktree: ${session.worktreeName}`}
+                title={formatSessionOriginTooltip(session)}
                 style={{ color: 'var(--color-text-muted)' }}
               >
-                {session.worktreeName}
+                {originTag}
               </span>
             </>
           )}

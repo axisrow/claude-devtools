@@ -11,7 +11,7 @@ import {
   readSessionName,
 } from '../../../src/main/utils/jsonl';
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
-import { isAIChunk } from '../../../src/main/types';
+import { isAIChunk, isUserChunk } from '../../../src/main/types';
 import type { ParsedMessage } from '../../../src/main/types';
 
 // Helper to create a minimal ParsedMessage
@@ -531,7 +531,7 @@ describe('jsonl', () => {
         }
       }
     });
-    it('counts turns — AI response groups, same rule as the chunk pipeline', async () => {
+    it('counts turns — transcript user messages, same rule as the Turn N chips', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-turns-'));
       try {
         const filePath = path.join(tempDir, 'session.jsonl');
@@ -539,7 +539,8 @@ describe('jsonl', () => {
           uuid: string,
           parentUuid: string | null,
           content: string,
-          isSidechain = false
+          isSidechain = false,
+          isCompactSummary = false
         ): string =>
           JSON.stringify({
             type: 'user',
@@ -548,6 +549,7 @@ describe('jsonl', () => {
             timestamp: '2026-01-01T00:00:00.000Z',
             isMeta: false,
             isSidechain,
+            ...(isCompactSummary ? { isCompactSummary: true } : {}),
             message: { role: 'user', content },
           });
         const assistant = (uuid: string, parentUuid: string, model: string): string =>
@@ -563,9 +565,8 @@ describe('jsonl', () => {
               usage: { input_tokens: 10, output_tokens: 2 },
             },
           });
-        // root (parentUuid null) is hard noise everywhere; an assistant run
-        // closes on user/system/compact and counts exactly one turn —
-        // continuations, synthetic replies and sidechains never break a group
+        // root (parentUuid null) is hard noise everywhere; a turn is one real
+        // user message — empty turns count too, system output/sidechains don't
         const lines = [
           user('u1', null, 'go'),
           assistant('a1', 'u1', 'claude-fable-5-1'),
@@ -573,18 +574,31 @@ describe('jsonl', () => {
           user('u2', 'a1b', 'again'),
           assistant('a2-synthetic', 'u2', '<synthetic>'), // hard noise — no break
           assistant('a2', 'a2-synthetic', 'claude-fable-5-1'),
-          user('sys', 'a2', '<local-command-stdout>ok</local-command-stdout>'), // system break
+          user('sys', 'a2', '<local-command-stdout>ok</local-command-stdout>'), // not a turn
           assistant('a3', 'sys', 'claude-fable-5-1'),
           user('side-u', 'a3', 'sidechat', true), // sidechain — skipped
           assistant('side-a', 'side-u', 'claude-fable-5-1'),
           user('u3', 'a3', 'more'),
-          assistant('a4', 'u3', 'claude-fable-5-1'), // still open — closed at EOF
+          assistant('a4', 'u3', 'claude-fable-5-1'),
+          // compact boundary: the summary user line is metadata, not a turn
+          user(
+            'u3-cs',
+            'a4',
+            'This session is being continued from a previous conversation',
+            false,
+            true
+          ),
+          assistant('a5', 'u3-cs', 'claude-fable-5-1'),
+          user('u4', 'a5', 'after compact'),
+          assistant('a6', 'u4', 'claude-fable-5-1'), // still open — closed at EOF
         ];
         fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
 
         const result = await analyzeSessionFileMetadata(filePath);
 
-        // groups: [a1,a1b] [a2] [a3] [a4] = 4
+        // turns: u1, u2, u3, u4 = 4 (system output, sidechain and the compact
+        // summary line don't count — the chat renders the summary as a
+        // CompactBoundary, not a user turn)
         expect(result.turnCount).toBe(4);
       } finally {
         try {
@@ -600,7 +614,7 @@ describe('jsonl', () => {
       }
     });
 
-    it('parity — scan turnCount equals the chunk pipeline AIChunk count', async () => {
+    it('parity — scan turnCount equals the chunk pipeline UserChunk count', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-parity-'));
       try {
         const msg = (over: Partial<ParsedMessage>): ParsedMessage => ({
@@ -637,6 +651,8 @@ describe('jsonl', () => {
           ai('a3', 'sys'),
           msg({ uuid: 'c1', parentUuid: 'a3', type: 'user', isCompactSummary: true }), // break
           ai('a4', 'c1'), // closed at EOF
+          msg({ uuid: 'u4', parentUuid: 'a4', type: 'user', content: 'one more' }), // empty turn
+          ai('a5', 'u4'),
         ];
         // Serialize the same objects to JSONL the way the scanner reads them
         const toEntry = (m: ParsedMessage): string =>
@@ -663,11 +679,16 @@ describe('jsonl', () => {
 
         const scan = await analyzeSessionFileMetadata(filePath);
         const chunks = new ChunkBuilder().buildChunks(messages);
+        const userChunks = chunks.filter(isUserChunk).length;
         const aiChunks = chunks.filter(isAIChunk).length;
 
-        // groups: [a1,a2] [a3] [a4] = 3 on both paths
-        expect(aiChunks).toBe(3);
-        expect(scan.turnCount).toBe(aiChunks);
+        // user turns u1, u2, u4 = 3 (stdout/compact/sidechain are not turns).
+        // The trailing assistant closes u4's empty turn into an AI group, so
+        // AI-run counting would give 4 — this line is what makes the test
+        // catch a regression to AI-run semantics (the old bug this fixes).
+        expect(aiChunks).toBe(4);
+        expect(userChunks).toBe(3);
+        expect(scan.turnCount).toBe(userChunks);
       } finally {
         try {
           fs.rmSync(tempDir, {

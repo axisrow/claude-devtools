@@ -1309,6 +1309,43 @@ function getFirstAssistantTotalTokens(aiGroup: AIGroup): number | undefined {
 }
 
 /**
+ * Last AI group that has context stats, walking backwards. During a live
+ * refresh the conversation can gain AI groups with no stats yet — the
+ * context-pill target must be the last *tracked* group, otherwise the
+ * pill renders nothing and "Context (N)" disappears.
+ */
+export function findLastTrackedAiGroupId(
+  items: ChatItem[],
+  stats: Map<string, ContextStats>
+): string | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.type === 'ai' && stats.has(item.group.id)) return item.group.id;
+  }
+  return undefined;
+}
+
+/**
+ * Resolves which AI group's stats the context pill should show. An explicitly
+ * selected phase resolves within itself only — an untracked phase target
+ * returns undefined (render empty) instead of falling back to the last
+ * tracked group of ANOTHER phase. Without a selection the last tracked
+ * group wins.
+ */
+export function resolveContextTargetAiGroupId(
+  items: ChatItem[],
+  stats: Map<string, ContextStats>,
+  phaseInfo: ContextPhaseInfo | null,
+  selectedPhase: number | null
+): string | undefined {
+  if (selectedPhase !== null && phaseInfo) {
+    const phase = phaseInfo.phases.find((p) => p.phaseNumber === selectedPhase);
+    return phase && stats.has(phase.lastAIGroupId) ? phase.lastAIGroupId : undefined;
+  }
+  return findLastTrackedAiGroupId(items, stats);
+}
+
+/**
  * Process all chat items in a session and compute context stats with phase information.
  * Returns both the stats map and session-wide phase info.
  */
