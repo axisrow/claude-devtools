@@ -41,6 +41,14 @@ const sessionChunkFingerprint = new Map<string, string>();
  */
 const sessionFileFingerprint = new Map<string, string>();
 let sessionDetailFetchGeneration = 0;
+/**
+ * Epoch of Phase-2 context-stat computations (fetch and refresh paths alike).
+ * Bumped on every `runContextPhase2` start; in-flight runs drop their results
+ * when a newer computation has started. Mutually invalidates fetch↔fetch,
+ * fetch↔refresh and refresh↔refresh so stats are never written in reverse
+ * conversation order.
+ */
+let sessionPhase2Generation = 0;
 let agentConfigsCachedForProject = '';
 
 import { getAllTabs } from '../utils/paneHelpers';
@@ -53,9 +61,9 @@ import type {
   MentionedFileInfo,
 } from '@renderer/types/contextInjection';
 import type { ClaudeMdFileInfo, SessionDetail } from '@renderer/types/data';
-import type { AIGroup, SessionConversation } from '@renderer/types/groups';
+import type { AIGroup, ChatItem, SessionConversation } from '@renderer/types/groups';
 import type { AgentConfig } from '@shared/types/api';
-import type { StateCreator } from 'zustand';
+import type { StateCreator, StoreApi } from 'zustand';
 
 // =============================================================================
 // Per-tab session data type
@@ -87,6 +95,224 @@ function createEmptyTabSessionData(): TabSessionData {
     visibleAIGroupId: null,
     selectedAIGroup: null,
   };
+}
+
+// =============================================================================
+// Phase 2: Deferred context tracking (shared by fetch and refresh paths)
+// =============================================================================
+
+/**
+ * Phase 2 of session loading: fire-and-forget computation of per-group context
+ * stats, CLAUDE.md stats and compaction phase info for the given conversation
+ * items. Reads CLAUDE.md / mentioned-file token data over IPC (batched), then
+ * runs `processSessionContextWithPhases`.
+ *
+ * Shared by `fetchSessionDetail` (full load) and — since issue #54 —
+ * `refreshSessionInPlace`: without the recompute the Context pill and per-turn
+ * cost stay frozen at fetch-time values for the rest of a long session.
+ *
+ * Concurrent runs are mutually invalidated through the module-level epoch
+ * `sessionPhase2Generation`: starting a new computation makes in-flight ones
+ * drop their results before every store write. Callers add their own
+ * staleness check (fetch generation / refresh generation) via `isStale`.
+ */
+function runContextPhase2(
+  set: StoreApi<AppState>['setState'],
+  get: StoreApi<AppState>['getState'],
+  params: {
+    items: ChatItem[];
+    projectRoot: string;
+    tabIds: string[];
+    isStale: () => boolean;
+  }
+): void {
+  const { items, projectRoot, tabIds } = params;
+  const phase2Gen = ++sessionPhase2Generation;
+  const isStale = () => phase2Gen !== sessionPhase2Generation || params.isStale();
+
+  void (async () => {
+    try {
+      // Fetch real CLAUDE.md token data
+      let claudeMdTokenData: Record<string, ClaudeMdFileInfo> = {};
+      try {
+        claudeMdTokenData = await api.readClaudeMdFiles(projectRoot);
+        if (isStale()) return;
+      } catch (err) {
+        logger.error('Failed to read CLAUDE.md files:', err);
+      }
+
+      const claudeMdStats = processSessionClaudeMd(items, projectRoot, claudeMdTokenData);
+
+      // Fetch real tokens for directory CLAUDE.md files
+      const directoryTokenData: Record<string, ClaudeMdFileInfo> = {};
+
+      if (claudeMdStats && claudeMdStats.size > 0) {
+        const directoryPaths = new Set<string>();
+        for (const stats of claudeMdStats.values()) {
+          for (const injection of stats.accumulatedInjections) {
+            if (injection.source === 'directory') {
+              directoryPaths.add(injection.path);
+            }
+          }
+        }
+
+        if (directoryPaths.size > 0) {
+          const directoryTokens = new Map<string, number>();
+          const nonExistentPaths = new Set<string>();
+
+          const directoryResults = await batchAsync(
+            Array.from(directoryPaths),
+            async (fullPath) => {
+              try {
+                const dirPath = fullPath.replace(/[\\/]CLAUDE\.md$/, '');
+                const fileInfo = await api.readDirectoryClaudeMd(dirPath);
+                return { fullPath, fileInfo, error: false };
+              } catch (err) {
+                logger.error('Failed to read directory CLAUDE.md:', fullPath, err);
+                return { fullPath, fileInfo: null, error: true };
+              }
+            },
+            5
+          );
+          if (isStale()) return;
+
+          for (const { fullPath, fileInfo, error } of directoryResults) {
+            if (error || !fileInfo) {
+              nonExistentPaths.add(fullPath);
+            } else if (fileInfo.exists && fileInfo.estimatedTokens > 0) {
+              directoryTokens.set(fullPath, fileInfo.estimatedTokens);
+              directoryTokenData[fullPath] = fileInfo;
+            } else {
+              nonExistentPaths.add(fullPath);
+            }
+          }
+
+          // Update stats: set real tokens and REMOVE non-existent files
+          for (const [, stats] of claudeMdStats.entries()) {
+            stats.accumulatedInjections = stats.accumulatedInjections.filter(
+              (inj) => inj.source !== 'directory' || !nonExistentPaths.has(inj.path)
+            );
+            stats.newInjections = stats.newInjections.filter(
+              (inj) => inj.source !== 'directory' || !nonExistentPaths.has(inj.path)
+            );
+
+            for (const injection of stats.accumulatedInjections) {
+              if (injection.source === 'directory' && directoryTokens.has(injection.path)) {
+                injection.estimatedTokens = directoryTokens.get(injection.path)!;
+              }
+            }
+            for (const injection of stats.newInjections) {
+              if (injection.source === 'directory' && directoryTokens.has(injection.path)) {
+                injection.estimatedTokens = directoryTokens.get(injection.path)!;
+              }
+            }
+
+            stats.totalEstimatedTokens = stats.accumulatedInjections.reduce(
+              (sum, inj) => sum + inj.estimatedTokens,
+              0
+            );
+            stats.accumulatedCount = stats.accumulatedInjections.length;
+            stats.newCount = stats.newInjections.length;
+          }
+        }
+      }
+
+      // Extract all mentioned file paths from user groups
+      const mentionedFilePaths = new Set<string>();
+      for (const item of items) {
+        if (item.type === 'user' && item.group.content.fileReferences) {
+          for (const ref of item.group.content.fileReferences) {
+            const absolutePath = resolveFilePath(projectRoot, ref.path);
+            mentionedFilePaths.add(absolutePath);
+          }
+        }
+      }
+
+      // Also collect @-mentions from isMeta:true user messages in AI responses
+      for (const item of items) {
+        if (item.type === 'ai') {
+          for (const msg of item.group.responses) {
+            if (msg.type !== 'user') continue;
+            let text = '';
+            if (typeof msg.content === 'string') {
+              text = msg.content;
+            } else if (Array.isArray(msg.content)) {
+              for (const block of msg.content) {
+                if (block.type === 'text' && block.text) text += block.text;
+              }
+            }
+            if (text) {
+              for (const ref of extractFileReferences(text)) {
+                const absolutePath = resolveFilePath(projectRoot, ref.path);
+                mentionedFilePaths.add(absolutePath);
+              }
+            }
+          }
+        }
+      }
+
+      // Fetch token data for each mentioned file (throttled IPC calls)
+      const mentionedFileTokenData = new Map<string, MentionedFileInfo>();
+      const mentionedFileResults = await batchAsync(
+        Array.from(mentionedFilePaths),
+        async (filePath) => {
+          try {
+            const fileInfo = await api.readMentionedFile(filePath, projectRoot);
+            return { filePath, fileInfo };
+          } catch (err) {
+            logger.error('Failed to read mentioned file:', filePath, err);
+            return { filePath, fileInfo: null };
+          }
+        },
+        5
+      );
+      if (isStale()) return;
+
+      for (const { filePath, fileInfo } of mentionedFileResults) {
+        if (fileInfo) {
+          mentionedFileTokenData.set(filePath, fileInfo);
+        }
+      }
+
+      // Process Visible Context with all token data
+      const phaseResult = processSessionContextWithPhases(
+        items,
+        projectRoot,
+        claudeMdTokenData,
+        mentionedFileTokenData,
+        directoryTokenData
+      );
+
+      // Phase 2 set: update only the context stats
+      if (isStale()) return;
+      set({
+        sessionClaudeMdStats: claudeMdStats,
+        sessionContextStats: phaseResult.statsMap,
+        sessionPhaseInfo: phaseResult.phaseInfo,
+      });
+
+      // Update per-tab stats
+      for (const tabId of tabIds) {
+        const prev = get().tabSessionData;
+        const tabData = prev[tabId];
+        if (tabData) {
+          set({
+            tabSessionData: {
+              ...prev,
+              [tabId]: {
+                ...tabData,
+                sessionClaudeMdStats: claudeMdStats,
+                sessionContextStats: phaseResult.statsMap,
+                sessionPhaseInfo: phaseResult.phaseInfo,
+              },
+            },
+          });
+        }
+      }
+    } catch (err) {
+      logger.error('Phase 2 context tracking error:', err);
+    }
+  })();
 }
 
 // =============================================================================
@@ -319,198 +545,17 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       }
 
       // =====================================================================
-      // Phase 2: Deferred context tracking — fire-and-forget async block
-      // that computes stats and updates the store when ready.
+      // Phase 2: Deferred context tracking — fire-and-forget, shared with
+      // refreshSessionInPlace (see runContextPhase2).
       // =====================================================================
 
       if (connectionMode !== 'ssh' && conversation?.items) {
-        void (async () => {
-          try {
-            // Fetch real CLAUDE.md token data
-            let claudeMdTokenData: Record<string, ClaudeMdFileInfo> = {};
-            try {
-              claudeMdTokenData = await api.readClaudeMdFiles(projectRoot);
-              if (requestGeneration !== sessionDetailFetchGeneration) return;
-            } catch (err) {
-              logger.error('Failed to read CLAUDE.md files:', err);
-            }
-
-            const claudeMdStats = processSessionClaudeMd(
-              conversation.items,
-              projectRoot,
-              claudeMdTokenData
-            );
-
-            // Fetch real tokens for directory CLAUDE.md files
-            const directoryTokenData: Record<string, ClaudeMdFileInfo> = {};
-
-            if (claudeMdStats && claudeMdStats.size > 0) {
-              const directoryPaths = new Set<string>();
-              for (const stats of claudeMdStats.values()) {
-                for (const injection of stats.accumulatedInjections) {
-                  if (injection.source === 'directory') {
-                    directoryPaths.add(injection.path);
-                  }
-                }
-              }
-
-              if (directoryPaths.size > 0) {
-                const directoryTokens = new Map<string, number>();
-                const nonExistentPaths = new Set<string>();
-
-                const directoryResults = await batchAsync(
-                  Array.from(directoryPaths),
-                  async (fullPath) => {
-                    try {
-                      const dirPath = fullPath.replace(/[\\/]CLAUDE\.md$/, '');
-                      const fileInfo = await api.readDirectoryClaudeMd(dirPath);
-                      return { fullPath, fileInfo, error: false };
-                    } catch (err) {
-                      logger.error('Failed to read directory CLAUDE.md:', fullPath, err);
-                      return { fullPath, fileInfo: null, error: true };
-                    }
-                  },
-                  5
-                );
-                if (requestGeneration !== sessionDetailFetchGeneration) return;
-
-                for (const { fullPath, fileInfo, error } of directoryResults) {
-                  if (error || !fileInfo) {
-                    nonExistentPaths.add(fullPath);
-                  } else if (fileInfo.exists && fileInfo.estimatedTokens > 0) {
-                    directoryTokens.set(fullPath, fileInfo.estimatedTokens);
-                    directoryTokenData[fullPath] = fileInfo;
-                  } else {
-                    nonExistentPaths.add(fullPath);
-                  }
-                }
-
-                // Update stats: set real tokens and REMOVE non-existent files
-                for (const [, stats] of claudeMdStats.entries()) {
-                  stats.accumulatedInjections = stats.accumulatedInjections.filter(
-                    (inj) => inj.source !== 'directory' || !nonExistentPaths.has(inj.path)
-                  );
-                  stats.newInjections = stats.newInjections.filter(
-                    (inj) => inj.source !== 'directory' || !nonExistentPaths.has(inj.path)
-                  );
-
-                  for (const injection of stats.accumulatedInjections) {
-                    if (injection.source === 'directory' && directoryTokens.has(injection.path)) {
-                      injection.estimatedTokens = directoryTokens.get(injection.path)!;
-                    }
-                  }
-                  for (const injection of stats.newInjections) {
-                    if (injection.source === 'directory' && directoryTokens.has(injection.path)) {
-                      injection.estimatedTokens = directoryTokens.get(injection.path)!;
-                    }
-                  }
-
-                  stats.totalEstimatedTokens = stats.accumulatedInjections.reduce(
-                    (sum, inj) => sum + inj.estimatedTokens,
-                    0
-                  );
-                  stats.accumulatedCount = stats.accumulatedInjections.length;
-                  stats.newCount = stats.newInjections.length;
-                }
-              }
-            }
-
-            // Extract all mentioned file paths from user groups
-            const mentionedFilePaths = new Set<string>();
-            for (const item of conversation.items) {
-              if (item.type === 'user' && item.group.content.fileReferences) {
-                for (const ref of item.group.content.fileReferences) {
-                  const absolutePath = resolveFilePath(projectRoot, ref.path);
-                  mentionedFilePaths.add(absolutePath);
-                }
-              }
-            }
-
-            // Also collect @-mentions from isMeta:true user messages in AI responses
-            for (const item of conversation.items) {
-              if (item.type === 'ai') {
-                for (const msg of item.group.responses) {
-                  if (msg.type !== 'user') continue;
-                  let text = '';
-                  if (typeof msg.content === 'string') {
-                    text = msg.content;
-                  } else if (Array.isArray(msg.content)) {
-                    for (const block of msg.content) {
-                      if (block.type === 'text' && block.text) text += block.text;
-                    }
-                  }
-                  if (text) {
-                    for (const ref of extractFileReferences(text)) {
-                      const absolutePath = resolveFilePath(projectRoot, ref.path);
-                      mentionedFilePaths.add(absolutePath);
-                    }
-                  }
-                }
-              }
-            }
-
-            // Fetch token data for each mentioned file (throttled IPC calls)
-            const mentionedFileTokenData = new Map<string, MentionedFileInfo>();
-            const mentionedFileResults = await batchAsync(
-              Array.from(mentionedFilePaths),
-              async (filePath) => {
-                try {
-                  const fileInfo = await api.readMentionedFile(filePath, projectRoot);
-                  return { filePath, fileInfo };
-                } catch (err) {
-                  logger.error('Failed to read mentioned file:', filePath, err);
-                  return { filePath, fileInfo: null };
-                }
-              },
-              5
-            );
-            if (requestGeneration !== sessionDetailFetchGeneration) return;
-
-            for (const { filePath, fileInfo } of mentionedFileResults) {
-              if (fileInfo) {
-                mentionedFileTokenData.set(filePath, fileInfo);
-              }
-            }
-
-            // Process Visible Context with all token data
-            const phaseResult = processSessionContextWithPhases(
-              conversation.items,
-              projectRoot,
-              claudeMdTokenData,
-              mentionedFileTokenData,
-              directoryTokenData
-            );
-
-            // Phase 2 set: update only the context stats
-            if (requestGeneration !== sessionDetailFetchGeneration) return;
-            set({
-              sessionClaudeMdStats: claudeMdStats,
-              sessionContextStats: phaseResult.statsMap,
-              sessionPhaseInfo: phaseResult.phaseInfo,
-            });
-
-            // Update per-tab stats
-            if (tabId) {
-              const prev = get().tabSessionData;
-              const tabData = prev[tabId];
-              if (tabData) {
-                set({
-                  tabSessionData: {
-                    ...prev,
-                    [tabId]: {
-                      ...tabData,
-                      sessionClaudeMdStats: claudeMdStats,
-                      sessionContextStats: phaseResult.statsMap,
-                      sessionPhaseInfo: phaseResult.phaseInfo,
-                    },
-                  },
-                });
-              }
-            }
-          } catch (err) {
-            logger.error('Phase 2 context tracking error:', err);
-          }
-        })();
+        runContextPhase2(set, get, {
+          items: conversation.items,
+          projectRoot,
+          tabIds: tabId ? [tabId] : [],
+          isStale: () => requestGeneration !== sessionDetailFetchGeneration,
+        });
       }
     } catch (error) {
       logger.error('fetchSessionDetail error:', error);
@@ -720,8 +765,10 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
 
       // Also update per-tab session data for all tabs viewing this session
       const latestTabSessionData = { ...get().tabSessionData };
+      const phase2TabIds: string[] = [];
       for (const tab of latestAllTabs) {
         if (tab.type === 'session' && tab.sessionId === sessionId && latestTabSessionData[tab.id]) {
+          phase2TabIds.push(tab.id);
           const tabData = latestTabSessionData[tab.id];
           // Preserve per-tab visibleAIGroupId
           const tabVisibleId = tabData.visibleAIGroupId;
@@ -747,6 +794,19 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         }
       }
       set({ tabSessionData: latestTabSessionData });
+
+      // Issue #54: the conversation changed, so context stats must change
+      // with it — otherwise the Context pill (findLastTrackedAiGroupId) and
+      // per-turn cost stay frozen at fetch-time values until the next full
+      // fetch, which for a long-running session may never come.
+      if (get().connectionMode !== 'ssh' && newConversation.items.length > 0) {
+        runContextPhase2(set, get, {
+          items: newConversation.items,
+          projectRoot: slimDetail.session?.projectPath ?? '',
+          tabIds: phase2TabIds,
+          isStale: () => sessionRefreshGeneration.get(refreshKey) !== generation,
+        });
+      }
     } catch (error) {
       logger.error('refreshSessionInPlace error:', error);
       // Don't set error state - this is a background refresh

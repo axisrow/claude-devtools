@@ -35,6 +35,7 @@ export interface MockElectronAPI {
   readClaudeMdFiles: ReturnType<typeof vi.fn>;
   readDirectoryClaudeMd: ReturnType<typeof vi.fn>;
   readMentionedFile: ReturnType<typeof vi.fn>;
+  readAgentConfigs: ReturnType<typeof vi.fn>;
   validateMentions: ReturnType<typeof vi.fn>;
   openPath: ReturnType<typeof vi.fn>;
   openExternal: ReturnType<typeof vi.fn>;
@@ -108,6 +109,7 @@ export function createMockElectronAPI(): MockElectronAPI {
       estimatedTokens: 0,
     }),
     readMentionedFile: vi.fn().mockResolvedValue(null),
+    readAgentConfigs: vi.fn().mockResolvedValue({}),
     validateMentions: vi.fn().mockResolvedValue({}),
     openPath: vi.fn().mockResolvedValue({ success: true }),
     openExternal: vi.fn().mockResolvedValue({ success: true }),
