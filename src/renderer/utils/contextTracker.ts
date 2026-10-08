@@ -1372,7 +1372,11 @@ export function processSessionContextWithPhases(
   claudeMdTokenData?: Record<string, ClaudeMdFileInfo>,
   mentionedFileTokenData?: Map<string, MentionedFileInfo>,
   directoryTokenData?: Record<string, ClaudeMdFileInfo>
-): { statsMap: Map<string, ContextStats>; phaseInfo: ContextPhaseInfo } {
+): {
+  statsMap: Map<string, ContextStats>;
+  phaseInfo: ContextPhaseInfo;
+  rereadAll: RereadInjection[];
+} {
   const statsMap = new Map<string, ContextStats>();
   let accumulatedInjections: ContextInjection[] = [];
   let previousPaths = new Set<string>();
@@ -1385,6 +1389,11 @@ export function processSessionContextWithPhases(
   const phases: ContextPhase[] = [];
   const aiGroupPhaseMap = new Map<string, number>();
   const compactionTokenDeltas = new Map<string, CompactionTokenDelta>();
+  // Session-level reread ledger — spend, not phase content. The panel's
+  // Re-read section must show every turn of the session regardless of the
+  // selected phase: a bell notification's turn has to be findable without
+  // phase switching. Not reset on compaction.
+  const rereadAll: RereadInjection[] = [];
 
   // Track phase boundaries
   let currentPhaseFirstAIGroupId: string | null = null;
@@ -1482,6 +1491,14 @@ export function processSessionContextWithPhases(
       // Tag with phase number
       stats.phaseNumber = currentPhaseNumber;
 
+      // reread is spend, not content: it bypasses the phase reset above and
+      // lives in the session-wide ledger (phaseInfo.rereadAll)
+      for (const inj of stats.newInjections) {
+        if (inj.category === 'reread') {
+          rereadAll.push({ ...inj, phaseNumber: currentPhaseNumber });
+        }
+      }
+
       // Build compaction token delta for this phase's first AI group
       if (isFirstAiGroup && currentPhaseCompactGroupId && lastAIGroupBeforeCompact) {
         const preTokens = getLastAssistantTotalTokens(lastAIGroupBeforeCompact);
@@ -1548,9 +1565,10 @@ export function processSessionContextWithPhases(
     compactionCount: currentPhaseNumber - 1,
     aiGroupPhaseMap,
     compactionTokenDeltas,
+    rereadAll,
   };
 
-  return { statsMap, phaseInfo };
+  return { statsMap, phaseInfo, rereadAll };
 }
 
 // =============================================================================

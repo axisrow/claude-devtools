@@ -309,6 +309,8 @@ export interface RereadInjection {
   requests: number;
   /** When the turn started — the key to match a turn-budget notification */
   turnStartTs?: string;
+  /** Phase the turn belongs to (session-wide reread ledger spans phases) */
+  phaseNumber?: number;
 }
 
 // =============================================================================
@@ -468,4 +470,8 @@ export interface ContextPhaseInfo {
   compactionCount: number;
   aiGroupPhaseMap: Map<string, number>; // aiGroupId → phaseNumber
   compactionTokenDeltas: Map<string, CompactionTokenDelta>; // compactGroupId → delta
+  /** Every reread injection of the session, all phases — spend is not phase
+   * content; the panel's Re-read section renders this regardless of the
+   * selected phase so a bell notification's turn is always findable. */
+  rereadAll: RereadInjection[];
 }

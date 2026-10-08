@@ -411,6 +411,52 @@ describe('contextTracker compaction reset', () => {
   });
 });
 
+describe('contextTracker reread spans all phases', () => {
+  function compactItem(): ChatItem {
+    return {
+      type: 'compact',
+      group: { id: 'compact-0' } as unknown as never,
+    } as unknown as ChatItem;
+  }
+
+  it('keeps pre-compaction reread injections in rereadAll with their phaseNumber', () => {
+    const frag = (rid: string): ParsedMessage => {
+      const m = assistantMsg({ input: 1000, cacheRead: 133_000, output: 100 });
+      (m as unknown as { requestId?: string }).requestId = rid;
+      return m;
+    };
+    const items = [
+      userGroup(),
+      // phase 1: multi-request turn → reread injection
+      aiGroup(
+        'ai-0',
+        0,
+        [],
+        [
+          frag('req_a'),
+          frag('req_a'),
+          assistantMsg({ input: 2000, cacheRead: 60_000, output: 2_000 }), // working round
+        ]
+      ),
+      compactItem(),
+      userGroup(),
+      // phase 2 (current): single-request turn, no reread
+      aiGroup('ai-1', 0, [], [assistantMsg({ input: 1000, cacheRead: 5_000, output: 500 })]),
+    ];
+
+    const { statsMap, rereadAll } = processSessionContextWithPhases(items, '/proj');
+
+    // the phase snapshot shown on "Current" carries no reread from phase 1
+    const current = statsMap.get('ai-1')!;
+    expect(current.accumulatedInjections.some((inj) => inj.category === 'reread')).toBe(false);
+    // but the session-level reread list keeps it, tagged with its phase
+    expect(rereadAll).toHaveLength(1);
+    expect(rereadAll[0].category).toBe('reread');
+    expect(rereadAll[0].estimatedTokens).toBe(196_000);
+    expect(rereadAll[0].phaseNumber).toBe(1);
+  });
+});
+
 describe('findLastTrackedAiGroupId', () => {
   it('returns the last AI group that has stats (not just the last AI group)', () => {
     const items = [userGroup(), aiGroup('a', 0, [], []), userGroup(), aiGroup('b', 1, [], [])];

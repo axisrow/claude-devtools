@@ -116,7 +116,7 @@ function detectorIncidentToError(args: {
       ...common,
       source: 'turn_budget',
       message:
-        `Turn budget · ${turnLabel} · ${formatTokensCompact(budget.spent)} / ` +
+        `Turn budget · ${turnLabel} · ${formatTokensCompact(budget.spent)} at crossing / ` +
         `${formatTokensCompact(budget.budget)} — turn re-read crossed the ` +
         'limit; tool calls are being denied',
       triggerName: 'Turn budget',
