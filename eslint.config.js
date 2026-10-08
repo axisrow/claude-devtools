@@ -556,6 +556,7 @@ export default defineConfig([
                 'billedTotalTokens',
                 'firstAssistantTotalTokens',
                 'inputSideTokens',
+                'isMainChainAssistantLine',
                 'isRealUserLine',
                 'isTeammateRelayLine',
                 'isTranscriptTurnLine',

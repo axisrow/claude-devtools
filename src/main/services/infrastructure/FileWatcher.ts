@@ -103,11 +103,24 @@ function detectorIncidentToError(args: {
   };
   if (kind === 'turn_budget') {
     const budget = incident as TurnBudgetIncident;
+    // turn number + wall-clock start — the keys to find the crossing turn in
+    // the chat and the Visible Context panel (Re-read section shows both)
+    const turnLabel =
+      budget.turnNumber > 0
+        ? `turn ${budget.turnNumber}` +
+          (budget.turnStartTs
+            ? ` (${new Date(budget.turnStartTs).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              })})`
+            : '')
+        : 'current turn';
     return createDetectedError({
       ...common,
       source: 'turn_budget',
       message:
-        `Turn budget · ${formatTokensCompact(budget.spent)} / ` +
+        `Turn budget · ${turnLabel} · ${formatTokensCompact(budget.spent)} at crossing / ` +
         `${formatTokensCompact(budget.budget)} — turn re-read crossed the ` +
         'limit; tool calls are being denied',
       triggerName: 'Turn budget',

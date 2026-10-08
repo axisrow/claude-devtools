@@ -1,4 +1,4 @@
-{"type":"user","message":{"role":"user","content":"turn 1 prompt"}}
+{"type":"user","timestamp":"2026-10-08T03:00:00.000Z","message":{"role":"user","content":"turn 1 prompt"}}
 {"type":"assistant","requestId":"req_a","message":{"id":"msg_a1","content":[{"type":"text","text":"frag 1"}],"usage":{"input_tokens":1000,"cache_read_input_tokens":100000,"cache_creation_input_tokens":0,"output_tokens":10}}}
 {"type":"assistant","requestId":"req_a","message":{"id":"msg_a2","content":[{"type":"text","text":"frag 2"}],"usage":{"input_tokens":1000,"cache_read_input_tokens":100000,"cache_creation_input_tokens":0,"output_tokens":20}}}
 {"type":"assistant","requestId":"req_b","message":{"id":"msg_b1","content":[],"usage":{"input_tokens":2000,"cache_read_input_tokens":200000,"cache_creation_input_tokens":0,"output_tokens":500}}}

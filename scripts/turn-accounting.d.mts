@@ -18,9 +18,10 @@ export interface AccountableMessage {
   messageId?: string;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  isSidechain?: boolean;
   content?: unknown;
   usage?: UsageLike;
-  message?: { id?: string; usage?: UsageLike; content?: unknown };
+  message?: { id?: string; model?: string; usage?: UsageLike; content?: unknown };
 }
 
 /** requestId ?? messageId ?? message.id — one billed request per key. */
@@ -66,6 +67,10 @@ export declare function isTranscriptTurnLine(m: AccountableMessage): boolean;
 
 /** Turn boundary: user-initiated message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
+
+/** Main-chain assistant line — the only lines billed to the turn's re-read
+ * (sidechain/synthetic excluded; detector and panel see the same set). */
+export declare function isMainChainAssistantLine(m: AccountableMessage): boolean;
 
 /** Sum input-side spend of the current turn, scanning lines newest-first. */
 export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {

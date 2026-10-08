@@ -12,7 +12,12 @@
 import { type ParsedMessage } from '@main/types';
 import { billedRequestKey } from '@main/utils/jsonl';
 import { isStalledRound } from '@shared/constants/loopPolicy';
-import { billedTotalTokens, inputSideTokens, isTurnBoundary } from '@shared/turnAccounting';
+import {
+  billedTotalTokens,
+  inputSideTokens,
+  isTranscriptTurnLine,
+  isTurnBoundary,
+} from '@shared/turnAccounting';
 import { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 export interface LoopIncident {
@@ -253,6 +258,11 @@ interface FileBudgetState {
   /** this turn already fired its crossing notification */
   notified: boolean;
   lastToolUseId: string;
+  /** 1-based ordinal of the current turn (transcript turns: user/relay) */
+  turnNumber: number;
+  /** timestamp of the boundary that opened the current turn
+   * (raw JSONL carries ISO strings, parsed transcripts carry Dates) */
+  turnStartTs?: string | Date;
   cwd?: string;
 }
 
@@ -262,6 +272,7 @@ const freshBudgetState = (): FileBudgetState => ({
   total: 0,
   notified: false,
   lastToolUseId: '',
+  turnNumber: 0,
 });
 
 export interface TurnBudgetIncident {
@@ -269,6 +280,11 @@ export interface TurnBudgetIncident {
   spent: number;
   /** configured per-turn budget (the hook's currency) */
   budget: number;
+  /** 1-based ordinal of the turn that crossed (0 = file opened mid-turn) */
+  turnNumber: number;
+  /** when the crossing turn started — the key to find it in the chat
+   * (raw JSONL carries ISO strings, parsed transcripts carry Dates) */
+  turnStartTs?: string | Date;
   toolUseId: string;
   cwd?: string;
   batchIndex: number;
@@ -296,6 +312,12 @@ export class TurnBudgetDetector {
     this.perFile.clear();
   }
 
+  /** Current turn's running input-side total — the parity-test seam: the
+   * offline accounting (analyzeTurn) must equal this after any feed shape. */
+  currentTurnTotal(filePath: string): number {
+    return this.perFile.get(filePath)?.total ?? 0;
+  }
+
   /** Same contract as LoopDetector.feed; budget = notifications.turnBudget.maxInputTokensPerTurn. */
   feed(filePath: string, messages: ParsedMessage[], budget: number): TurnBudgetIncident | null {
     let state = this.perFile.get(filePath) ?? freshBudgetState();
@@ -305,9 +327,23 @@ export class TurnBudgetDetector {
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      // Numbering follows the chat's Turn N chips (jsonl turnCount canon:
+      // transcript turns — user OR teammate relay — minus sidechain and
+      // compact summaries, which masquerade as user lines once parsed), so
+      // the bell number matches what the chat shows: a compaction must not
+      // inflate it, a relay must not deflate it. The SPEND bucket still
+      // resets on the hook boundary (user or compact — pre-compact spend
+      // must not count).
+      if (isTranscriptTurnLine(msg) && !msg.isSidechain && !msg.isCompactSummary) {
+        state.turnNumber += 1;
+        state.turnStartTs = msg.timestamp;
+      }
       // a new user turn (or compaction) starts a fresh budget bucket
       if (isTurnBoundary(msg)) {
-        state = freshBudgetState();
+        const numbered = freshBudgetState();
+        numbered.turnNumber = state.turnNumber;
+        numbered.turnStartTs = state.turnStartTs;
+        state = numbered;
         this.perFile.set(filePath, state);
       }
       // main-chain assistant lines only — same accounting as the hook
@@ -336,6 +372,8 @@ export class TurnBudgetDetector {
           incident = {
             spent: state.total,
             budget,
+            turnNumber: state.turnNumber,
+            turnStartTs: state.turnStartTs,
             toolUseId: state.lastToolUseId,
             cwd: state.cwd,
             batchIndex: i,

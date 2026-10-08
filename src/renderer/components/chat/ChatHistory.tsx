@@ -153,7 +153,12 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     }
 
     const stats = sessionContextStats.get(targetAiGroupId);
-    const injections = stats?.accumulatedInjections ?? [];
+    // reread is session-wide spend (phaseInfo.rereadAll), not phase content —
+    // a bell notification's turn must be visible without switching phases
+    const injections = [
+      ...(stats?.accumulatedInjections ?? []).filter((inj) => inj.category !== 'reread'),
+      ...(sessionPhaseInfo?.rereadAll ?? []),
+    ];
 
     // Get total tokens from the target AI group
     let totalTokens: number | undefined;
