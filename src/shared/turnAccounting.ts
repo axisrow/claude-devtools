@@ -23,4 +23,5 @@ export {
   isUserChunkLine,
   lastAssistantTotalTokens,
   SYSTEM_OUTPUT_TAGS,
+  TEAMMATE_BLOCK_RE,
 } from '../../scripts/turn-accounting.mjs';

@@ -39,7 +39,7 @@ describe('accounting primitives (canonical core)', () => {
     };
     expect(inputSideTokens(usage)).toBe(350);
     expect(billedTotalTokens(usage)).toBe(375);
-    expect(inputSideTokens(undefined)).toBe(0);
+    expect(inputSideTokens()).toBe(0);
 
     const responses = [
       { type: 'user' },
@@ -79,7 +79,7 @@ describe('hook isRealUserLine (raw JSONL shapes)', () => {
     ).toBe(false);
     expect(
       isRealUserLine({ type: 'user', message: { content: '<teammate-message id="x">yo</...>' } })
-    ).toBe(false);
+    ).toBe(true);
     expect(isRealUserLine({ type: 'assistant', message: { content: 'hi' } })).toBe(false);
   });
 });
@@ -104,13 +104,15 @@ describe('isUserChunkLine — canonical turn-boundary predicate', () => {
     }
   });
 
-  it('teammate relays with teammate_id never start a turn', () => {
+  it('complete teammate relays never start a turn; malformed wrappers stay user text (#59)', () => {
     expect(
       isUserChunkLine(userLine('<teammate-message teammate_id="a">yo</teammate-message>'))
     ).toBe(false);
+    // unclosed wrapper — the strict parser cannot render it as a card either,
+    // so it is preserved as user input rather than swallowed
     expect(
       isUserChunkLine(userLine([{ type: 'text', text: '<teammate-message teammate_id="a">hi' }]))
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('<command-name> is user-initiated and DOES start a turn', () => {
@@ -167,11 +169,11 @@ describe('hook readConfig', () => {
     });
     expect(readConfig('{}').enabled).toBe(true);
     expect(readConfig('not json').budget).toBeGreaterThan(0);
-    expect(readConfig(undefined).enabled).toBe(true);
+    expect(readConfig().enabled).toBe(true);
   });
 });
 
-describe('hook deny output shape', async () => {
+describe('hook deny output shape', () => {
   it('emits permissionDecision deny via stdout', async () => {
     const { deny } = await import('../../scripts/turn-budget-hook.mjs');
     const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true);

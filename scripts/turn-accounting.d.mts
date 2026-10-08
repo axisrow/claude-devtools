@@ -49,8 +49,16 @@ export declare const SYSTEM_OUTPUT_TAGS: string[];
 /** Canonical user-turn predicate: port of isParsedUserChunkMessage. */
 export declare function isUserChunkLine(m: AccountableMessage): boolean;
 
-/** Teammate relay: non-meta user line carrying a <teammate-message> wrapper
- * — transcript turn input but NOT a hook-turn boundary (issue #55). */
+/** Complete <teammate-message ...>...</teammate-message> block — shared with
+ * the display parser (teammateMessageParser.ts), one definition (issue #59). */
+export declare const TEAMMATE_BLOCK_RE: RegExp;
+
+/** Text minus every complete relay block — the remainder is user text. */
+export declare function stripTeammateBlocks(t: string): string;
+
+/** Teammate relay: non-meta user line consisting solely of complete
+ * <teammate-message> wrappers — transcript turn input but NOT a hook-turn
+ * boundary (issue #55); mixed content is a user message (issue #59). */
 export declare function isTeammateRelayLine(m: AccountableMessage): boolean;
 
 /** Transcript turn input: a real user message or a teammate relay. */

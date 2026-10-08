@@ -6,6 +6,8 @@
  * Pure function for cross-process use (renderer needs it in displayItemBuilder).
  */
 
+import { TEAMMATE_BLOCK_RE } from '@shared/turnAccounting';
+
 export interface ParsedTeammateContent {
   teammateId: string;
   color: string;
@@ -16,10 +18,10 @@ export interface ParsedTeammateContent {
 /**
  * Regex to match a single <teammate-message> block (non-greedy content).
  * Captures: [1] teammate_id, [2] remaining attributes string, [3] inner content
+ *
+ * Defined once in the canonical accounting core (turn-accounting.mjs) so
+ * relay classification and card rendering share one definition (issue #59).
  */
-const TEAMMATE_BLOCK_RE =
-  /<teammate-message\s+teammate_id="([^"]+)"([^>]*)>([\s\S]*?)<\/teammate-message>/g;
-
 const COLOR_RE = /color="([^"]*)"/;
 const SUMMARY_RE = /summary="([^"]*)"/;
 
