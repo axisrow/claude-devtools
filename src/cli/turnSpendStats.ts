@@ -16,12 +16,14 @@ import * as readline from 'readline';
 
 // same turn-boundary predicate the hook enforces — one definition, no drift
 import {
+  analyzeTurn,
   billedRequestKey,
   inputSideTokens,
+  isMainChainAssistantLine,
   isTurnBoundary,
 } from '../../scripts/turn-budget-hook.mjs';
 
-import { wantsHelp } from './args';
+import { takeFlagValue, wantsHelp } from './args';
 
 export interface TurnSpend {
   file: string;
@@ -67,7 +69,7 @@ export function feedLine(
     return;
   }
 
-  if (msg.type === 'assistant' && inner.usage && state.current) {
+  if (isMainChainAssistantLine(msg) && inner.usage && state.current) {
     const side = inputSideTokens(inner.usage);
     const key = billedRequestKey(msg);
     if (key) {
@@ -102,10 +104,117 @@ export function percentile(sorted: number[], q: number): number {
 // CLI
 // =============================================================================
 
+/** --audit <file.jsonl>: the three accountings side by side, per turn.
+ * Every number shown to a human (hook notification, detector bell, panel
+ * Re-read) must come out equal here — divergence is a bug, this prints it. */
+async function auditFile(filePath: string): Promise<void> {
+  const { sumTurnReread } = await import('../renderer/utils/contextTracker');
+  const { TurnBudgetDetector } = await import('../main/utils/loopDetection');
+
+  const lines = fs
+    .readFileSync(filePath, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim() !== '');
+  // ParsedMessage shape for the detector: usage/model/toolCalls at the top
+  const flat = lines.map((l) => {
+    const m = JSON.parse(l) as Record<string, unknown>;
+    const inner = m.message as { usage?: unknown; model?: string } | undefined;
+    return { ...m, usage: m.usage ?? inner?.usage, model: inner?.model, toolCalls: [] };
+  });
+
+  // turn slices (1-based numbering, same as the detector's turnNumber):
+  // turn 1 opens at the FIRST boundary; metadata before it is not a turn
+  const slices: string[][] = [];
+  let cur: string[] = [];
+  let sawBoundary = false;
+  for (const line of lines) {
+    let m: Record<string, unknown> = {};
+    try {
+      m = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (isTurnBoundary(m)) {
+      if (sawBoundary && cur.length) slices.push(cur);
+      cur = [];
+      sawBoundary = true;
+    }
+    if (sawBoundary) cur.push(line);
+  }
+  if (cur.length) slices.push(cur);
+
+  // detector path (the live bell): line-by-line feed, exactly what FileWatcher
+  // streams; snapshot each turn's running total right before its boundary resets
+  // the bucket. Batch-feed equivalence is pinned by the parity test.
+  const det = new TurnBudgetDetector();
+  const detTotals: number[] = [];
+  for (const m of flat) {
+    const before = det.currentTurnTotal('audit');
+    if (isTurnBoundary(m as never)) detTotals.push(before);
+    det.feed('audit', [m as never], Number.MAX_SAFE_INTEGER);
+  }
+  detTotals.push(det.currentTurnTotal('audit'));
+
+  const fmtK = (n: number): string =>
+    n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(n);
+  console.log('turn  start(ts)                analyzeTurn  detector   panelReread  rq');
+  let mismatches = 0;
+  slices.forEach((slice, i) => {
+    const hook = analyzeTurn([...slice].reverse()).spent;
+    // detTotals[0] is the pre-first-boundary prefix; turn i (1-based) = [i+1]
+    const bell = detTotals[i + 1] ?? 0;
+    const panel = sumTurnReread(
+      slice
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((m) => m.type === 'assistant')
+        .map((m) => ({
+          ...m,
+          usage: m.usage ?? (m.message as { usage?: unknown } | undefined)?.usage,
+          model: (m.message as { model?: string } | undefined)?.model,
+          toolCalls: [],
+        })) as never[]
+    );
+    const agree = hook === bell && hook === panel.tokens;
+    if (!agree) mismatches++;
+    const startTs = (() => {
+      try {
+        return (JSON.parse(slice[0]) as { timestamp?: string }).timestamp ?? '';
+      } catch {
+        return '';
+      }
+    })();
+    console.log(
+      String(i + 1).padStart(4),
+      startTs.padEnd(24),
+      fmtK(hook).padStart(11),
+      fmtK(bell).padStart(10),
+      fmtK(panel.tokens).padStart(12),
+      String(panel.requests).padStart(4),
+      agree ? '' : '  <-- MISMATCH'
+    );
+  });
+  console.log(
+    mismatches === 0
+      ? `parity OK (${slices.length} turns)`
+      : `parity BROKEN: ${mismatches}/${slices.length} turns disagree`
+  );
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (wantsHelp(argv)) {
-    console.log('Usage: pnpm turn-spend:stats [--p N]');
+    console.log('Usage: pnpm turn-spend:stats [--p N] | --audit <file.jsonl>');
+    return;
+  }
+  const aIdx = argv.indexOf('--audit');
+  if (aIdx !== -1) {
+    const { value } = takeFlagValue(argv, aIdx);
+    if (!value) {
+      console.error('--audit requires a .jsonl path');
+      process.exitCode = 1;
+      return;
+    }
+    await auditFile(path.resolve(value));
     return;
   }
   const pIdx = argv.indexOf('--p');

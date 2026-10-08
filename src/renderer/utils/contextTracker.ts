@@ -515,6 +515,10 @@ export function sumTurnReread(responses: ParsedMessage[]): { tokens: number; req
   let requests = 0;
   for (const msg of responses ?? []) {
     if (msg.type !== 'assistant') continue;
+    // main-chain only — same accounting as the hook's isMainChainAssistantLine
+    // (aiGroup.responses never carries sidechain/synthetic lines; this is
+    // parity insurance, not behavior)
+    if (msg.isSidechain === true || msg.model === '<synthetic>') continue;
     const key = billedRequestKey(msg);
     if (!key) {
       // a line without any request id is its own request
@@ -1096,6 +1100,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
       aiGroupId: turnGroupId,
       estimatedTokens: turnReread.tokens,
       requests: turnReread.requests,
+      turnStartTs: aiGroup.startTime ? new Date(aiGroup.startTime).toISOString() : undefined,
     } satisfies RereadInjection);
   }
 

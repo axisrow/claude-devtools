@@ -926,7 +926,7 @@ describe('FileWatcher', () => {
       const budgetError = vi.mocked(notificationManager.addError).mock.calls[0][0];
       expect(budgetError.source).toBe('turn_budget');
       expect(budgetError.triggerName).toBe('Turn budget');
-      expect(budgetError.message).toContain('Turn budget · 12.0M / 10.0M');
+      expect(budgetError.message).toContain('Turn budget · current turn · 12.0M / 10.0M');
       expect(budgetError.toolUseId).toBe('t2');
       expect(budgetError.sessionId).toBe('session-1');
 
@@ -1136,7 +1136,7 @@ describe('FileWatcher', () => {
       const [error, opts] = vi.mocked(notificationManager.addError).mock.calls[0];
       expect(error.source).toBe('turn_budget');
       expect(error.triggerName).toBe('Turn budget');
-      expect(error.message).toContain('Turn budget · 12.0M / 10.0M');
+      expect(error.message).toMatch(/Turn budget · turn 1 \(\d{2}:\d{2}\) · 12\.0M \/ 10\.0M/);
       expect(opts).toEqual({ silent: true });
 
       watcher.stop();
@@ -1223,7 +1223,7 @@ describe('FileWatcher', () => {
 
       expect(notificationManager.addError).toHaveBeenCalledTimes(1);
       const [error] = vi.mocked(notificationManager.addError).mock.calls[0];
-      expect(error.message).toContain('Turn budget · 13.0M / 10.0M');
+      expect(error.message).toMatch(/Turn budget · turn 1 \(\d{2}:\d{2}\) · 13\.0M \/ 10\.0M/);
 
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });

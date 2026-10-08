@@ -206,6 +206,17 @@ export function isTurnBoundary(m) {
   return isUserChunkLine(m) || m.isCompactSummary === true;
 }
 
+/** Main-chain assistant line — the only lines whose usage is billed to the
+ * turn's re-read. Sidechain (subagent) rounds run in their own context and
+ * synthetic lines carry no real request; the detector (loopDetection.ts)
+ * and the panel's aiGroups never see them, so the hook must not either —
+ * one definition, no drift. */
+export function isMainChainAssistantLine(m) {
+  return (
+    m.type === 'assistant' && m.isSidechain !== true && m.message?.model !== '<synthetic>'
+  );
+}
+
 /** Sum input-side tokens of the current turn, scanning lines newest-first. */
 export function analyzeTurn(linesNewestFirst) {
   let spent = 0;
@@ -225,7 +236,7 @@ export function analyzeTurn(linesNewestFirst) {
       boundaryFound = true;
       break;
     }
-    if (m.type === 'assistant' && m.message?.usage) {
+    if (isMainChainAssistantLine(m) && m.message?.usage) {
       const key = billedRequestKey(m);
       if (key) {
         if (billed.has(key)) continue;

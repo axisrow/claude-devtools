@@ -47,6 +47,9 @@ export declare function isRealUserLine(m: AccountableMessage): boolean;
 /** Turn boundary: real user message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
+/** Main-chain assistant line — billed to the turn's re-read. */
+export declare function isMainChainAssistantLine(m: AccountableMessage): boolean;
+
 /** Sum input-side spend of the current turn, scanning lines newest-first. */
 export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   spent: number;

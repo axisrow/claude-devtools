@@ -307,6 +307,8 @@ export interface RereadInjection {
   estimatedTokens: number;
   /** Billed requests in the turn (requestId-deduped) */
   requests: number;
+  /** When the turn started — the key to match a turn-budget notification */
+  turnStartTs?: string;
 }
 
 // =============================================================================

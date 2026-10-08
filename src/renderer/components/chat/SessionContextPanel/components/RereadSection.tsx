@@ -54,6 +54,14 @@ export const RereadSection = ({
           </span>
           <span className="min-w-0 flex-1 truncate text-xs" style={{ color: '#f87171' }}>
             Turn {injection.turnIndex + 1}
+            {injection.turnStartTs && (
+              <span className="ml-1 text-[10px]" style={{ color: '#71717a' }}>
+                {new Date(injection.turnStartTs).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            )}
           </span>
           <span className="shrink-0 text-xs tabular-nums" style={{ color: '#a1a1aa' }}>
             {injection.requests} rq

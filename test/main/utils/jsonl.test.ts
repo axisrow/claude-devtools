@@ -456,8 +456,8 @@ describe('jsonl', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay-'));
       try {
         const filePath = path.join(tempDir, 'session.jsonl');
-        const relay =
-          '<teammate-message teammate_id="a">hello</teammate-message>\nWhy is this tag in the log?';
+        // a complete relay block — issue #59 canon: not user text
+        const relay = '<teammate-message teammate_id="a">hello</teammate-message>';
         const lines = [
           JSON.stringify({
             type: 'user',
@@ -485,8 +485,7 @@ describe('jsonl', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay2-'));
       try {
         const filePath = path.join(tempDir, 'session.jsonl');
-        const relay =
-          '<teammate-message teammate_id="a">hello</teammate-message>\nWhy is this tag in the log?';
+        const relay = '<teammate-message teammate_id="a">hello</teammate-message>';
         const lines = [
           JSON.stringify({
             type: 'user',

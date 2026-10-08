@@ -9,8 +9,8 @@
  *
  * The fixture pins: GLM stream fragments (same requestId, full usage each),
  * Claude stream snapshots (same requestId, growing output), a keyless
- * assistant line (own request), a sidechain round (counted — no sidechain
- * filter in this accounting), a ghost line WITHOUT usage (skipped), junk
+ * assistant line (own request), a sidechain round (excluded — main-chain
+ * only accounting everywhere), a ghost line WITHOUT usage (skipped), junk
  * usage fields (ignored), and all the non-boundary user-line shapes
  * (teammate, interrupt, isMeta tool_result) plus the current boundary canon
  * (<local-command-stdout> IS a boundary).
@@ -21,6 +21,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { analyzeTurn } from '../../scripts/turn-budget-hook.mjs';
+import { TurnBudgetDetector } from '../../src/main/utils/loopDetection';
 import { feedLine } from '../../src/cli/turnSpendStats';
 import { sumTurnReread } from '../../src/renderer/utils/contextTracker';
 
@@ -51,7 +52,13 @@ function flatten(
     usage?: Record<string, number>;
   }
 ): Record<string, unknown> {
-  return { ...m, usage: m.usage ?? m.message?.usage };
+  // ParsedMessage shape: usage/model/toolCalls flattened to the top level
+  return {
+    ...m,
+    usage: m.usage ?? m.message?.usage,
+    model: (m.message as { model?: string } | undefined)?.model,
+    toolCalls: [],
+  };
 }
 
 describe('turn accounting — golden parity across consumers', () => {
@@ -73,10 +80,11 @@ describe('turn accounting — golden parity across consumers', () => {
     const spends = state.spends as { inputSide: number; rounds: number }[];
 
     // canonical boundary: <local-command-stdout> is system output, NOT a turn
-    // boundary — turn 1 now spans fixture lines 2..10 (311.8k + 4.4k)
+    // boundary — turn 1 now spans fixture lines 2..10 (306.3k main + 4.4k;
+    // the sidechain round's 5.5k is excluded, main-chain only)
     expect(spends).toHaveLength(3);
-    expect(spends.map((s) => s.inputSide)).toEqual([316_200, 10_798, 102_320]);
-    expect(spends.map((s) => s.rounds)).toEqual([5, 2, 2]);
+    expect(spends.map((s) => s.inputSide)).toEqual([310_700, 10_798, 102_320]);
+    expect(spends.map((s) => s.rounds)).toEqual([4, 2, 2]);
   });
 
   it('sumTurnReread (renderer) matches the hook on the same requests', () => {
@@ -86,7 +94,34 @@ describe('turn accounting — golden parity across consumers', () => {
       .map((l) => flatten(JSON.parse(l)))
       .filter((m) => m.type === 'assistant');
     const reread = sumTurnReread(turn1Responses as never[]);
-    expect(reread.tokens).toBe(311_800);
-    expect(reread.requests).toBe(4);
+    expect(reread.tokens).toBe(306_300);
+    expect(reread.requests).toBe(3);
+  });
+
+  it('TurnBudgetDetector.feed agrees with analyzeTurn at every batch boundary', () => {
+    // live FileWatcher feeds new messages in arbitrary batches — the running
+    // total must equal the offline accounting after every prefix, batches of
+    // 1..5 exercise both single lines and multi-fragment requests
+    const msgs = lines.map((l) => flatten(JSON.parse(l))) as never[];
+    for (let end = 1; end <= msgs.length; end++) {
+      for (const batch of [1, 3, 5]) {
+        const det = new TurnBudgetDetector();
+        for (let i = 0; i < end; i += batch) {
+          det.feed('f', msgs.slice(i, Math.min(i + batch, end)), Number.MAX_SAFE_INTEGER);
+        }
+        const expected = analyzeTurn(lines.slice(0, end).reverse()).spent;
+        expect(det.currentTurnTotal('f')).toBe(expected);
+      }
+    }
+  });
+
+  it('the detector labels its incident with the turn number and start time', () => {
+    const msgs = lines.map((l) => flatten(JSON.parse(l))) as never[];
+    const det = new TurnBudgetDetector();
+    // budget small enough to cross on the first turn's first request
+    const incident = det.feed('f', msgs, 1);
+    expect(incident).not.toBeNull();
+    expect(incident?.turnNumber).toBe(1);
+    expect(incident?.turnStartTs).toBe(msgs[0].timestamp);
   });
 });

@@ -381,6 +381,8 @@ describe('TurnBudgetDetector', () => {
     expect(incident).toEqual({
       spent: 12_000_000,
       budget,
+      turnNumber: 0,
+      turnStartTs: undefined,
       toolUseId: 't-c',
       cwd: undefined,
       batchIndex: 0,
