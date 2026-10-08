@@ -4,6 +4,7 @@
  * Creates a flat chronological list of display items for the AI Group UI.
  */
 
+import { isTeammateRelayLine } from '@shared/turnAccounting';
 import { parseAllTeammateMessages } from '@shared/utils/teammateMessageParser';
 
 import { estimateTokens, formatToolInput, formatToolResult, toDate } from './aiGroupHelpers';
@@ -437,7 +438,9 @@ export function buildDisplayItemsFromMessages(
                 .join('')
             : '';
       const parsedBlocks = parseAllTeammateMessages(rawText);
-      if (parsedBlocks.length > 0) {
+      // cards only for pure relays; mixed content keeps its user text
+      // (subagent_input below) instead of dropping it — issue #59
+      if (parsedBlocks.length > 0 && isTeammateRelayLine(msg)) {
         for (const parsed of parsedBlocks) {
           displayItems.push({
             type: 'teammate_message',

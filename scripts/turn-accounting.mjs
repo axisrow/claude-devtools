@@ -60,9 +60,24 @@ export function lastAssistantTotalTokens(responses) {
   return 0;
 }
 
-/** Simplified teammate-message wrapper detection. */
+/** Complete <teammate-message ...>...</teammate-message> block — the exact
+ * regex the display parser (src/shared/utils/teammateMessageParser.ts)
+ * re-uses, so relay detection and card rendering cannot drift. */
+export const TEAMMATE_BLOCK_RE =
+  /<teammate-message\s+teammate_id="([^"]+)"([^>]*)>([\s\S]*?)<\/teammate-message>/g;
+
+/** Text minus every complete relay block (issue #59): whatever remains is
+ * user text, so mixed content stays a user message. */
+export function stripTeammateBlocks(t) {
+  return t.replace(new RegExp(TEAMMATE_BLOCK_RE.source, TEAMMATE_BLOCK_RE.flags), '');
+}
+
+/** Relay text = ONLY complete relay wrappers (plus whitespace). A prompt that
+ * merely starts with a wrapper (quote, trailing question) is user text —
+ * not a relay. */
 function isTeammateText(t) {
-  return t.startsWith('<teammate-message');
+  const trimmed = t.trim();
+  return trimmed !== '' && stripTeammateBlocks(trimmed).trim() === '';
 }
 
 /** System-output wrapper tags — a user line starting with one of these is
@@ -125,12 +140,13 @@ export function isUserChunkLine(m) {
 }
 
 /**
- * Teammate relay: a non-meta user line whose content is/contains a
- * <teammate-message ...> wrapper — inter-agent traffic. The single relay
- * definition: isUserChunkLine delegates its relay exclusion here, so the
- * two predicates cannot drift. Transcript turn input (isTranscriptTurnLine)
- * but NOT a hook-turn boundary (isUserChunkLine) — the relay bills to the
- * leader's turn (issue #55).
+ * Teammate relay: a non-meta user line whose content consists solely of
+ * complete <teammate-message ...> wrappers — inter-agent traffic. Mixed
+ * content (a relay block plus user text, issue #59) is a user message, so
+ * the user's words survive. The single relay definition: isUserChunkLine
+ * delegates its relay exclusion here, so the two predicates cannot drift.
+ * Transcript turn input (isTranscriptTurnLine) but NOT a hook-turn boundary
+ * (isUserChunkLine) — the relay bills to the leader's turn (issue #55).
  */
 export function isTeammateRelayLine(m) {
   if (m.type !== 'user' || m.isMeta === true) return false;
@@ -141,7 +157,9 @@ export function isTeammateRelayLine(m) {
       : Array.isArray(c)
         ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text)
         : [];
-  return texts.some((t) => isTeammateText(t.trim()));
+  // whole-content rule across blocks: a relay block next to user text keeps
+  // the line a user message
+  return isTeammateText(texts.join('\n'));
 }
 
 /**

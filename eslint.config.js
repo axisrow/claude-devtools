@@ -564,6 +564,7 @@ export default defineConfig([
                 'lastAssistantTotalTokens',
                 'readConfig',
                 'SYSTEM_OUTPUT_TAGS',
+                'TEAMMATE_BLOCK_RE',
               ],
             },
           ],
