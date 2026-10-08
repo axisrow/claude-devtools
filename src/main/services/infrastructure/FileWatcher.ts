@@ -109,7 +109,11 @@ function detectorIncidentToError(args: {
       budget.turnNumber > 0
         ? `turn ${budget.turnNumber}` +
           (budget.turnStartTs
-            ? ` (${new Date(budget.turnStartTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+            ? ` (${new Date(budget.turnStartTs).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              })})`
             : '')
         : 'current turn';
     return createDetectedError({
