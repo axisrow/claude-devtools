@@ -417,4 +417,40 @@ describe('TurnBudgetDetector', () => {
     const incident = det.feed('s', [big('r', 50_000)], 100_000);
     expect(incident?.spent).toBe(110_000);
   });
+
+  it('a teammate relay numbers like the chat chip but keeps the bucket flowing', () => {
+    const det = new TurnBudgetDetector();
+    const relay = {
+      type: 'user',
+      isMeta: false,
+      content: '<teammate-message teammate_id="a">yo</teammate-message>',
+      timestamp: '2026-01-01T10:05:00Z',
+    } as unknown as ParsedMessage;
+    // relay opens transcript turn 2 (a chat chip) without resetting spend:
+    // 6M before it + 6M after it crosses in the same bucket
+    const batch = [userTurn, big('a', 6_000_000), relay, big('b', 6_000_000)];
+    const incident = det.feed('s', batch, budget);
+    expect(incident?.turnNumber).toBe(2);
+    expect(incident?.turnStartTs).toBe('2026-01-01T10:05:00Z');
+    expect(incident?.spent).toBe(12_000_000);
+  });
+
+  it('a compaction resets the bucket but not the chat-facing number', () => {
+    const det = new TurnBudgetDetector();
+    const compact = {
+      type: 'user',
+      isCompactSummary: true,
+      isMeta: false,
+      content: 'summary of the conversation so far',
+    } as unknown as ParsedMessage;
+    expect(det.feed('s', [userTurn, big('a', 9_500_000)], budget)).toBeNull();
+    // compact drops the 9.5M and must NOT advance the number — the chat
+    // renders it as CompactBoundary, not a Turn chip
+    expect(det.feed('s', [compact, big('b', 1_000_000)], budget)).toBeNull();
+    const incident = det.feed('s', [big('c', 9_500_000)], budget);
+    expect(incident?.turnNumber).toBe(1);
+    // crossing spends the post-compact bucket only (b's 1M + c's 9.5M) —
+    // the pre-compact 9.5M is gone
+    expect(incident?.spent).toBe(10_500_000);
+  });
 });
