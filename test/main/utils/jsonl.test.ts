@@ -452,6 +452,71 @@ describe('jsonl', () => {
       }
     });
 
+    it('skips teammate relays when picking firstUserMessage', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const relay =
+          '<teammate-message teammate_id="a">hello</teammate-message>\nWhy is this tag in the log?';
+        const lines = [
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: { role: 'user', content: relay },
+            isMeta: false,
+          }),
+        ];
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        expect(result.firstUserMessage).toBeNull();
+      } finally {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
+
+    it('picks a later real user message when the session opens with a relay', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-relay2-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const relay =
+          '<teammate-message teammate_id="a">hello</teammate-message>\nWhy is this tag in the log?';
+        const lines = [
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-01-01T00:00:00.000Z',
+            message: { role: 'user', content: relay },
+            isMeta: false,
+          }),
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u2',
+            timestamp: '2026-01-01T00:00:05.000Z',
+            message: { role: 'user', content: 'the actual user question' },
+            isMeta: false,
+          }),
+        ];
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        expect(result.firstUserMessage?.text).toBe('the actual user question');
+      } finally {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
+
     it('sums total spend across all assistant usage in one pass', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-spend-'));
       try {

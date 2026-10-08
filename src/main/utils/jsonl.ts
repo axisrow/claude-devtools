@@ -559,6 +559,8 @@ export async function analyzeSessionFileMetadata(
 
     if (
       !firstUserMessage &&
+      // teammate relays (and system output/interruptions) must not become the preview
+      isParsedUserChunkMessage(parsed) &&
       entry.type === 'user' &&
       !('isMeta' in entry && entry.isMeta === true)
     ) {
