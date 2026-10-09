@@ -20,6 +20,7 @@ export {
   isTeammateRelayLine,
   isTranscriptTurnLine,
   isTurnBoundary,
+  isTurnNumberLine,
   isUserChunkLine,
   lastAssistantTotalTokens,
   SYSTEM_OUTPUT_TAGS,

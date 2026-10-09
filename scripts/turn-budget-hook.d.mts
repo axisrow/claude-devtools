@@ -47,6 +47,9 @@ export declare function isRealUserLine(m: AccountableMessage): boolean;
 /** Turn boundary: real user message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
+/** Which boundary consumes a turn number: real user messages only. */
+export declare function isTurnNumberLine(m: AccountableMessage): boolean;
+
 /** Main-chain assistant line — billed to the turn's re-read. */
 export declare function isMainChainAssistantLine(m: AccountableMessage): boolean;
 

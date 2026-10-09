@@ -206,6 +206,14 @@ export function isTurnBoundary(m) {
   return isUserChunkLine(m) || m.isCompactSummary === true;
 }
 
+/** Which boundary CONSUMES a turn number: real user messages only. A
+ * compaction marker resets the budget bucket (isTurnBoundary) but opens no
+ * turn — app parity: CompactChunk is a structural boundary, the post-compact
+ * segment keeps the current number until the next real user message. */
+export function isTurnNumberLine(m) {
+  return isUserChunkLine(m) && m.isCompactSummary !== true;
+}
+
 /** Main-chain assistant line — the only lines whose usage is billed to the
  * turn's re-read. Sidechain (subagent) rounds run in their own context and
  * synthetic lines carry no real request; the detector (loopDetection.ts)
