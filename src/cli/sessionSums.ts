@@ -19,6 +19,7 @@ import {
   splitSessionPath,
   turnVerdict,
 } from './analyzeSession';
+import { isDirectRun } from './args';
 
 interface RollupRound {
   index: number;
@@ -186,4 +187,6 @@ async function main(): Promise<void> {
   const sums = buildSums(ledger, findings, hookSpentByTurn(rawLines));
   console.log(JSON.stringify({ ...splitSessionPath(file), ...sums }, null, 2));
 }
-void main();
+if (isDirectRun(import.meta.url)) {
+  void main();
+}
