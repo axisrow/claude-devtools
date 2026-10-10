@@ -112,7 +112,7 @@ function detectorIncidentToError(args: {
             ? ` (${new Date(budget.turnStartTs).toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
-                hour12: false,
+                hourCycle: 'h23', // deterministic 24h — CI locale would print "06:46 AM"
               })})`
             : '')
         : 'current turn';
