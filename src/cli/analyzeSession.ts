@@ -1107,7 +1107,7 @@ function printTurnDeepDive(
   turnNo: number,
   opts: CliOpts
 ): void {
-  const turn = ledger.turns[turnNo - 1];
+  const turn = ledger.turns.find((t) => t.index === turnNo);
   if (!turn) {
     console.error(`no turn #${turnNo} (session has ${ledger.turns.length})`);
     process.exitCode = 1;
