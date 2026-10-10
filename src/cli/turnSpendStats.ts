@@ -123,10 +123,11 @@ async function auditFile(filePath: string): Promise<void> {
     return { ...m, usage: m.usage ?? inner?.usage, model: inner?.model, toolCalls: [] };
   });
 
-  // turn slices (1-based numbering, same as the detector's turnNumber):
+  // turn slices (1-based numbering, the ledger's canon — real user lines via
+  // isTurnNumberLine, the same set buildLedger numbers; NOT the bell's
+  // turnNumber, which transcript canon and teammate relays advance):
   // turn 1 opens at the FIRST boundary; metadata before it is not a turn.
-  // Numbering parity: only real user lines consume a number (isTurnNumberLine);
-  // a compaction marker splits the slice but prints the SAME bucket number.
+  // A compaction marker splits the slice but prints the SAME bucket number.
   const slices: string[][] = [];
   const sliceTurnNos: number[] = [];
   let cur: string[] = [];
