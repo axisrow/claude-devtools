@@ -1062,7 +1062,7 @@ export function resolveProjectDir(arg: string): string {
   return path.join(projectsRoot, encodePath(path.resolve(arg)));
 }
 
-function splitSessionPath(file: string): { projectId: string; sessionId: string } {
+export function splitSessionPath(file: string): { projectId: string; sessionId: string } {
   const rel = path.relative(getProjectsBasePath(), path.resolve(file));
   const [projectId, sessionId] = rel.split(path.sep);
   return { projectId, sessionId: sessionId ? extractSessionId(sessionId) : '' };
