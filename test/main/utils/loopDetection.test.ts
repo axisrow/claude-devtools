@@ -453,4 +453,20 @@ describe('TurnBudgetDetector', () => {
     // the pre-compact 9.5M is gone
     expect(incident?.spent).toBe(10_500_000);
   });
+
+  it('a sidechain user line opens no turn (subagent prompts are not chips)', () => {
+    const det = new TurnBudgetDetector();
+    const taskPrompt = {
+      type: 'user',
+      isMeta: false,
+      isSidechain: true,
+      content: 'find the parser bug',
+      timestamp: '2026-01-01T10:05:00Z',
+    } as unknown as ParsedMessage;
+    // app canon: only main-chain user lines are Turn chips — the Task
+    // subagent's opening prompt must not advance the number (relay axis is
+    // covered above: a relay DOES open a turn)
+    const incident = det.feed('s', [userTurn, taskPrompt, big('a', 12_000_000)], budget);
+    expect(incident?.turnNumber).toBe(1);
+  });
 });

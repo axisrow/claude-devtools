@@ -561,6 +561,7 @@ export default defineConfig([
                 'isTeammateRelayLine',
                 'isTranscriptTurnLine',
                 'isTurnBoundary',
+                'isTurnNumberLine',
                 'isUserChunkLine',
                 'lastAssistantTotalTokens',
                 'readConfig',

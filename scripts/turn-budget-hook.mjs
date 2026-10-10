@@ -51,6 +51,7 @@ import {
   isMainChainAssistantLine,
   isRealUserLine,
   isTurnBoundary,
+  isTurnNumberLine,
   lastAssistantTotalTokens,
 } from './turn-accounting.mjs';
 
@@ -63,6 +64,7 @@ export {
   isMainChainAssistantLine,
   isRealUserLine,
   isTurnBoundary,
+  isTurnNumberLine,
   lastAssistantTotalTokens,
 };
 

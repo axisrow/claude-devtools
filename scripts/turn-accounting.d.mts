@@ -68,6 +68,10 @@ export declare function isTranscriptTurnLine(m: AccountableMessage): boolean;
 /** Turn boundary: user-initiated message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
+/** Which boundary consumes a turn number: real user messages only (compact
+ * resets the bucket but opens no turn — app parity, CompactChunk). */
+export declare function isTurnNumberLine(m: AccountableMessage): boolean;
+
 /** Main-chain assistant line — the only lines billed to the turn's re-read
  * (sidechain/synthetic excluded; detector and panel see the same set). */
 export declare function isMainChainAssistantLine(m: AccountableMessage): boolean;

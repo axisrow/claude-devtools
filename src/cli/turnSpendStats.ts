@@ -21,6 +21,7 @@ import {
   inputSideTokens,
   isMainChainAssistantLine,
   isTurnBoundary,
+  isTurnNumberLine,
 } from '../../scripts/turn-budget-hook.mjs';
 
 import { takeFlagValue, wantsHelp } from './args';
@@ -122,11 +123,16 @@ async function auditFile(filePath: string): Promise<void> {
     return { ...m, usage: m.usage ?? inner?.usage, model: inner?.model, toolCalls: [] };
   });
 
-  // turn slices (1-based numbering, same as the detector's turnNumber):
-  // turn 1 opens at the FIRST boundary; metadata before it is not a turn
+  // turn slices (1-based numbering, the ledger's canon — real user lines via
+  // isTurnNumberLine, the same set buildLedger numbers; NOT the bell's
+  // turnNumber, which transcript canon and teammate relays advance):
+  // turn 1 opens at the FIRST boundary; metadata before it is not a turn.
+  // A compaction marker splits the slice but prints the SAME bucket number.
   const slices: string[][] = [];
+  const sliceTurnNos: number[] = [];
   let cur: string[] = [];
   let sawBoundary = false;
+  let turnNo = 0;
   for (const line of lines) {
     let m: Record<string, unknown> = {};
     try {
@@ -135,13 +141,20 @@ async function auditFile(filePath: string): Promise<void> {
       continue;
     }
     if (isTurnBoundary(m)) {
-      if (sawBoundary && cur.length) slices.push(cur);
+      if (sawBoundary && cur.length) {
+        slices.push(cur);
+        sliceTurnNos.push(turnNo);
+      }
       cur = [];
       sawBoundary = true;
     }
+    if (isTurnNumberLine(m)) turnNo += 1;
     if (sawBoundary) cur.push(line);
   }
-  if (cur.length) slices.push(cur);
+  if (cur.length) {
+    slices.push(cur);
+    sliceTurnNos.push(turnNo);
+  }
 
   // detector path (the live bell): line-by-line feed, exactly what FileWatcher
   // streams; snapshot each turn's running total right before its boundary resets
@@ -184,7 +197,7 @@ async function auditFile(filePath: string): Promise<void> {
       }
     })();
     console.log(
-      String(i + 1).padStart(4),
+      String(sliceTurnNos[i]).padStart(4),
       startTs.padEnd(24),
       fmtK(hook).padStart(11),
       fmtK(bell).padStart(10),

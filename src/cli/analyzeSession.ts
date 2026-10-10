@@ -9,6 +9,7 @@
  *   pnpm analyze:session --project <encoded-dir-or-name> --last [flags]
  * Flags:
  *   --rounds N                rounds table length (default 20)
+ *   --turn N                  deep-dive into turn N: verdict «цикл или длинный ход», findings, rounds
  *   --subagent-min-minutes N  slow-subagent threshold (default 5)
  *   --min-severity S          low | medium | high (default low = all)
  *   --breakdown               per-model token/cost breakdown
@@ -115,7 +116,9 @@ export type FindingType =
   | 'long_turn'
   | 'loop_streak'
   | 'stall_streak'
-  | 'wait_loop';
+  | 'wait_loop'
+  | 'cycle_motif'
+  | 'probe_no_progress';
 
 export interface Finding {
   type: FindingType;
@@ -426,6 +429,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     minTs = Math.min(minTs, msg.timestamp.getTime());
     maxTs = Math.max(maxTs, msg.timestamp.getTime());
 
+    if (msg.isCompactSummary) continue; // structural message — not a turn (app numbering, jsonl.ts:545)
     if (isParsedUserChunkMessage(msg)) {
       newTurn(msg.timestamp);
       continue;
@@ -736,6 +740,7 @@ export function computeFindings(
   }
 
   const order = { high: 0, medium: 1, low: 2 } as const;
+  findings.push(...detectCycleFindings(messages, ledger, results));
   findings.sort((a, b) => order[b.severity] - order[a.severity] || b.tokensWasted - a.tokensWasted);
   return findings;
 }
@@ -743,6 +748,187 @@ export function computeFindings(
 export function short(s: string, n: number): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   return flat.length <= n ? flat : `${flat.slice(0, n - 1)}…`;
+}
+
+// =============================================================================
+// Cycle detection — «цикл или длинный ход»
+// =============================================================================
+
+// ponytail: calibration knobs — tune after live runs on real sessions
+const CYCLE = { minLen: 3, maxLen: 5, minRepeats: 3 } as const;
+
+// Edit/Write results are "updated successfully" by construction — a repeated
+// successful mutation is not a probe; probes return DATA (Bash/Read/Grep/…)
+const MUTATING_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+
+/** first + last non-empty line — cheap discriminator (pytest tail, refusal
+ * reason); full texts differ in noise while meaning stays the same */
+// ponytail: upgrade to fuzzy compare if false positives show up
+function resultSignature(text: string): string {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // last line only — the verdict line (pytest tail, refusal summary); first
+  // lines are banners (config/vacancy echo) that differ across retries.
+  // Volatile ids (run uuids, hashes) are stripped — they differ per attempt.
+  return (lines[lines.length - 1] ?? '').replace(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+    '<id>'
+  );
+}
+
+interface CycleRound {
+  turnIndex: number;
+  contextSize: number;
+  timestamp: Date;
+  calls: { toolName: string; key: string; sig: string; tok: number }[];
+}
+
+/**
+ * Findings invisible to the streak/stall walks: a repeating SEQUENCE of
+ * distinct calls (edit → lint → test → battle run) where context keeps
+ * growing — diagnose-fix-verify churn. Plus the no-progress signal: a probe
+ * call re-run with an identical result signature. Called from
+ * computeFindings so every consumer (text + json) gets them.
+ */
+export function detectCycleFindings(
+  messages: ParsedMessage[],
+  ledger: SessionLedger,
+  results: Map<string, { content: string | unknown[]; isError: boolean }>
+): Finding[] {
+  const findings: Finding[] = [];
+  // same round source as buildLedger (dedup + filters), retry copies dropped
+  // on both sides — positional zip with ledger.rounds; drift → skip whole
+  // detection (ponytail: the lists have matched on every real session so far)
+  const retryCopies = getRetryCopyMessageIds(messages);
+  const msgs = deduplicateByRequestId(messages).filter(
+    (m) =>
+      m.type === 'assistant' &&
+      !m.isSidechain &&
+      !!m.usage &&
+      m.model !== '<synthetic>' &&
+      !retryCopies.has(m.uuid)
+  );
+  const ledgerRounds = ledger.rounds.filter((r) => !r.isRetryCopy);
+  if (msgs.length !== ledgerRounds.length) return findings;
+
+  const rounds: CycleRound[] = msgs.map((m, i) => ({
+    turnIndex: ledgerRounds[i].turnIndex,
+    contextSize: ledgerRounds[i].contextSize,
+    timestamp: ledgerRounds[i].timestamp,
+    calls: m.toolCalls.map((c) => {
+      const res = results.get(c.id);
+      const text = res ? resultText(res.content) : '';
+      return {
+        toolName: c.name,
+        key: bashStem(normalizeCallKey(c.name, c.input)),
+        sig: res ? resultSignature(text) : '',
+        tok: res ? estimateTokens(text) : 0,
+      };
+    }),
+  }));
+
+  const byTurn = new Map<number, CycleRound[]>();
+  for (const r of rounds) {
+    const list = byTurn.get(r.turnIndex);
+    if (list) list.push(r);
+    else byTurn.set(r.turnIndex, [r]);
+  }
+
+  for (const [turnIndex, rs] of byTurn) {
+    // motif = a window of L rounds repeating consecutively ≥ CYCLE.minRepeats;
+    // longest L wins, one pass at that L per turn (no re-scan of consumed
+    // regions at smaller L — same cycle, not a second finding)
+    for (let L = CYCLE.maxLen; L >= CYCLE.minLen; L--) {
+      let hit = false;
+      let i = 0;
+      while (i + L * CYCLE.minRepeats <= rs.length) {
+        let reps = 1;
+        const eq = (a: number, b: number): boolean => {
+          for (let k = 0; k < L; k++) {
+            if (
+              rs[a + k].calls.length !== rs[b + k].calls.length ||
+              rs[a + k].calls.some((c, j) => c.key !== rs[b + k].calls[j].key)
+            ) {
+              return false;
+            }
+          }
+          return true;
+        };
+        while (i + (reps + 1) * L <= rs.length && eq(i, i + reps * L)) reps += 1;
+        if (reps >= CYCLE.minRepeats) {
+          hit = true;
+          const motif = rs
+            .slice(i, i + L)
+            .map((r) => short(r.calls.map((c) => c.key).join('+') || '—', 24))
+            .join(' → ');
+          const wasted = rs.slice(i + L, i + reps * L).reduce((s, r) => s + r.contextSize, 0);
+          findings.push({
+            type: 'cycle_motif',
+            severity: reps >= 4 ? 'high' : 'medium',
+            tokensWasted: wasted,
+            turnIndex,
+            summary: `cycle: ${motif} — x${reps} repeats re-read ~${formatTokensCompact(wasted)} tok ${hhmm(rs[i].timestamp)}–${hhmm(rs[i + reps * L - 1].timestamp)}`,
+          });
+          i += reps * L;
+        } else {
+          i += 1;
+        }
+      }
+      if (hit) break;
+    }
+
+    // probe with the same result: same call key re-run, identical first+last
+    // line — the loop re-asked its question without learning anything
+    const byKey = new Map<string, { sig: string; ts: Date; tok: number }[]>();
+    for (const r of rs) {
+      for (const c of r.calls) {
+        if (!c.sig || MUTATING_TOOLS.has(c.toolName)) continue;
+        const list = byKey.get(c.key);
+        const entry = { sig: c.sig, ts: r.timestamp, tok: c.tok };
+        if (list) list.push(entry);
+        else byKey.set(c.key, [entry]);
+      }
+    }
+    for (const [key, list] of byKey) {
+      if (list.length < 2) continue;
+      let best = { len: 1, start: 0, end: 0 };
+      let run = 1;
+      for (let j = 1; j < list.length; j++) {
+        run = list[j].sig && list[j].sig === list[j - 1].sig ? run + 1 : 1;
+        if (run > best.len) best = { len: run, start: j - run + 1, end: j };
+      }
+      if (best.len < 2) continue;
+      const repeats = list.slice(best.start + 1, best.end + 1);
+      findings.push({
+        type: 'probe_no_progress',
+        severity: 'medium',
+        tokensWasted: repeats.reduce((s, e) => s + e.tok, 0),
+        turnIndex,
+        summary: `probe no progress: ${short(key, 60)} — same result x${best.len}: ${short(list[best.start].sig, 70)}`,
+      });
+    }
+  }
+  return findings;
+}
+
+export type TurnVerdict = 'cycle-churning' | 'cycle-progressing' | 'long-turn' | 'normal';
+
+/** «Цикл или длинный ход?» — the deep-dive verdict, pure function of findings
+ * + round stats. Churning beats progressing: same-result probes mean parts of
+ * the cycle stopped converging even if the motif is legitimate work. */
+export function turnVerdict(
+  findings: Finding[],
+  rounds: number,
+  activeMinutes: number
+): TurnVerdict {
+  const types = new Set(findings.map((f) => f.type));
+  if (types.has('probe_no_progress')) return 'cycle-churning';
+  if (types.has('cycle_motif')) return 'cycle-progressing';
+  // ponytail: 30 rounds is a working guess; activeMinutes reuses the long-turn knob
+  if (rounds >= 30 || activeMinutes >= WASTE_THRESHOLDS.longTurnActiveMinutes) return 'long-turn';
+  return 'normal';
 }
 
 // =============================================================================
@@ -762,6 +948,7 @@ interface CliOpts {
   noCost: boolean;
   since?: Date;
   until?: Date;
+  turn?: number;
   error?: string;
 }
 
@@ -786,6 +973,11 @@ export function parseArgs(argv: string[]): CliOpts {
     }
     if (a === '--rounds') {
       opts.rounds = parseInt(value, 10) || 20;
+      i = next;
+      continue;
+    }
+    if (a === '--turn') {
+      opts.turn = parseInt(value, 10) || undefined;
       i = next;
       continue;
     }
@@ -870,7 +1062,7 @@ export function resolveProjectDir(arg: string): string {
   return path.join(projectsRoot, encodePath(path.resolve(arg)));
 }
 
-function splitSessionPath(file: string): { projectId: string; sessionId: string } {
+export function splitSessionPath(file: string): { projectId: string; sessionId: string } {
   const rel = path.relative(getProjectsBasePath(), path.resolve(file));
   const [projectId, sessionId] = rel.split(path.sep);
   return { projectId, sessionId: sessionId ? extractSessionId(sessionId) : '' };
@@ -899,6 +1091,71 @@ const hhmm = (d: Date): string =>
   `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 export const dur = (ms: number): string =>
   `${Math.floor(ms / 3600000)}h ${String(Math.floor((ms % 3600000) / 60000)).padStart(2, '0')}m`;
+
+const VERDICT_LABEL: Record<TurnVerdict, string> = {
+  'cycle-churning':
+    'ЦИКЛ С ВРАЩЕНИЕМ — участки цикла крутятся без продвижения (проба возвращает тот же результат)',
+  'cycle-progressing': 'ЦИКЛ С ПРОДВИЖЕНИЕМ — diagnose-fix-verify, витки отвечают на вопросы',
+  'long-turn': 'ДЛИННЫЙ ХОД — много работы, повторяющихся последовательностей нет',
+  normal: 'ОБЫЧНЫЙ ХОД',
+};
+
+function printTurnDeepDive(
+  ledger: SessionLedger,
+  findings: Finding[],
+  messages: ParsedMessage[],
+  turnNo: number,
+  opts: CliOpts
+): void {
+  const turn = ledger.turns.find((t) => t.index === turnNo);
+  if (!turn) {
+    console.error(`no turn #${turnNo} (session has ${ledger.turns.length})`);
+    process.exitCode = 1;
+    return;
+  }
+  const rs = ledger.rounds.filter((r) => r.turnIndex === turnNo);
+  const tf = findings.filter((f) => f.turnIndex === turnNo);
+  const user = (() => {
+    let n = 0;
+    for (const m of messages) {
+      if (m.isCompactSummary) continue; // same numbering as buildLedger
+      if (isParsedUserChunkMessage(m) && ++n === turnNo) return m;
+    }
+    return null;
+  })();
+  const preview = user
+    ? short(typeof user.content === 'string' ? user.content : JSON.stringify(user.content), 110)
+    : '(no user text)';
+  const first = rs[0];
+  const last = rs[rs.length - 1];
+  const span = first ? last.timestamp.getTime() - turn.start.getTime() : 0;
+  const verdict = turnVerdict(tf, rs.length, turn.activeMinutes);
+
+  console.log(`=== TURN ${turnNo} ===`);
+  console.log(`user  : ${preview}`);
+  console.log(
+    `span  : ${dur(span)} wall, active ${turn.activeMinutes}m, ${rs.length} rounds, ${rs.reduce((s, r) => s + r.tools.length, 0)} tool calls`
+  );
+  if (first && last) {
+    console.log(
+      `ctx   : ${fmt(first.contextSize)} → ${fmt(last.contextSize)} (+${fmt(last.contextSize - first.contextSize)})`
+    );
+  }
+  console.log(`verdict: ${VERDICT_LABEL[verdict]}`);
+  console.log('findings:');
+  if (tf.length === 0) {
+    console.log('  (none)');
+  }
+  for (const f of tf) {
+    console.log(`  [${f.severity}] ${f.type}: ${f.summary}`);
+  }
+  console.log(`rounds (last ${Math.min(opts.rounds, rs.length)} of ${rs.length}):`);
+  for (const r of rs.slice(-opts.rounds)) {
+    console.log(
+      `  ${padL(String(r.index), 4)} ${pad(hhmm(r.timestamp), 6)} ${padL(fmt(r.contextSize), 9)} ${padL((r.contextDelta >= 0 ? '+' : '') + fmt(r.contextDelta), 9)}  ${short(r.tools.join(','), 48)}`
+    );
+  }
+}
 
 function printReport(
   file: string,
@@ -1034,6 +1291,7 @@ async function main(): Promise<void> {
         '',
         'flags:',
         '  --rounds N                rounds table length (default 20)',
+        '  --turn N                  deep-dive into turn N: verdict «цикл или длинный ход», findings, rounds',
         '  --subagent-min-minutes N  slow-subagent threshold in minutes (default 5)',
         '  --min-severity S          low | medium | high (default low = all)',
         '  --breakdown               per-model token/cost breakdown',
@@ -1086,6 +1344,10 @@ async function main(): Promise<void> {
   const messages = await parseJsonlFile(sessionFile);
   const ledger = filterLedgerByDate(buildLedger(messages), opts.since, opts.until);
   const findings = computeFindings(messages, ledger, opts.since, opts.until);
+  if (opts.turn) {
+    printTurnDeepDive(ledger, findings, messages, opts.turn, opts);
+    return;
+  }
 
   let subagents: Process[] = [];
   try {
