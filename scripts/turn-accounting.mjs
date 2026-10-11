@@ -88,6 +88,9 @@ export const SYSTEM_OUTPUT_TAGS = [
   '<local-command-stdout>',
   '<local-command-caveat>',
   '<system-reminder>',
+  // background task wake-ups: Claude Code inserts them as non-meta user lines
+  // (promptSource: "system", turnOrigin: "task_notification") — never user input
+  '<task-notification>',
 ];
 
 /**
