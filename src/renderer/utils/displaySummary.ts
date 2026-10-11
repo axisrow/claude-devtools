@@ -26,6 +26,7 @@ export function buildSummary(items: AIGroupDisplayItem[]): string {
     subagent: 0,
     slash: 0,
     teammate_message: 0,
+    task_notification: 0,
     subagent_input: 0,
     compact_boundary: 0,
   };
