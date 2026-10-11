@@ -200,12 +200,15 @@ export function isRealUserLine(m) {
   return false;
 }
 
-/** Turn boundary: a user-initiated message (system output and teammate
- * relays don't count) — or a compaction marker (the post-compact context
- * starts fresh, pre-compact spend must not count). The calibration CLI
- * (src/cli/turnSpendStats.ts) imports this exact predicate so both
- * accountings cannot drift. */
+/** Turn boundary: a user-initiated message (system output, teammate
+ * relays and sidechain lines don't count — an inline subagent prompt is
+ * the subagent's own context, the panel never sees it, so hook and bell
+ * must not restart the turn on it, #98) — or a compaction marker (the
+ * post-compact context starts fresh, pre-compact spend must not count).
+ * The calibration CLI (src/cli/turnSpendStats.ts) imports this exact
+ * predicate so both accountings cannot drift. */
 export function isTurnBoundary(m) {
+  if (m.isSidechain === true) return false;
   return isUserChunkLine(m) || m.isCompactSummary === true;
 }
 
