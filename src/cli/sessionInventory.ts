@@ -25,6 +25,7 @@ import {
   normalizeDriveLetter,
   translateWslMountPath,
 } from '@main/utils/pathDecoder';
+import { billedRequestKey } from '@shared/turnAccounting';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -67,7 +68,7 @@ interface ScanEntry {
   isSidechain?: boolean;
   isMeta?: boolean;
   cwd?: string;
-  message?: { model?: string; usage?: RawUsage; content?: unknown };
+  message?: { id?: string; model?: string; usage?: RawUsage; content?: unknown };
 }
 
 function mergeUsage(a: RawUsage, b: RawUsage): RawUsage {
@@ -232,10 +233,11 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     ) {
       // API time: gap to the previous main-chain usage line, capped — same
       // accounting as turnActiveMinutes, hours of silence cost zero. Streaming
-      // snapshots of an already-seen requestId add no gap (analyze:session keeps
+      // snapshots of an already-seen request add no gap (analyze:session keeps
       // one round per request, anchored at the last line) but still advance the
       // anchor, so the next gap starts from the newest line of the request.
-      const snapshot = e.requestId !== undefined && usageByRequestId.has(e.requestId);
+      const billedKey = billedRequestKey(e);
+      const snapshot = billedKey !== undefined && usageByRequestId.has(billedKey);
       if (prevUsageTs !== null && !snapshot) {
         const gap = Math.min(Math.max(ts - prevUsageTs, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
         activeMs += gap;
@@ -245,9 +247,12 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       if (e.message.model) models.add(e.message.model);
       if (e.message.usage.cache_creation_input_tokens) sawWrite = true;
       else if (e.message.usage.cache_read_input_tokens) sawRead = true;
-      // streaming writes several entries per request — the last one has final counts
-      if (e.requestId) {
-        usageByRequestId.set(e.requestId, {
+      // one billed request = one entry — keyed by billedRequestKey like the
+      // sidebar and analyze:session (last line wins: GLM proxy fragments
+      // repeat message.id with full usage; streaming snapshots keep the
+      // final line's counts). Keyless lines have no identity — per-model merge.
+      if (billedKey !== undefined) {
+        usageByRequestId.set(billedKey, {
           model: e.message.model ?? 'unknown',
           usage: e.message.usage,
         });

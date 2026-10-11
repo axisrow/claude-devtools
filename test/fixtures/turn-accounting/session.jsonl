@@ -18,3 +18,6 @@
 {"type":"assistant","requestId":"req_g","message":{"id":"msg_g","content":[],"usage":{"input_tokens":101000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
 {"type":"user","message":{"role":"user","content":"turn 4 prompt"}}
 {"type":"assistant","requestId":"req_h","message":{"id":"msg_h","content":[],"usage":{"input_tokens":55000,"cache_read_input_tokens":55000,"cache_creation_input_tokens":0,"output_tokens":700}}}
+{"type":"user","isMeta":false,"message":{"role":"user","content":"turn 5 prompt"}}
+{"type":"assistant","message":{"id":"msg_i","content":[{"type":"text","text":"frag 1"}],"usage":{"input_tokens":600,"cache_read_input_tokens":6000,"cache_creation_input_tokens":0,"output_tokens":20}}}
+{"type":"assistant","message":{"id":"msg_i","content":[{"type":"text","text":"frag 2"}],"usage":{"input_tokens":600,"cache_read_input_tokens":6000,"cache_creation_input_tokens":0,"output_tokens":40}}}
