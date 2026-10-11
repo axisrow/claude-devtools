@@ -127,6 +127,40 @@ describe('normalizeCallKey', () => {
     );
   });
 
+  it('distinguishes different Read slices of one file (#90)', () => {
+    const base = { file_path: '/a' };
+    expect(normalizeCallKey('Read', base)).not.toBe(normalizeCallKey('Read', { ...base, offset: 100 }));
+    expect(normalizeCallKey('Read', { ...base, offset: 100 })).not.toBe(
+      normalizeCallKey('Read', { ...base, offset: 200 })
+    );
+    expect(normalizeCallKey('Read', { ...base, limit: 50 })).not.toBe(
+      normalizeCallKey('Read', { ...base, limit: 100 })
+    );
+  });
+
+  it('keys file mutations by their content: different edits are not duplicates (#90)', () => {
+    expect(
+      normalizeCallKey('Edit', { file_path: '/a', old_string: 'x', new_string: 'y' })
+    ).not.toBe(normalizeCallKey('Edit', { file_path: '/a', old_string: 'x', new_string: 'z' }));
+    expect(
+      normalizeCallKey('Edit', { file_path: '/a', old_string: 'x', new_string: 'y' })
+    ).not.toBe(normalizeCallKey('Edit', { file_path: '/a', old_string: 'w', new_string: 'y' }));
+    expect(normalizeCallKey('Write', { file_path: '/a', content: 'one' })).not.toBe(
+      normalizeCallKey('Write', { file_path: '/a', content: 'two' })
+    );
+    expect(
+      normalizeCallKey('NotebookEdit', { file_path: '/a', new_source: 'a' })
+    ).not.toBe(normalizeCallKey('NotebookEdit', { file_path: '/a', new_source: 'b' }));
+  });
+
+  it('still collapses an identical mutation to the same key (#90)', () => {
+    const edit = { file_path: '/a', old_string: 'x', new_string: 'y' };
+    expect(normalizeCallKey('Edit', edit)).toBe(normalizeCallKey('Edit', { ...edit }));
+    expect(normalizeCallKey('Write', { file_path: '/a', content: 'same' })).toBe(
+      normalizeCallKey('Write', { file_path: '/a', content: 'same' })
+    );
+  });
+
   it('keeps nested object inputs distinct in the default branch', () => {
     expect(normalizeCallKey('TodoWrite', { todos: [{ content: 'a' }] })).not.toBe(
       normalizeCallKey('TodoWrite', { todos: [{ content: 'b' }] })
@@ -661,6 +695,28 @@ describe('long turns and loop streaks', () => {
       (f) => f.type === 'loop_streak'
     );
     expect(streaks).toHaveLength(0); // the copy's call is skipped from the walk
+  });
+
+  it('successive different edits of one file are edits, not a loop (#90)', () => {
+    const edit = (id: string, to: string) => ({
+      id,
+      name: 'Edit',
+      input: { file_path: '/plan.md', old_string: `old-${to}`, new_string: `new-${to}` },
+      isTask: false,
+    });
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [edit('e1', 'a'), edit('e2', 'b'), edit('e3', 'c')],
+      }),
+      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('e1'), ok('e2'), ok('e3')] }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.filter((f) => f.type === 'loop_streak')).toHaveLength(0);
+    expect(findings.filter((f) => f.type === 'duplicate_call')).toHaveLength(0);
   });
 
   it('a dense turn (gaps under the idle cap) is flagged long_turn', () => {
