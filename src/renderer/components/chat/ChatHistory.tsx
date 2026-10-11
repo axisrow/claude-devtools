@@ -512,7 +512,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
         const targetGroupId = targetItem.group.id;
         await ensureGroupVisible(targetGroupId);
 
-        // Set group + tool highlight immediately
+        // Set group + tool highlight immediately; upstream's setting keeps the
+        // group expanded so the tool element actually renders in the DOM
+        if (useStore.getState().appConfig?.display?.keepContextNavExpanded) {
+          expandAIGroup(targetGroupId);
+        }
         setHighlightedGroupId(targetGroupId);
         setIsNavigationHighlight(true);
         setContextNavToolUseId(toolUseId);
@@ -545,7 +549,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, setHighlightedGroupId, expandAIGroup]
   );
 
   // Scroll to current search result when it changes

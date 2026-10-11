@@ -157,6 +157,9 @@ export const LastOutputDisplay = ({
               Hook
             </span>
           )}
+          <div className="ml-auto">
+            <CopyButton text={lastOutput.toolResult} inline />
+          </div>
         </div>
 
         {/* Content */}

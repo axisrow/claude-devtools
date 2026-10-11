@@ -193,6 +193,7 @@ export interface DisplayConfig {
   showTimestamps: boolean;
   compactMode: boolean;
   syntaxHighlighting: boolean;
+  keepContextNavExpanded: boolean;
 }
 
 export interface SessionsConfig {
@@ -265,6 +266,7 @@ const DEFAULT_CONFIG: AppConfig = {
     showTimestamps: true,
     compactMode: false,
     syntaxHighlighting: true,
+    keepContextNavExpanded: false,
   },
   sessions: {
     pinnedSessions: {},

@@ -150,6 +150,7 @@ export function createMockElectronAPI(): MockElectronAPI {
           showTimestamps: true,
           compactMode: false,
           syntaxHighlighting: true,
+          keepContextNavExpanded: false,
         },
         sessions: {
           pinnedSessions: {},
