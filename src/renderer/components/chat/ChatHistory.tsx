@@ -439,6 +439,18 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
           behavior: 'smooth',
           block: opts?.flashHeader ? 'start' : 'center',
         });
+        // Oversized groups: 'center' puts the header (burn pills, highlight)
+        // above the viewport where the 2s highlight dies unseen (#106) —
+        // realign the group top at the container top, below the sticky button.
+        const container = scrollContainerRef.current;
+        if (container && element.offsetHeight > container.clientHeight) {
+          const top =
+            element.getBoundingClientRect().top -
+            container.getBoundingClientRect().top +
+            container.scrollTop -
+            STICKY_BUTTON_OFFSET;
+          container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+        }
         setHighlightedGroupId(targetGroupId);
         setIsNavigationHighlight(true);
         if (opts?.flashHeader) {
@@ -460,7 +472,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, expandAIGroup, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, expandAIGroup, setHighlightedGroupId, STICKY_BUTTON_OFFSET]
   );
 
   // Handler to navigate to the user message group preceding the AI group with this id
