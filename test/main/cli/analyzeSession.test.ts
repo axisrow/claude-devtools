@@ -581,16 +581,35 @@ describe('long turns and loop streaks', () => {
         type: 'assistant',
         model: 'm1',
         usage: usage(10, 0, 0, 1),
-        toolCalls: [call('a1'), call('a2'), call('a3')],
+        toolCalls: [call('a1'), call('a2'), call('a3'), call('a4')],
       }),
-      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('a1'), ok('a2'), ok('a3')] }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [ok('a1'), ok('a2'), ok('a3'), ok('a4')],
+      }),
     ];
     const findings = computeFindings(messages, buildLedger(messages));
     const streak = findings.find((f) => f.type === 'loop_streak');
     expect(streak).toBeDefined();
-    expect(streak?.severity).toBe('medium'); // x3 — not yet a hang
-    expect(streak?.summary).toContain('x3 back-to-back (no-op loop)');
-    expect(streak?.tokensWasted).toBe(2 * estimateTokens('ok')); // repeats only
+    expect(streak?.severity).toBe('medium'); // x4 — the shared LOOP_MIN_STREAK gate, high is x5+
+    expect(streak?.summary).toContain('x4 back-to-back (no-op loop)');
+    expect(streak?.tokensWasted).toBe(3 * estimateTokens('ok')); // repeats only
+  });
+
+  it('a 2-call series stays below the shared loop gate', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [call('a1'), call('a2')],
+      }),
+      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('a1'), ok('a2')] }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.filter((f) => f.type === 'loop_streak')).toHaveLength(0); // legit iteration
   });
 
   it('a streak where every result is an error is an env loop', () => {

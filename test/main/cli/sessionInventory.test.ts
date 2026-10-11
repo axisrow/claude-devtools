@@ -216,12 +216,16 @@ describe('scanSessionFile tokensByModel', () => {
           },
         });
       const lines = [
-        // one stem, three calls: two exact + one piped variant (merged by stem)
+        // one stem, four calls: three exact + one piped variant (merged by stem)
         usageLine('a1', '2026-09-20T10:00:00Z', 'r1', { id: 't1', command: 'git show abc' }),
         usageLine('a2', '2026-09-20T10:01:00Z', 'r1', { id: 't2', command: 'git show abc' }),
         usageLine('a3', '2026-09-20T10:02:00Z', undefined, {
           id: 't3',
           command: 'git show abc | wc -l',
+        }),
+        usageLine('a6', '2026-09-20T10:02:30Z', undefined, {
+          id: 't4',
+          command: 'git show abc | head -5',
         }),
         // streaming snapshot: same requestId + same toolUseId → counted once
         usageLine('a4', '2026-09-20T10:03:00Z', 'r9', { id: 'd1', command: 'ls -la' }),
@@ -229,9 +233,9 @@ describe('scanSessionFile tokensByModel', () => {
       ];
       await writeFile(file, lines.join('\n'));
       const entry = await scanSessionFile(file);
-      // a1,a2,a3 share one stem back-to-back → one cycle of 3
+      // a1,a2,a3,a6 share one stem back-to-back → one cycle of 4 (the shared LOOP gate)
       expect(entry?.cycles).toEqual([
-        { key: 'Bash|git show abc', count: 3, startTs: '2026-09-20T10:00:00Z', toolUseId: 't3' },
+        { key: 'Bash|git show abc', count: 4, startTs: '2026-09-20T10:00:00Z', toolUseId: 't4' },
       ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -388,7 +392,7 @@ describe('scanSessionFile tokensByModel', () => {
             content: [{ type: 'tool_use', id: uuid, name: 'Bash', input: { command } }],
           },
         });
-      // A,A,B,A,A,A — repeat(A)=5 but the longest back-to-back run is 3
+      // A,A,B,A,A,A,A — repeat(A)=6 but the longest back-to-back run is 4
       const lines = [
         line('a1', 0, 'probe one'),
         line('a2', 1, 'probe one'),
@@ -396,12 +400,13 @@ describe('scanSessionFile tokensByModel', () => {
         line('a4', 3, 'probe one'),
         line('a5', 4, 'probe one'),
         line('a6', 5, 'probe one'),
+        line('a7', 6, 'probe one'),
       ];
       await writeFile(file, lines.join('\n'));
       const entry = await scanSessionFile(file);
-      // A appears 5 times total, but only its 3-run qualifies as a cycle
+      // A appears 6 times total, but only its 4-run qualifies as a cycle
       expect(entry?.cycles).toEqual([
-        { key: 'Bash|probe one', count: 3, startTs: '2026-09-20T10:03:00Z', toolUseId: 'a6' },
+        { key: 'Bash|probe one', count: 4, startTs: '2026-09-20T10:03:00Z', toolUseId: 'a7' },
       ]);
     } finally {
       await rm(dir, { recursive: true, force: true });

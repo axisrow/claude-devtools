@@ -102,21 +102,29 @@ function lastStats(items: ChatItem[]): Map<string, ContextStats> {
 }
 
 describe('contextTracker loop category', () => {
-  it('buckets the 2nd identical call into loop, first stays in tool-output', () => {
+  it('buckets the 4th identical call into loop, earlier ones stay in tool-output', () => {
     const items = [
       userGroup(),
       aiGroup(
         'ai-0',
         0,
-        [...toolCall('t1', '/src/a.ts', 5000), ...toolCall('t2', '/src/a.ts', 5000)],
-        // one round carrying both calls bills the loop exactly once
-        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2'])]
+        [
+          ...toolCall('t1', '/src/a.ts', 5000),
+          ...toolCall('t2', '/src/a.ts', 5000),
+          ...toolCall('t3', '/src/a.ts', 5000),
+          ...toolCall('t4', '/src/a.ts', 5000),
+        ],
+        // one round carrying all four calls bills the loop exactly once
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2', 't3', 't4'])]
       ),
     ];
 
     const stats = lastStats(items).get('ai-0');
     expect(stats).toBeDefined();
+    // the whole round bills into loop (its 4th call is the run's first repeat);
+    // earlier calls of the series are legitimate work — tool-output
     expect(stats!.tokensByCategory.loop).toBe(60200);
+    expect(stats!.tokensByCategory.toolOutputs).toBeGreaterThan(0);
 
     const loopInj = stats!.newInjections.find((inj) => inj.category === 'loop');
     expect(loopInj).toBeDefined();
@@ -124,9 +132,28 @@ describe('contextTracker loop category', () => {
       expect(loopInj.breakdown).toHaveLength(1);
       expect(loopInj.breakdown[0].key).toBe('Read|/src/a.ts');
       expect(loopInj.breakdown[0].count).toBe(1);
-      expect(loopInj.breakdown[0].toolUseId).toBe('t2');
+      expect(loopInj.breakdown[0].toolUseId).toBe('t4');
       expect(loopInj.breakdown[0].tokenCount).toBe(60200);
     }
+  });
+
+  it('a 2-call series stays below the shared loop gate (legit iteration)', () => {
+    const items = [
+      userGroup(),
+      aiGroup(
+        'ai-0',
+        0,
+        [...toolCall('t1', '/src/a.ts', 5000), ...toolCall('t2', '/src/a.ts', 5000)],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2'])]
+      ),
+    ];
+
+    const stats = lastStats(items).get('ai-0');
+    expect(stats).toBeDefined();
+    // below LOOP_MIN_STREAK — the one gate shared with the CLI and the bell:
+    // nothing moves to loop, both calls stay tracked as tool output
+    expect(stats!.tokensByCategory.loop).toBe(0);
+    expect(stats!.tokensByCategory.toolOutputs).toBeGreaterThan(0);
   });
 
   it('resets the streak when the key changes', () => {
@@ -140,14 +167,17 @@ describe('contextTracker loop category', () => {
           ...toolCall('t2', '/src/b.ts', 1000),
           ...toolCall('t3', '/src/a.ts', 1000),
           ...toolCall('t4', '/src/a.ts', 1000),
+          ...toolCall('t5', '/src/a.ts', 1000),
+          ...toolCall('t6', '/src/a.ts', 1000),
         ],
-        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t4'])]
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t6'])]
       ),
     ];
 
     const stats = lastStats(items).get('ai-0');
     expect(stats).toBeDefined();
-    // only t4 is a repeat (t1->t2->t3 breaks the series)
+    // t1->t2 breaks the series; the a-run restarts at t3 and only t6
+    // (its 4th call) crosses the shared loop gate
     expect(stats!.accumulatedCounts.loop).toBe(1);
     expect(stats!.tokensByCategory.loop).toBe(60200);
   });
@@ -159,8 +189,12 @@ describe('contextTracker loop category', () => {
       aiGroup(
         'ai-1',
         1,
-        [...toolCall('t2', '/src/a.ts', 1000)],
-        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t2'])]
+        [
+          ...toolCall('t2', '/src/a.ts', 1000),
+          ...toolCall('t3', '/src/a.ts', 1000),
+          ...toolCall('t4', '/src/a.ts', 1000),
+        ],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t2', 't3', 't4'])]
       ),
     ];
 
@@ -168,6 +202,7 @@ describe('contextTracker loop category', () => {
     const first = statsMap.get('ai-0');
     const second = statsMap.get('ai-1');
     expect(first!.tokensByCategory.loop).toBe(0);
+    // the run crosses the gate inside ai-1 (4th call of the series)
     expect(second!.tokensByCategory.loop).toBeGreaterThan(0);
   });
 });
@@ -389,25 +424,28 @@ describe('contextTracker compaction reset', () => {
       aiGroup(
         'ai-0',
         0,
-        [...toolCall('t1', '/src/a.ts', 5000), ...toolCall('t2', '/src/a.ts', 5000)],
-        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2'])]
+        [
+          ...toolCall('t1', '/src/a.ts', 5000),
+          ...toolCall('t2', '/src/a.ts', 5000),
+          ...toolCall('t3', '/src/a.ts', 5000),
+        ],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t1', 't2', 't3'])]
       ),
       compactItem(),
       userGroup(),
       aiGroup(
         'ai-1',
         0,
-        [...toolCall('t3', '/src/a.ts', 5000), ...toolCall('t4', '/src/a.ts', 5000)],
-        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t3', 't4'])]
+        [...toolCall('t4', '/src/a.ts', 5000)],
+        [assistantMsg({ input: 10000, cacheRead: 50000, output: 200 }, ['t4'])]
       ),
     ];
 
     const stats = lastStats(items).get('ai-1');
     expect(stats).toBeDefined();
-    // without the reset this would be the 3rd+4th occurrence of the same key
-    // (loop = 2 entries); with the reset the streak restarts: only the 2nd
-    // call of the new phase loops — 60.2k, not 120.4k
-    expect(stats!.tokensByCategory.loop).toBe(60_200);
+    // without the reset t4 would be the 4th occurrence of the key and would
+    // cross the shared gate; with the reset the streak restarts at 1 — no loop
+    expect(stats!.tokensByCategory.loop).toBe(0);
   });
 });
 
