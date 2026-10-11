@@ -54,8 +54,11 @@ export function normalizeCallKey(name: string, input: Record<string, unknown>): 
       const delta = `${asText(input.old_string)}→${asText(input.new_string)}`;
       return `Edit|${asText(input.file_path)}|${fnv1a(delta)}`;
     }
-    case 'NotebookEdit':
-      return `NotebookEdit|${asText(input.file_path)}|${fnv1a(asText(input.new_source))}`;
+    case 'NotebookEdit': {
+      // the tool's real input field is notebook_path (toolSummaryHelpers); ?? file_path
+      // keeps hand-built inputs keyable
+      return `NotebookEdit|${asText(input.notebook_path ?? input.file_path)}|${fnv1a(asText(input.new_source))}`;
+    }
     case 'Grep':
     case 'Glob':
       return `${name}|${asText(input.pattern)}|${asText(input.path)}`;

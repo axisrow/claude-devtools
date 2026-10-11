@@ -129,7 +129,9 @@ describe('normalizeCallKey', () => {
 
   it('distinguishes different Read slices of one file (#90)', () => {
     const base = { file_path: '/a' };
-    expect(normalizeCallKey('Read', base)).not.toBe(normalizeCallKey('Read', { ...base, offset: 100 }));
+    expect(normalizeCallKey('Read', base)).not.toBe(
+      normalizeCallKey('Read', { ...base, offset: 100 })
+    );
     expect(normalizeCallKey('Read', { ...base, offset: 100 })).not.toBe(
       normalizeCallKey('Read', { ...base, offset: 200 })
     );
@@ -148,9 +150,12 @@ describe('normalizeCallKey', () => {
     expect(normalizeCallKey('Write', { file_path: '/a', content: 'one' })).not.toBe(
       normalizeCallKey('Write', { file_path: '/a', content: 'two' })
     );
-    expect(
-      normalizeCallKey('NotebookEdit', { file_path: '/a', new_source: 'a' })
-    ).not.toBe(normalizeCallKey('NotebookEdit', { file_path: '/a', new_source: 'b' }));
+    expect(normalizeCallKey('NotebookEdit', { notebook_path: '/a', new_source: 'a' })).not.toBe(
+      normalizeCallKey('NotebookEdit', { notebook_path: '/a', new_source: 'b' })
+    );
+    expect(normalizeCallKey('NotebookEdit', { notebook_path: '/a', new_source: 'a' })).not.toBe(
+      normalizeCallKey('NotebookEdit', { notebook_path: '/b', new_source: 'a' })
+    );
   });
 
   it('still collapses an identical mutation to the same key (#90)', () => {
