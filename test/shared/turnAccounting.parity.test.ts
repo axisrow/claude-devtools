@@ -8,12 +8,12 @@
  *  - renderer sumTurnReread (src/renderer/utils/contextTracker.ts)
  *
  * The fixture pins: GLM stream fragments (same requestId, full usage each),
- * Claude stream snapshots (same requestId, growing output), a keyless
- * assistant line (own request), a sidechain round (excluded — main-chain
- * only accounting everywhere), a ghost line WITHOUT usage (skipped), junk
- * usage fields (ignored), and all the non-boundary user-line shapes
- * (teammate, interrupt, isMeta tool_result) plus the current boundary canon
- * (<local-command-stdout> IS a boundary).
+ * GLM fragments WITHOUT requestId sharing one message.id (issue #95 — billed
+ * once via billedRequestKey), a keyless assistant line (own request), a
+ * sidechain round (excluded — main-chain only accounting everywhere), a ghost
+ * line WITHOUT usage (skipped), junk usage fields (ignored), and all the
+ * non-boundary user-line shapes (teammate, interrupt, isMeta tool_result) plus
+ * the current boundary canon (<local-command-stdout> IS a boundary).
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -68,13 +68,15 @@ describe('turn accounting — golden parity across consumers', () => {
     const spends = state.spends as { inputSide: number; rounds: number }[];
 
     // the walk leaves the LAST turn in state.current (no EOF flush) —
-    // analyzeTurn scanning newest-first must agree with exactly that turn
-    expect(analyzeTurn([...lines].reverse())).toEqual({ spent: 110_000, boundaryFound: true });
-    expect(state.current as { inputSide: number } | null).toMatchObject({ inputSide: 110_000 });
-    expect(spends[spends.length - 1].inputSide).toBe(102_320);
+    // analyzeTurn scanning newest-first must agree with exactly that turn;
+    // turn 5 = GLM fragments WITHOUT requestId, one message.id (issue #95):
+    // billed once (6.6k), not twice
+    expect(analyzeTurn([...lines].reverse())).toEqual({ spent: 6_600, boundaryFound: true });
+    expect(state.current as { inputSide: number } | null).toMatchObject({ inputSide: 6_600 });
+    expect(spends[spends.length - 1].inputSide).toBe(110_000);
   });
 
-  it('pins the fixture numbers: 3 turns — stdout no longer splits turns', () => {
+  it('pins the fixture numbers: 4 turns — stdout no longer splits turns', () => {
     const state = mkState();
     for (const line of lines) feedLine(line, state);
     const spends = state.spends as { inputSide: number; rounds: number }[];
@@ -82,9 +84,12 @@ describe('turn accounting — golden parity across consumers', () => {
     // canonical boundary: <local-command-stdout> is system output, NOT a turn
     // boundary — turn 1 now spans fixture lines 2..10 (306.3k main + 4.4k;
     // the sidechain round's 5.5k is excluded, main-chain only)
-    expect(spends).toHaveLength(3);
-    expect(spends.map((s) => s.inputSide)).toEqual([310_700, 10_798, 102_320]);
-    expect(spends.map((s) => s.rounds)).toEqual([4, 2, 2]);
+    // turn 5 (issue #95): GLM fragments WITHOUT requestId, one message.id —
+    // one round, billed once. It stays unflushed in state.current (no EOF
+    // flush), so spends ends with turn 4 (110k), NOT turn 5.
+    expect(spends).toHaveLength(4);
+    expect(spends.map((s) => s.inputSide)).toEqual([310_700, 10_798, 102_320, 110_000]);
+    expect(spends.map((s) => s.rounds)).toEqual([4, 2, 2, 1]);
   });
 
   it('sumTurnReread (renderer) matches the hook on the same requests', () => {

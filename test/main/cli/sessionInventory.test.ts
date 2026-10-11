@@ -9,8 +9,67 @@ import * as path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
+import { buildLedger } from '../../../src/cli/analyzeSession';
 import { inDateRange, parseDayBound } from '../../../src/cli/args';
 import { parseInventoryArgs, scanSessionFile } from '../../../src/cli/sessionInventory';
+import { analyzeSessionFileMetadata, parseJsonlFile } from '../../../src/main/utils/jsonl';
+
+describe('GLM fragment request without requestId (issue #95)', () => {
+  // proxy (GLM via router) writes one API request as several JSONL lines with
+  // one message.id and full usage on each — all three consumers must bill it once
+  it('bills a multi-line request with one message.id once in every consumer', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-glm-'));
+    try {
+      const file = path.join(dir, 'session-glm.jsonl');
+      const frag = (uuid: string, ts: string, text: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          message: {
+            id: 'msg_A',
+            model: 'glm-5',
+            content: [{ type: 'text', text }],
+            usage: {
+              input_tokens: 0,
+              cache_read_input_tokens: 100_000,
+              cache_creation_input_tokens: 0,
+              output_tokens: 50,
+            },
+          },
+        });
+      const lines = [
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-10-01T07:00:00Z',
+          message: { role: 'user', content: 'go' },
+        }),
+        frag('a1', '2026-10-01T07:00:20Z', 'часть 1'),
+        frag('a2', '2026-10-01T07:00:40Z', 'часть 2'),
+      ];
+      await writeFile(file, lines.join('\n') + '\n');
+
+      const sidebar = (await analyzeSessionFileMetadata(file)).totalTokens;
+      const totals = buildLedger(await parseJsonlFile(file)).totals;
+      const ledgerTotal =
+        totals.inputTokens +
+        totals.cacheReadTokens +
+        totals.cacheCreationTokens +
+        totals.outputTokens;
+      const inventory = (await scanSessionFile(file))?.totalTokens;
+
+      // one request = one message = one round: 100k context read + 50 out, once
+      expect(sidebar).toBe(100_050);
+      expect(ledgerTotal).toBe(100_050);
+      expect(inventory).toBe(100_050);
+      // --breakdown counts the request once too
+      expect((await scanSessionFile(file))?.tokensByModel).toEqual({ 'glm-5': 100_050 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('parseInventoryArgs (unified grammar)', () => {
   it('has ccusage-compatible defaults', () => {
