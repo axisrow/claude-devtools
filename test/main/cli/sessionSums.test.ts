@@ -128,4 +128,40 @@ describe('session:sums', () => {
       turnsSumEqualsSession: true,
     });
   });
+
+  // Issue #88: Claude Code 2.1.296 writes ONE content block per JSONL line —
+  // a requestId's lines partition the response (same usage everywhere), they
+  // are not stream snapshots. keep-last dropped every block but the last.
+  it('ledger keeps all tool calls and thinking of a requestId split response', async () => {
+    const part = (n: number, rid: string, content: Record<string, unknown>[]): Record<string, unknown> => ({
+      type: 'assistant',
+      uuid: `a${n}`,
+      timestamp: T,
+      requestId: rid,
+      message: {
+        id: 'msg1',
+        model: 'm1',
+        usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 10,
+        },
+        content,
+      },
+    });
+    const file = await writeSession([
+      user(1, 'go'),
+      part(2, 'req_1', [{ type: 'thinking', thinking: 'four' }]),
+      part(3, 'req_1', [{ type: 'text', text: 'running checks' }]),
+      part(4, 'req_1', [{ type: 'tool_use', id: 'c1', name: 'Bash', input: { command: 'lint' } }]),
+      part(5, 'req_1', [{ type: 'tool_use', id: 'c2', name: 'Bash', input: { command: 'test' } }]),
+      part(6, 'req_1', [{ type: 'tool_use', id: 'c3', name: 'Bash', input: { command: 'build' } }]),
+    ]);
+    const ledger = buildLedger(await parseJsonlFile(file));
+
+    expect(ledger.rounds).toHaveLength(1);
+    expect(ledger.rounds[0].tools).toEqual(['Bash', 'Bash', 'Bash']);
+    expect(ledger.rounds[0].thinkingTokens).toBeGreaterThan(0);
+  });
 });

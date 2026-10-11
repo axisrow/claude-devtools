@@ -244,35 +244,114 @@ export function billedRequestKey(msg: ParsedMessage): string | undefined {
 }
 
 /**
- * Deduplicate streaming assistant entries by requestId.
+ * Merge the JSONL lines of one billed request into one message.
  *
- * Claude Code writes multiple JSONL entries per API response during streaming,
- * each with the same requestId but incrementally increasing output_tokens.
- * Only the last entry per requestId has the final, complete token counts.
+ * Claude Code 2.1.296+ writes ONE content block per line (thinking, text,
+ * each tool_use — a line of its own) with the same usage on every line: the
+ * lines PARTITION the response. Older builds wrote accumulating stream
+ * snapshots, where each line extends the previous one. `snapshotPrefix`
+ * tells the two apart, so partition lines concatenate and snapshot lines
+ * replace — blocks are never doubled. All other fields (usage, timestamp,
+ * uuid) come from the LAST line, whose counters are final.
+ */
+function mergeRequestLines(lines: ParsedMessage[]): ParsedMessage {
+  const last = lines[lines.length - 1];
+  if (lines.length === 1) return last;
+  let content = lines[0].content;
+  let toolCalls = lines[0].toolCalls;
+  let toolResults = lines[0].toolResults;
+  for (let k = 1; k < lines.length; k++) {
+    const next = lines[k];
+    content = mergeResponseContent(content, next.content);
+    toolCalls = mergeById(toolCalls, next.toolCalls, (tc) => tc.id);
+    toolResults = mergeById(toolResults, next.toolResults, (tr) => tr.toolUseId);
+  }
+  return { ...last, content, toolCalls, toolResults };
+}
+
+/** True when `prev` is an accumulating snapshot of `next`: block-by-block,
+ * same types in order, text blocks extended (never rewritten). */
+function snapshotPrefix(prev: ContentBlock[], next: ContentBlock[]): boolean {
+  if (prev.length === 0 || prev.length > next.length) return false;
+  return prev.every((b, i) => {
+    const n = next[i];
+    if (b.type !== n.type) return false;
+    if (b.type === 'text' && n.type === 'text') return (n.text ?? '').startsWith(b.text ?? '');
+    if (b.type === 'tool_use' && n.type === 'tool_use') return b.id === n.id;
+    if (b.type === 'thinking' && n.type === 'thinking') return b.signature === n.signature;
+    return JSON.stringify(b) === JSON.stringify(n);
+  });
+}
+
+function mergeResponseContent(
+  prev: ParsedMessage['content'],
+  next: ParsedMessage['content']
+): ParsedMessage['content'] {
+  const prevBlocks =
+    typeof prev === 'string' ? [{ type: 'text' as const, text: prev }] : (prev ?? []);
+  const nextBlocks =
+    typeof next === 'string' ? [{ type: 'text' as const, text: next }] : (next ?? []);
+  if (snapshotPrefix(prevBlocks, nextBlocks)) return nextBlocks;
+  return concatContent(prev, next);
+}
+
+function mergeById<T>(items: T[], add: T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set(items.map(keyOf));
+  const out = [...items];
+  for (const item of add) {
+    const key = keyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * One billed request = one message.
  *
- * Messages without a requestId (user, system, etc.) pass through unchanged.
- * Returns a new array with only the last entry per requestId kept.
+ * Lines sharing a billedRequestKey (backend requestId, else API message.id)
+ * are merged by mergeRequestLines — content blocks of every line survive.
+ * Messages without a key (user, system, etc.) pass through unchanged.
  */
 export function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage[] {
-  // Map from billedRequestKey -> index of last occurrence
-  const lastIndexByRequestId = new Map<string, number>();
+  const indicesByKey = new Map<string, number[]>();
   for (let i = 0; i < messages.length; i++) {
     const rid = billedRequestKey(messages[i]);
     if (rid) {
-      lastIndexByRequestId.set(rid, i);
+      const lines = indicesByKey.get(rid);
+      if (lines) lines.push(i);
+      else indicesByKey.set(rid, [i]);
     }
   }
 
   // If no requestIds found, no dedup needed
-  if (lastIndexByRequestId.size === 0) {
+  if (indicesByKey.size === 0) {
     return messages;
   }
 
-  return messages.filter((msg, i) => {
-    const key = billedRequestKey(msg);
-    if (!key) return true;
-    return lastIndexByRequestId.get(key) === i;
-  });
+  const mergedByLastIndex = new Map<number, ParsedMessage>();
+  for (const lines of indicesByKey.values()) {
+    if (lines.length > 1) {
+      mergedByLastIndex.set(
+        lines[lines.length - 1],
+        mergeRequestLines(lines.map((i) => messages[i]))
+      );
+    }
+  }
+
+  const out: ParsedMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const key = billedRequestKey(messages[i]);
+    if (!key) {
+      out.push(messages[i]);
+      continue;
+    }
+    const lines = indicesByKey.get(key);
+    if (lines?.[lines.length - 1] !== i) continue; // folded into the last line
+    out.push(mergedByLastIndex.get(i) ?? messages[i]);
+  }
+  return out;
 }
 
 /** Fragment content concat: block arrays concatenate, strings join directly
@@ -295,9 +374,10 @@ function concatContent(
  * block of a response, each line carrying the same message.id and the same
  * full usage — the lines PARTITION the response. Lines without requestId that
  * share a messageId are therefore concatenated here: one request becomes one
- * message, one accounting round, one stream divider. Lines with requestId are
- * streaming snapshots (the last line holds the final state) and stay on the
- * keep-last dedupe path of deduplicateByRequestId.
+ * message, one accounting round, one stream divider. Lines WITH requestId are
+ * merged the same way by deduplicateByRequestId (issue #88): there too one
+ * block per line is the current Claude Code format, snapshots are legacy and
+ * detected by snapshotPrefix.
  */
 export function mergeAssistantFragments(messages: ParsedMessage[]): ParsedMessage[] {
   const firstIndexByMessageId = new Map<string, number>();
@@ -339,7 +419,7 @@ export function calculateMetrics(messages: ParsedMessage[]): SessionMetrics {
     return { ...EMPTY_METRICS };
   }
 
-  // Deduplicate streaming entries: keep only the last entry per requestId
+  // One billed request = one merged message (issue #88)
   const dedupedMessages = deduplicateByRequestId(messages);
 
   let inputTokens = 0;
