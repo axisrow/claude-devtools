@@ -86,11 +86,13 @@ const mkPrice = (
 function claudePriceFor(family: string, major: number, minor: number | null): ModelPrice | null {
   switch (family) {
     case 'opus':
-      // 5.5+ at the reduced rate; 4.5–5 at 5/25; ≤4.1 legacy at 15/75
+      // 5.5+ at the reduced rate; 4.5–5 at 5/25; ≤4.1 legacy at 15/75.
+      // 4.x needs an explicit minor: dated ids (claude-opus-4-20250514) parse
+      // with minor=null and are old-generation, not 4.5+
       if (major > 5 || (major === 5 && minor !== null && minor >= 5)) {
         return mkPrice(4, 20, 0.2, 5, 8);
       }
-      if (major >= 5 || (major === 4 && (minor === null || minor >= 5))) {
+      if (major >= 5 || (major === 4 && minor !== null && minor >= 5)) {
         return mkPrice(5, 25, 0.5, 6.25, 10);
       }
       return mkPrice(15, 75, 1.5, 18.75, 30);

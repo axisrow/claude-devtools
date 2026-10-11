@@ -413,6 +413,8 @@ describe('pricing (#72) — rates hand-written from Anthropic published prices 2
     ['claude-fable-5', 10, 50, 0.25, 12.5, 20],
     ['claude-fable-5-1', 10, 50, 0.25, 12.5, 20],
     ['claude-opus-4-1', 15, 75, 1.5, 18.75, 30], // legacy opus ≤4.1
+    // dated 4.0 id parses with minor=null — must stay legacy, not 4.5+ rates
+    ['claude-opus-4-20250514', 15, 75, 1.5, 18.75, 30],
     ['glm-5.3-flash', 0.075, 0.25, 0.015, 0.075, 0.075], // router: write = input rate
   ])(
     '%s bills 1M tokens of each kind at the published rate',
