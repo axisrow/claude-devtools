@@ -283,6 +283,7 @@ function snapshotPrefix(prev: ContentBlock[], next: ContentBlock[]): boolean {
   });
 }
 
+// eslint-disable-next-line sonarjs/function-return-type -- preserves the input shape by contract: string inputs stay string
 function mergeResponseContent(
   prev: ParsedMessage['content'],
   next: ParsedMessage['content']
