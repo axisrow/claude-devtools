@@ -212,11 +212,14 @@ export function isTurnBoundary(m) {
   return isUserChunkLine(m) || m.isCompactSummary === true;
 }
 
-/** Which boundary CONSUMES a turn number: real user messages only. A
+/** Which boundary CONSUMES a turn number: real user messages only (the same
+ * sidechain exclusion as the boundary — a slice may stop splitting on an
+ * inline subagent prompt but its number must not grow either, #98/#109). A
  * compaction marker resets the budget bucket (isTurnBoundary) but opens no
  * turn — app parity: CompactChunk is a structural boundary, the post-compact
  * segment keeps the current number until the next real user message. */
 export function isTurnNumberLine(m) {
+  if (m.isSidechain === true) return false;
   return isUserChunkLine(m) && m.isCompactSummary !== true;
 }
 

@@ -430,7 +430,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     maxTs = Math.max(maxTs, msg.timestamp.getTime());
 
     if (msg.isCompactSummary) continue; // structural message — not a turn (app numbering, jsonl.ts:545)
-    if (isParsedUserChunkMessage(msg)) {
+    if (isParsedUserChunkMessage(msg) && !msg.isSidechain) {
       newTurn(msg.timestamp);
       continue;
     }
@@ -1119,7 +1119,7 @@ function printTurnDeepDive(
     let n = 0;
     for (const m of messages) {
       if (m.isCompactSummary) continue; // same numbering as buildLedger
-      if (isParsedUserChunkMessage(m) && ++n === turnNo) return m;
+      if (isParsedUserChunkMessage(m) && !m.isSidechain && ++n === turnNo) return m;
     }
     return null;
   })();

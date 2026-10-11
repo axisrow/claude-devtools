@@ -126,6 +126,51 @@ describe('turn accounting — golden parity across consumers', () => {
     });
   });
 
+  it('ledger and hookSpentByTurn number turns without the sidechain prompt (#109 review)', async () => {
+    // the un-split slice must keep its turn NUMBER: hookSpentByTurn numbers
+    // slices by isTurnNumberLine, buildLedger opens turns on real user
+    // messages — a sidechain prompt inflating either would pair ledger turn
+    // N with hook turn N+1 (sessionSums buildSums) on exactly the sessions
+    // this PR fixes
+    const { hookSpentByTurn } = await import('../../src/cli/sessionSums');
+    const { buildLedger } = await import('../../src/cli/analyzeSession');
+    // buildLedger consumes ParsedMessage — minimal raw→Parsed mapping (the
+    // fixture lines carry no uuid, so parseJsonlFile would skip them)
+    const toParsed = (l: string, i: number) => {
+      const m = JSON.parse(l);
+      const inner = m.message ?? {};
+      return {
+        uuid: `line${i}`,
+        parentUuid: null,
+        timestamp: new Date(m.timestamp ?? 0),
+        type: m.type,
+        content: inner.content ?? '',
+        toolCalls: [],
+        toolResults: [],
+        isSidechain: m.isSidechain ?? false,
+        isMeta: m.isMeta ?? false,
+        isCompactSummary: m.isCompactSummary === true,
+        usage: inner.usage,
+        model: inner.model,
+        requestId: m.requestId,
+        messageId: inner.id,
+      } as never;
+    };
+    // turn 5 = issue #95 fragments (no requestId, one message.id — billed once)
+    expect([...hookSpentByTurn(lines).entries()]).toEqual([
+      [1, 310_700],
+      [2, 10_798],
+      [3, 102_320],
+      [4, 110_000],
+      [5, 6_600],
+    ]);
+    const ledger = buildLedger(lines.map(toParsed));
+    expect(ledger.turns).toHaveLength(5);
+    const contextByTurn = (no: number) =>
+      ledger.rounds.filter((r) => r.turnIndex === no).reduce((sum, r) => sum + r.contextSize, 0);
+    expect([1, 2, 3, 4, 5].map(contextByTurn)).toEqual([310_700, 10_798, 102_320, 110_000, 6_600]);
+  });
+
   it('TurnBudgetDetector.feed agrees with analyzeTurn at every batch boundary', () => {
     // live FileWatcher feeds new messages in arbitrary batches — the running
     // total must equal the offline accounting after every prefix, batches of
