@@ -16,6 +16,7 @@ export {
   billedTotalTokens,
   firstAssistantTotalTokens,
   inputSideTokens,
+  isMainChainAssistantLine,
   isRealUserLine,
   isTeammateRelayLine,
   isTranscriptTurnLine,

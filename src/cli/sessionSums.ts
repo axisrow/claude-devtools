@@ -8,7 +8,14 @@
  * Usage: pnpm session:sums <path-to.jsonl>   (JSON on stdout, raw numbers)
  */
 import { parseJsonlFile } from '@main/utils/jsonl';
-import { analyzeTurn, isTurnBoundary, isTurnNumberLine } from '@shared/turnAccounting';
+import {
+  analyzeTurn,
+  billedRequestKey,
+  inputSideTokens,
+  isMainChainAssistantLine,
+  isTurnBoundary,
+  isTurnNumberLine,
+} from '@shared/turnAccounting';
 import * as fs from 'fs';
 
 import {
@@ -33,11 +40,49 @@ interface RollupRound {
 
 const CYCLE_TYPES = new Set(['cycle_motif', 'probe_no_progress']);
 
-/** Pure rollup: ledger + findings + per-turn hook spend → JSON-ready shape. */
+/** usage object of a raw assistant line — typed access into untyped JSON. */
+function usageOfRaw(m: Record<string, unknown>): Parameters<typeof inputSideTokens>[0] | undefined {
+  const message = m.message as { usage?: Parameters<typeof inputSideTokens>[0] } | undefined;
+  return message?.usage;
+}
+
+/** Rounds summed straight from raw lines: canonical primitives
+ * (isMainChainAssistantLine + billedRequestKey dedup + inputSideTokens), the
+ * same arithmetic analyzeTurn bills under, but whole-session requestId dedup
+ * mirroring deduplicateByRequestId. Independent of ledger.rounds, so the
+ * rounds checksum cannot compare a sum with itself (#102). */
+function roundsInputSideFromRaw(rawLines: string[]): { inputSide: number; output: number } {
+  const billed = new Set<string>();
+  let inputSide = 0;
+  let output = 0;
+  for (const line of rawLines) {
+    let m: Record<string, unknown> = {};
+    try {
+      m = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!isMainChainAssistantLine(m) || !usageOfRaw(m)) continue;
+    const key = billedRequestKey(m);
+    if (key) {
+      if (billed.has(key)) continue;
+      billed.add(key);
+    }
+    const u = usageOfRaw(m)!;
+    inputSide += inputSideTokens(u);
+    output += u.output_tokens ?? 0;
+  }
+  return { inputSide, output };
+}
+
+/** Pure rollup: ledger + findings + per-turn hook spend + raw lines →
+ * JSON-ready shape. Raw lines back the rounds checksum so it compares an
+ * independently counted sum, not a sum with itself. */
 export function buildSums(
   ledger: SessionLedger,
   findings: Finding[],
-  hookSpent: Map<number, number>
+  hookSpent: Map<number, number>,
+  rawLines: string[]
 ): Record<string, unknown> {
   const roundRollup = (r: {
     index: number;
@@ -101,16 +146,22 @@ export function buildSums(
   const t = ledger.totals;
   const sessionInputSide = t.inputTokens + t.cacheReadTokens + t.cacheCreationTokens;
   const sessionBilled = sessionInputSide + t.outputTokens;
-  const roundsEqualTurns = turns.every((tn) => {
-    const rs = roundsByTurn.get(tn.index) ?? [];
-    return (
-      rs.reduce((s, r) => s + r.inputSide, 0) === tn.inputSide &&
-      rs.reduce((s, r) => s + r.output, 0) === tn.output
-    );
-  });
-  const hookMismatches = turns
-    .filter((tn) => tn.inputSide !== tn.hookSpent)
-    .map((tn) => ({ turn: tn.index, ledger: tn.inputSide, hook: tn.hookSpent }));
+  // rounds side counted straight from raw lines (canonical primitives,
+  // whole-session requestId dedup — mirroring deduplicateByRequestId) so
+  // drift in ledger.rounds cannot pass unnoticed
+  const rawRounds = roundsInputSideFromRaw(rawLines);
+  const roundsEqualTurns =
+    rawRounds.inputSide === turnsInputSide && rawRounds.output === turnsOutput;
+  // two-sided hook parity: union of ledger turn indexes and hook turn numbers
+  const inputSideByTurn = new Map(turns.map((tn) => [tn.index, tn.inputSide]));
+  const hookMismatches = [...new Set([...inputSideByTurn.keys(), ...hookSpent.keys()])]
+    .sort((a, b) => a - b)
+    .filter((no) => (inputSideByTurn.get(no) ?? 0) !== (hookSpent.get(no) ?? 0))
+    .map((no) => ({
+      turn: no,
+      ledger: inputSideByTurn.get(no) ?? 0,
+      hook: hookSpent.get(no) ?? 0,
+    }));
   // «сколько сожжено циклами»: вся inputSide ходов с cycle-вердиктом —
   // консервативная оценка сверху (в re-read валюте бюджета), не штраф находок
   const cycleWasted = turns.reduce(
@@ -142,18 +193,22 @@ export function buildSums(
 }
 
 /** Hook accounting per turn: split raw lines at isTurnBoundary (chronological
- * slices, like turnSpendStats), number slices by isTurnNumberLine (compact
- * keeps the current number), sum analyzeTurn per number. */
+ * slices, like turnSpendStats), number segments by isTurnNumberLine (compact
+ * keeps the current number), sum analyzeTurn per number.
+ *
+ * Numbering mirrors buildLedger (#102): assistant rounds before the first user
+ * message open the implicit turn 1, each real user message opens the next —
+ * hook and ledger numbers then name the same turns. Segments accumulate from
+ * the first line, so the implicit turn's spend is counted too. */
 export function hookSpentByTurn(rawLines: string[]): Map<number, number> {
   const spent = new Map<number, number>();
   const add = (no: number, lines: string[]): void => {
-    if (lines.length === 0) return;
+    if (lines.length === 0 || no === 0) return; // turn 0 never bills: first billed round opens turn 1
     const { spent: s } = analyzeTurn([...lines].reverse());
     spent.set(no, (spent.get(no) ?? 0) + s);
   };
-  let turnNo = 0;
+  let turnNo = 0; // 0 = before any turn; bumped to 1 by the implicit-turn rule
   let cur: string[] = [];
-  let sawBoundary = false;
   for (const line of rawLines) {
     let m: Record<string, unknown> = {};
     try {
@@ -161,13 +216,15 @@ export function hookSpentByTurn(rawLines: string[]): Map<number, number> {
     } catch {
       continue;
     }
+    // implicit ledger turn: first billed main-chain assistant round before any
+    // user message — the same condition analyzeTurn bills under
+    if (turnNo === 0 && isMainChainAssistantLine(m) && usageOfRaw(m)) turnNo = 1;
     if (isTurnBoundary(m)) {
-      if (sawBoundary) add(turnNo, cur);
+      add(turnNo, cur);
       cur = [];
-      sawBoundary = true;
     }
-    if (isTurnNumberLine(m)) turnNo += 1;
-    if (sawBoundary) cur.push(line);
+    if (isTurnNumberLine(m)) turnNo = turnNo === 0 ? 1 : turnNo + 1;
+    cur.push(line);
   }
   add(turnNo, cur);
   return spent;
@@ -184,7 +241,7 @@ async function main(): Promise<void> {
   const ledger = buildLedger(messages);
   const findings = computeFindings(messages, ledger);
   const rawLines = fs.readFileSync(file, 'utf8').split('\n');
-  const sums = buildSums(ledger, findings, hookSpentByTurn(rawLines));
+  const sums = buildSums(ledger, findings, hookSpentByTurn(rawLines), rawLines);
   console.log(JSON.stringify({ ...splitSessionPath(file), ...sums }, null, 2));
 }
 if (isDirectRun(import.meta.url)) {

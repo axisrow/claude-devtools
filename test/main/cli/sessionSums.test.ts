@@ -78,8 +78,24 @@ async function sumsFor(lines: Record<string, unknown>[]) {
   const ledger = buildLedger(messages);
   const findings = computeFindings(messages, ledger);
   const raw = (await readFile(file, 'utf8')).split('\n');
-  return buildSums(ledger, findings, hookSpentByTurn(raw));
+  return buildSums(ledger, findings, hookSpentByTurn(raw), raw);
 }
+
+const relay = (n: number, text: string): Record<string, unknown> => ({
+  type: 'user',
+  uuid: `r${n}`,
+  timestamp: T,
+  isMeta: false,
+  message: { content: `<teammate-message teammate_id="lead">say: ${text}</teammate-message>` },
+});
+const compactSummary = (n: number): Record<string, unknown> => ({
+  type: 'user',
+  uuid: `c${n}`,
+  timestamp: T,
+  isMeta: true,
+  isCompactSummary: true,
+  message: { content: 'compact summary' },
+});
 
 describe('session:sums', () => {
   it('checksums hold: rounds = turns = session; hook parity matches', async () => {
@@ -133,7 +149,11 @@ describe('session:sums', () => {
   // a requestId's lines partition the response (same usage everywhere), they
   // are not stream snapshots. keep-last dropped every block but the last.
   it('ledger keeps all tool calls and thinking of a requestId split response', async () => {
-    const part = (n: number, rid: string, content: Record<string, unknown>[]): Record<string, unknown> => ({
+    const part = (
+      n: number,
+      rid: string,
+      content: Record<string, unknown>[]
+    ): Record<string, unknown> => ({
       type: 'assistant',
       uuid: `a${n}`,
       timestamp: T,
@@ -163,5 +183,45 @@ describe('session:sums', () => {
     expect(ledger.rounds).toHaveLength(1);
     expect(ledger.rounds[0].tools).toEqual(['Bash', 'Bash', 'Bash']);
     expect(ledger.rounds[0].thinkingTokens).toBeGreaterThan(0);
+  });
+
+  it('corrupted rounds must fail the rounds checksum, not compare a sum with itself', async () => {
+    const file = await writeSession([
+      user(1, 'q1'),
+      ai(2, 'm1', 100, 10),
+      user(3, 'q2'),
+      ai(4, 'm2', 400, 10),
+    ]);
+    const messages = await parseJsonlFile(file);
+    const ledger = buildLedger(messages);
+    for (const r of ledger.rounds) r.inputTokens += 777; // drift AFTER totals were built
+    const raw = (await readFile(file, 'utf8')).split('\n');
+    const sums = buildSums(ledger, computeFindings(messages, ledger), hookSpentByTurn(raw), raw);
+    expect(sums.checksums).toMatchObject({ roundsSumEqualsTurnsSum: false });
+  });
+
+  it('a session opening with a relay or compact summary keeps hook parity (implicit turn 1)', async () => {
+    const relayFirst = [
+      relay(1, 'do X'),
+      ai(2, 'n1', 100, 1),
+      ai(3, 'n2', 200, 1),
+      user(4, 'real question'),
+      ai(5, 'n3', 400, 1),
+    ];
+    expect((await sumsFor(relayFirst)).checksums.hookParity).toEqual({
+      match: true,
+      mismatches: [],
+    });
+    const compactFirst = [
+      compactSummary(1),
+      ai(2, 'n1', 100, 1),
+      ai(3, 'n2', 200, 1),
+      user(4, 'real question'),
+      ai(5, 'n3', 400, 1),
+    ];
+    expect((await sumsFor(compactFirst)).checksums.hookParity).toEqual({
+      match: true,
+      mismatches: [],
+    });
   });
 });
