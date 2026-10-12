@@ -11,7 +11,7 @@
  * legitimate iteration (#26); #27 regressed the panel to 2 and the CLI sat
  * at 3 while the bell defaulted to 4.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,7 +29,8 @@ import { transformChunksToConversation } from '../../src/renderer/utils/groupTra
 // --- transcript fixture: k identical Read rounds, then a closing text round ---
 
 let seq = 0;
-const at = (): string => new Date(Date.parse('2026-10-01T07:00:00Z') + (seq += 20_000)).toISOString();
+const at = (): string =>
+  new Date(Date.parse('2026-10-01T07:00:00Z') + (seq += 20_000)).toISOString();
 const base = (): Record<string, unknown> => ({
   uuid: `u${String(++seq)}`,
   parentUuid: null,
@@ -67,7 +68,9 @@ function fixtureLines(k: number): object[] {
         id: `m${String(i)}`,
         role: 'assistant',
         model: 'claude-x',
-        content: [{ type: 'tool_use', id: `r${String(i)}`, name: 'Read', input: { file_path: '/x/f.ts' } }],
+        content: [
+          { type: 'tool_use', id: `r${String(i)}`, name: 'Read', input: { file_path: '/x/f.ts' } },
+        ],
         usage: {
           input_tokens: 0,
           cache_read_input_tokens: 600_000,
@@ -88,16 +91,27 @@ function fixtureLines(k: number): object[] {
       role: 'assistant',
       model: 'claude-x',
       content: [{ type: 'text', text: 'done' }],
-      usage: { input_tokens: 0, cache_read_input_tokens: 600_000, cache_creation_input_tokens: 0, output_tokens: 40 },
+      usage: {
+        input_tokens: 0,
+        cache_read_input_tokens: 600_000,
+        cache_creation_input_tokens: 0,
+        output_tokens: 40,
+      },
     },
   });
   return lines;
 }
 
-async function writeFixture(k: number): Promise<string> {
-  const f = join(mkdtempSync(join(tmpdir(), 'loop-parity-')), 's.jsonl');
-  writeFileSync(f, fixtureLines(k).map((l) => JSON.stringify(l)).join('\n') + '\n');
-  return f;
+function writeFixture(k: number): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-parity-'));
+  const file = join(dir, 's.jsonl');
+  writeFileSync(
+    file,
+    fixtureLines(k)
+      .map((l) => JSON.stringify(l))
+      .join('\n') + '\n'
+  );
+  return { dir, file };
 }
 
 // the four surfaces, real code paths end to end
@@ -107,34 +121,49 @@ async function surfaceFlags(k: number): Promise<{
   inventory: boolean;
   bell: boolean;
 }> {
-  const f = await writeFixture(k);
-  const msgs = await parseJsonlFile(f);
+  const { dir, file } = writeFixture(k);
+  try {
+    const msgs = await parseJsonlFile(file);
 
-  // 1. panel: chunks → conversation → context phases → loop injection
-  const conv = transformChunksToConversation(new ChunkBuilder().buildChunks(msgs, []), [], false);
-  let panel = false;
-  for (const stats of processSessionContextWithPhases(conv.items, '/p', {}, new Map(), new Map()).statsMap.values()) {
-    if (stats.newInjections.some((i) => i.category === 'loop')) panel = true;
+    // 1. panel: chunks → conversation → context phases → loop injection
+    const conv = transformChunksToConversation(new ChunkBuilder().buildChunks(msgs, []), [], false);
+    let panel = false;
+    for (const stats of processSessionContextWithPhases(
+      conv.items,
+      '/p',
+      {},
+      new Map(),
+      new Map()
+    ).statsMap.values()) {
+      if (stats.newInjections.some((i) => i.category === 'loop')) panel = true;
+    }
+
+    // 2. analyze:session loop_streak
+    const cli = computeFindings(msgs, buildLedger(msgs)).some((x) => x.type === 'loop_streak');
+
+    // 3. analyze:sessions cycles
+    const entry = await scanSessionFile(file);
+    const inventory = (entry?.cycles.length ?? 0) > 0;
+
+    // 4. bell at the shared default threshold
+    const bell = new LoopDetector().feed('f', msgs, LOOP_MIN_STREAK) !== null;
+
+    return { panel, cli, inventory, bell };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-
-  // 2. analyze:session loop_streak
-  const cli = computeFindings(msgs, buildLedger(msgs)).some((x) => x.type === 'loop_streak');
-
-  // 3. analyze:sessions cycles
-  const entry = await scanSessionFile(f);
-  const inventory = (entry?.cycles.length ?? 0) > 0;
-
-  // 4. bell at the shared default threshold
-  const bell = new LoopDetector().feed('f', msgs, LOOP_MIN_STREAK) !== null;
-
-  return { panel, cli, inventory, bell };
 }
 
 describe('loop threshold parity across surfaces (issue #96)', () => {
   for (const k of [2, 3, 4]) {
     it(`k=${String(k)} identical calls: all four surfaces agree`, async () => {
       const flags = await surfaceFlags(k);
-      expect(Object.values(flags)).toEqual([k >= LOOP_MIN_STREAK, k >= LOOP_MIN_STREAK, k >= LOOP_MIN_STREAK, k >= LOOP_MIN_STREAK]);
+      expect(Object.values(flags)).toEqual([
+        k >= LOOP_MIN_STREAK,
+        k >= LOOP_MIN_STREAK,
+        k >= LOOP_MIN_STREAK,
+        k >= LOOP_MIN_STREAK,
+      ]);
     });
   }
 });
