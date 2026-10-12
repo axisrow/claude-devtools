@@ -34,7 +34,7 @@ import {
 } from '../../src/renderer/utils/contextTracker';
 import { transformChunksToConversation } from '../../src/renderer/utils/groupTransformer';
 import { ChunkBuilder } from '../../src/main/services/analysis/ChunkBuilder';
-import { parseJsonlFile } from '../../src/main/utils/jsonl';
+import { parseJsonlFile, calculateMetrics } from '../../src/main/utils/jsonl';
 import { buildLedger, computeFindings } from '../../src/cli/analyzeSession';
 import { scanSessionFile } from '../../src/cli/sessionInventory';
 
@@ -520,5 +520,125 @@ describe('turn budget bell ↔ panel Re-read row matching (#101)', () => {
     expect(matched).toHaveLength(1);
     // the merged group (turn-1 crossing + post-relay round) holds the crossing
     expect(matched[0].estimatedTokens).toBe(16_000_000);
+  });
+});
+
+// =============================================================================
+// Session cost parity (#73) — calculateMetrics (app) and totalsFromRounds
+// (CLI ledger) must price the SAME rounds at the SAME table
+// (@shared/utils/pricing): main-chain assistant rounds with usage, deduped by
+// requestId, retry copies billed, sidechain excluded. Unpriced models flag
+// the session partial instead of silently vanishing.
+// =============================================================================
+describe('session cost parity — calculateMetrics ↔ totalsFromRounds (#73)', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+  const writeFixture = async (name: string, objs: object[]): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), `parity73-${name}-`));
+    dirs.push(dir);
+    const file = join(dir, 's.jsonl');
+    await writeFile(file, objs.map((o) => JSON.stringify(o)).join('\n') + '\n');
+    return file;
+  };
+  let clock = 0;
+  const at = (ms: number): string => {
+    clock += ms;
+    return new Date(clock).toISOString();
+  };
+  const base = (uuid: string, x: Record<string, unknown> = {}): Record<string, unknown> => ({
+    uuid,
+    parentUuid: null,
+    sessionId: 's',
+    cwd: '/p',
+    isSidechain: false,
+    ...x,
+  });
+  const userLine = (uuid: string, text: string) =>
+    base(uuid, {
+      timestamp: at(1000),
+      type: 'user',
+      message: { role: 'user', content: text },
+    });
+  const aiRound = (
+    uuid: string,
+    rid: string,
+    mid: string,
+    model: string,
+    usage: object,
+    extra: Record<string, unknown> = {}
+  ) =>
+    base(uuid, {
+      requestId: rid,
+      timestamp: at(1000),
+      type: 'assistant',
+      message: {
+        id: mid,
+        role: 'assistant',
+        model,
+        content: [{ type: 'text', text: 'ok' }],
+        usage,
+      },
+      ...extra,
+    });
+
+  it('mixed known/unpriced models — same cost, both flag partial', async () => {
+    clock = Date.parse('2026-10-01T07:00:00Z');
+    const sonnetUsage = {
+      input_tokens: 1000,
+      cache_read_input_tokens: 100_000,
+      cache_creation_input_tokens: 500,
+      output_tokens: 200,
+    };
+    const file = await writeFixture('mixed', [
+      userLine('u1', 'go'),
+      // sonnet 4.x at 3/15/0.3/3.75/6 per MTok (hand-written from the price page)
+      aiRound('a1', 'q1', 'm1', 'claude-sonnet-4-5-20250929', sonnetUsage),
+      // router re-log of q1 — deduped, billed once in both consumers
+      aiRound('a2', 'q1', 'm1', 'claude-sonnet-4-5-20250929', sonnetUsage),
+      // subagent round — outside the ledger AND the app cost ($4 if wrongly counted)
+      aiRound(
+        'a3',
+        'q2',
+        'm2',
+        'claude-opus-4-5-20250101',
+        { input_tokens: 1_000_000, output_tokens: 0 },
+        { isSidechain: true }
+      ),
+      // unpriced model — excluded from the sum, flags it partial
+      aiRound('a4', 'q3', 'm3', 'mystery-llm', { input_tokens: 500, output_tokens: 10 }),
+      userLine('u2', 'done'),
+    ]);
+
+    const msgs = await parseJsonlFile(file);
+    const app = calculateMetrics(msgs);
+    const cli = buildLedger(msgs).totals;
+    // sonnet 4.x: 3/15/0.3/3.75/6 per MTok — (in·3 + out·15 + cr·0.3 + cw·3.75)/1e6
+    const expected = (1000 * 3 + 200 * 15 + 100_000 * 0.3 + 500 * 3.75) / 1e6;
+    expect(app.costUsd).toBeCloseTo(expected, 10);
+    expect(cli.costUsd).toBeCloseTo(expected, 10);
+    expect(app.costUsd).toBeCloseTo(cli.costUsd!, 10);
+    expect(app.costPartial).toBe(true);
+    expect(cli.costPartial).toBe(true);
+  });
+
+  it('fully priced session — same cost, not partial', async () => {
+    clock = Date.parse('2026-10-01T07:00:00Z');
+    const file = await writeFixture('known', [
+      userLine('u1', 'go'),
+      // haiku 4.5 at 1/5 per MTok
+      aiRound('a1', 'q1', 'm1', 'claude-haiku-4-5-20251001', {
+        input_tokens: 1000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 100,
+      }),
+    ]);
+    const msgs = await parseJsonlFile(file);
+    const app = calculateMetrics(msgs);
+    expect(app.costUsd).toBeCloseTo((1000 * 1 + 100 * 5) / 1e6, 10);
+    expect(app.costPartial).toBe(false);
+    expect(buildLedger(msgs).totals.costUsd).toBeCloseTo(app.costUsd!, 10);
   });
 });

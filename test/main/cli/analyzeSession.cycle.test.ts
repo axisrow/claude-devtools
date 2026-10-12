@@ -62,8 +62,11 @@ describe('detectCycleFindings', () => {
     const motif = findings.find((f) => f.type === 'cycle_motif');
     expect(motif).toBeDefined();
     expect(motif?.severity).toBe('medium'); // x3 — not yet high
-    // wasted = context of repeated windows (rounds 3..8): Σ(1000+100i), i=3..8
-    expect(motif?.tokensWasted).toBe(9300);
+    // raw claim is Σ context of repeat rounds (rounds 3..8) = 9300, but this
+    // artificial fixture grows only +100/round — the whole turn also reads as
+    // stall_streak (high), which books those rounds first; motif stays visible
+    // with 0 (no double counting)
+    expect(motif?.tokensWasted).toBe(0);
   });
 
   it('short alternating sequences stay silent', () => {
@@ -85,7 +88,9 @@ describe('detectCycleFindings', () => {
     const probe = findings.find((f) => f.type === 'probe_no_progress');
     expect(probe).toBeDefined();
     expect(probe?.summary).toContain('same result x3');
-    expect(probe?.tokensWasted).toBeGreaterThan(0);
+    // duplicate_call claims the same re-run results first (walk order, equal
+    // severity) — probe stays visible with 0
+    expect(probe?.tokensWasted).toBe(0);
   });
 
   it('linear distinct work stays silent', () => {

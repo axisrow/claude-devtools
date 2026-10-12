@@ -141,6 +141,8 @@ export interface SessionMetrics {
   messageCount: number;
   /** Estimated cost in USD */
   costUsd?: number;
+  /** true when costUsd covers priced models only — unpriced rounds excluded (#73) */
+  costPartial?: boolean;
 }
 
 // =============================================================================
