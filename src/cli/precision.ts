@@ -21,7 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { isDirectRun } from './args';
+import { isDirectRun, takeFlagValue } from './args';
 import { computeCorpus, REPO_ROOT, resolveCorpusDir } from './corpus';
 
 import type { Finding, FindingType, RoundRow, SessionLedger } from './analyzeSession';
@@ -237,7 +237,10 @@ function numFlag(argv: string[], name: string, def: number): number {
 
 function strFlag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const { value } = takeFlagValue(argv, i);
+  if (!value) throw new Error(`${name} requires a path argument`);
+  return value;
 }
 
 function printSampleSummary(doc: SampleDoc, outFile: string): void {
@@ -272,13 +275,13 @@ async function runSample(
   return 0;
 }
 
-function printReport(rows: TypePrecision[], totalItems: number): void {
+function printReport(rows: TypePrecision[], totalItems: number, samplePath: string): void {
   const sum = (
     k: keyof Pick<TypePrecision, 'waste' | 'notWaste' | 'unsure' | 'unlabeled'>
   ): number => rows.reduce((s, r) => s + r[k], 0);
   const labeled = sum('waste') + sum('notWaste');
   console.log(
-    `precision report (#81) — ${rows.length} type(s), ${totalItems} sampled: ` +
+    `precision report (#81) — ${rows.length} type(s), ${totalItems} sampled from ${samplePath}: ` +
       `${labeled} labeled (${sum('waste')} waste / ${sum('notWaste')} not_waste), ` +
       `${sum('unsure')} unsure (excluded), ${sum('unlabeled')} unlabeled`
   );
@@ -331,7 +334,7 @@ function runReport(samplePath: string): number {
     console.error(`malformed sample file: ${samplePath}`);
     return 1;
   }
-  printReport(precisionReport(doc), doc.items.length);
+  printReport(precisionReport(doc), doc.items.length, samplePath);
   return 0;
 }
 
