@@ -18,14 +18,24 @@
  * (<local-command-stdout> IS a boundary).
  */
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { analyzeTurn } from '../../scripts/turn-budget-hook.mjs';
 import { TurnBudgetDetector } from '../../src/main/utils/loopDetection';
 import { feedLine } from '../../src/cli/turnSpendStats';
-import { sumTurnReread } from '../../src/renderer/utils/contextTracker';
+import {
+  sumTurnReread,
+  processSessionContextWithPhases,
+} from '../../src/renderer/utils/contextTracker';
+import { transformChunksToConversation } from '../../src/renderer/utils/groupTransformer';
+import { ChunkBuilder } from '../../src/main/services/analysis/ChunkBuilder';
+import { parseJsonlFile } from '../../src/main/utils/jsonl';
+import { buildLedger, computeFindings } from '../../src/cli/analyzeSession';
+import { scanSessionFile } from '../../src/cli/sessionInventory';
 
 interface Spend {
   inputSide: number;
@@ -196,5 +206,151 @@ describe('turn accounting — golden parity across consumers', () => {
     expect(incident).not.toBeNull();
     expect(incident?.turnNumber).toBe(1);
     expect(incident?.turnStartTs).toBe(msgs[0].timestamp);
+  });
+});
+
+describe('a mid-turn compact does not cut the turn (#97)', () => {
+  // One transcript shape, three consumers: analyze:session (ledger findings),
+  // the inventory scan and the panel (ChunkBuilder → groups → contextTracker).
+  // Since #69 analyze:session keeps ONE turn across a compact summary — the
+  // inventory turn clock and the panel's wait-loop gate must agree, or the
+  // same session is flagged in one surface and clean in another.
+  const dirs: string[] = [];
+  const writeFixture = async (name: string, objs: object[]): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), `parity97-${name}-`));
+    dirs.push(dir);
+    const file = join(dir, 's.jsonl');
+    await writeFile(file, objs.map((o) => JSON.stringify(o)).join('\n') + '\n');
+    return file;
+  };
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  let clock = 0;
+  const at = (ms: number): string => {
+    clock += ms;
+    return new Date(clock).toISOString();
+  };
+  const base = (uuid: string, x: Record<string, unknown> = {}): Record<string, unknown> => ({
+    uuid,
+    parentUuid: null,
+    sessionId: 's',
+    cwd: '/p',
+    isSidechain: false,
+    ...x,
+  });
+  const userLine = (uuid: string, content: unknown, extra: Record<string, unknown> = {}) =>
+    base(uuid, {
+      timestamp: at(20_000),
+      type: 'user',
+      message: { role: 'user', content },
+      ...extra,
+    });
+  // a quiet tick: text-only round re-reading 80k with 20 out (isQuietTick:
+  // no tools, context ≥ 50k, output ≤ 300)
+  const quietRound = (uuid: string, rid: string, mid: string) =>
+    base(uuid, {
+      requestId: rid,
+      timestamp: at(20_000),
+      type: 'assistant',
+      message: {
+        id: mid,
+        role: 'assistant',
+        model: 'claude-x',
+        content: [{ type: 'text', text: 'still waiting' }],
+        usage: {
+          input_tokens: 0,
+          cache_read_input_tokens: 80_000,
+          cache_creation_input_tokens: 0,
+          output_tokens: 20,
+        },
+      },
+    });
+  const compactLine = (uuid: string) =>
+    userLine(uuid, 'This session is being continued from a previous conversation...', {
+      isCompactSummary: true,
+    });
+
+  it('wait-loop verdict agrees between analyze:session and the panel (3 quiet + compact + 3 quiet)', async () => {
+    clock = Date.parse('2026-10-01T07:00:00Z');
+    const objs: object[] = [userLine('u0', 'watch the deploy')];
+    for (let i = 0; i < 3; i++) objs.push(quietRound(`a${i}`, `ra${i}`, `ma${i}`));
+    objs.push(compactLine('c0'));
+    for (let i = 0; i < 3; i++) objs.push(quietRound(`b${i}`, `rb${i}`, `mb${i}`));
+    const file = await writeFixture('wait', objs);
+
+    const msgs = await parseJsonlFile(file);
+    const cliWait = computeFindings(msgs, buildLedger(msgs)).some((f) => f.type === 'wait_loop');
+    const conv = transformChunksToConversation(new ChunkBuilder().buildChunks(msgs, []), [], false);
+    const { statsMap } = processSessionContextWithPhases(
+      conv.items,
+      '/p',
+      {},
+      new Map(),
+      new Map()
+    );
+    const panelWait = [...statsMap.values()].some((s) =>
+      s.newInjections.some((i) => i.category === 'wait-loop')
+    );
+
+    // the ledger counts 6 quiet ticks in one turn (the compact opens no turn
+    // since #69) — the panel splits them across two AI groups of the SAME
+    // turn and must gate on the turn total, not the group
+    expect(cliWait).toBe(true);
+    expect(panelWait).toBe(cliWait);
+  });
+
+  it('longest-turn minutes agree between analyze:session and the inventory (3×4min + compact + 3×4min)', async () => {
+    clock = Date.parse('2026-10-01T07:00:00Z');
+    const objs: object[] = [userLine('u0', 'long task')];
+    for (let i = 0; i < 6; i++) {
+      if (i === 3) {
+        clock += 40_000; // compact lands 60s after the previous result
+        objs.push(compactLine('c0'));
+      }
+      objs.push(
+        base(`r${i}`, {
+          requestId: `rc${i}`,
+          timestamp: at(240_000),
+          type: 'assistant',
+          message: {
+            id: `mc${i}`,
+            role: 'assistant',
+            model: 'claude-x',
+            content: [
+              { type: 'tool_use', id: `t${i}`, name: 'Bash', input: { command: `step ${i}` } },
+            ],
+            usage: {
+              input_tokens: 0,
+              cache_read_input_tokens: 100_000,
+              cache_creation_input_tokens: 0,
+              output_tokens: 50,
+            },
+          },
+        })
+      );
+      objs.push(
+        base(`res${i}`, {
+          timestamp: at(1_000),
+          type: 'user',
+          isMeta: true,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'ok' }],
+          },
+        })
+      );
+    }
+    const file = await writeFixture('turn', objs);
+
+    const ledger = buildLedger(await parseJsonlFile(file));
+    const entry = await scanSessionFile(file);
+    const cliMinutes = ledger.totals.longestTurn?.activeMinutes;
+    // one turn across the compact: 4 working gaps of 241s + 301s across the
+    // boundary = 21.1 min — the inventory must measure the same clock, not
+    // reset it on the compact summary (it reported 8 min before the fix)
+    expect(cliMinutes).toBe(21);
+    expect(Math.round((entry?.longestTurnMs ?? 0) / 60_000)).toBe(cliMinutes);
   });
 });

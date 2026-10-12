@@ -161,6 +161,23 @@ export function createLoopStreakState(): LoopStreakState {
   return { lastKey: '', streak: 0 };
 }
 
+/**
+ * Quiet-tick accumulation for the wait-loop gate, threaded across AI groups:
+ * a compact summary or a system chunk splits one turn into several groups
+ * (ChunkBuilder flushes its buffer on both) — the CLI gates wait_loop on the
+ * TURN's quiet rounds, so the panel must count the same turn total, not each
+ * group's slice (#97). Keyed by turnIndex: a compact does not consume a turn
+ * number (isTurnNumberLine), so accumulation survives the phase reset.
+ */
+export interface WaitTickState {
+  turnIndex: number;
+  rounds: WaitRoundInfo[];
+}
+
+export function createWaitTickState(): WaitTickState {
+  return { turnIndex: Number.NaN, rounds: [] };
+}
+
 // =============================================================================
 // Injection Wrapping Functions
 // =============================================================================
@@ -468,13 +485,17 @@ export function classifyRounds(
  * re-read the whole window (>= WAIT_TICK_CONTEXT_TOKENS) while producing
  * almost nothing (<= WAIT_TICK_OUTPUT_TOKENS out). Same criterion as the CLI's
  * wait_loop findings; rounds without usage are skipped (provider ghosts).
+ * Ticks accumulate across the AI groups of one turn (state) and the injection
+ * fires once per turn, on the group where the count crosses the gate — the
+ * CLI emits one wait_loop finding per turn (#97).
  */
 function aggregateWaitLoopRounds(
   aiGroup: AIGroup,
   turnIndex: number,
-  aiGroupId: string
-): WaitLoopInjection | null {
-  const rounds: WaitRoundInfo[] = classifyRounds(aiGroup.responses ?? [])
+  aiGroupId: string,
+  state: WaitTickState
+): { injection: WaitLoopInjection | null; state: WaitTickState } {
+  const quiet: WaitRoundInfo[] = classifyRounds(aiGroup.responses ?? [])
     .filter((round) => round.quiet)
     .map((round) => ({
       uuid: round.uuid,
@@ -482,18 +503,30 @@ function aggregateWaitLoopRounds(
       outputTokens: round.outputTokens,
       billed: round.billed,
     }));
+  const next: WaitTickState =
+    state.turnIndex === turnIndex
+      ? { turnIndex, rounds: [...state.rounds, ...quiet] }
+      : { turnIndex, rounds: quiet };
   // same minimum-round gate as the CLI's wait_loop finding (@shared/constants/loopPolicy):
-  // a lone quiet round is not burn the analyzer would flag
-  if (rounds.length < WAIT_LOOP_MIN_TICKS) return null;
+  // a lone quiet round is not burn the analyzer would flag. Once a turn is
+  // flagged, later groups of the same turn add no second injection.
+  const alreadyFlagged =
+    state.turnIndex === turnIndex && state.rounds.length >= WAIT_LOOP_MIN_TICKS;
+  if (next.rounds.length < WAIT_LOOP_MIN_TICKS || alreadyFlagged) {
+    return { injection: null, state: next };
+  }
 
   return {
-    id: generateWaitLoopId(aiGroupId),
-    category: 'wait-loop',
-    turnIndex,
-    aiGroupId,
-    estimatedTokens: rounds.reduce((sum, round) => sum + round.billed, 0),
-    roundCount: rounds.length,
-    rounds,
+    injection: {
+      id: generateWaitLoopId(aiGroupId),
+      category: 'wait-loop',
+      turnIndex,
+      aiGroupId,
+      estimatedTokens: next.rounds.reduce((sum, round) => sum + round.billed, 0),
+      roundCount: next.rounds.length,
+      rounds: next.rounds,
+    },
+    state: next,
   };
 }
 
@@ -725,6 +758,8 @@ interface ComputeContextStatsParams {
   previousPaths: Set<string>;
   /** Loop streak state threaded across groups (mutated in place) */
   loopState: LoopStreakState;
+  /** Wait-tick accumulation threaded across the groups of one turn (#97) */
+  waitTickState: WaitTickState;
   /** Project root path for resolving relative paths */
   projectRoot: string;
   /** Token data for CLAUDE.md files (global sources) */
@@ -741,6 +776,8 @@ interface ComputeContextStatsResult {
   previousPaths: Set<string>;
   /** Updated loop streak state — caller should thread this to the next group */
   loopState: LoopStreakState;
+  /** Updated wait-tick accumulation — caller should thread this to the next group */
+  waitTickState: WaitTickState;
 }
 
 /**
@@ -901,6 +938,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     previousInjections,
     previousPaths,
     loopState,
+    waitTickState,
     projectRoot,
     claudeMdTokenData,
     mentionedFileTokenData,
@@ -1081,8 +1119,14 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     newInjections.push(loopInjection);
   }
 
-  // d1) Aggregate quiet-round wait-loop burn (billed re-read, not content)
-  const waitLoopInjection = aggregateWaitLoopRounds(aiGroup, aiGroup.turnIndex, turnGroupId);
+  // d1) Aggregate quiet-round wait-loop burn (billed re-read, not content);
+  // ticks accumulate across the AI groups of one turn (#97)
+  const { injection: waitLoopInjection, state: nextWaitTickState } = aggregateWaitLoopRounds(
+    aiGroup,
+    aiGroup.turnIndex,
+    turnGroupId,
+    waitTickState
+  );
   if (waitLoopInjection) {
     newInjections.push(waitLoopInjection);
   }
@@ -1295,6 +1339,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     },
     previousPaths,
     loopState: updatedLoopState,
+    waitTickState: nextWaitTickState,
   };
 }
 
@@ -1383,6 +1428,7 @@ export function processSessionContextWithPhases(
   let isFirstAiGroup = true;
   let previousUserGroup: UserGroup | null = null;
   let loopState = createLoopStreakState();
+  let waitTickState = createWaitTickState();
 
   // Phase tracking state
   let currentPhaseNumber = 1;
@@ -1439,6 +1485,10 @@ export function processSessionContextWithPhases(
       // a compacted session is a fresh conversation — repeat streaks from
       // before the boundary must not leak into the new phase
       loopState = createLoopStreakState();
+      // waitTickState is intentionally NOT reset here: a compact summary does
+      // not consume a turn number (isTurnNumberLine), the post-compact groups
+      // keep the turn's turnIndex, and the wait-loop gate counts the whole
+      // turn (#97)
 
       // Start new phase
       currentPhaseNumber++;
@@ -1481,6 +1531,7 @@ export function processSessionContextWithPhases(
         previousInjections: accumulatedInjections,
         previousPaths,
         loopState,
+        waitTickState,
         projectRoot,
         claudeMdTokenData,
         mentionedFileTokenData,
@@ -1533,6 +1584,7 @@ export function processSessionContextWithPhases(
       accumulatedInjections = stats.accumulatedInjections;
       previousPaths = result.previousPaths;
       loopState = result.loopState;
+      waitTickState = result.waitTickState;
       isFirstAiGroup = false;
       previousUserGroup = null;
     }
