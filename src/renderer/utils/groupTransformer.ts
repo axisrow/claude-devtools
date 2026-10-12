@@ -670,9 +670,10 @@ function aiTurnIndex(turnInputs: number, preInputAIGroups: number): number {
  * Creates an AIGroup from an EnhancedAIChunk.
  *
  * @param chunk - The AI chunk to transform
- * @param turnIndex - 0-based transcript turn = ordinal of the user message this
- *                    group answers (empty turns consume a number); falls back to
- *                    AI-sequence numbering for groups preceding the first user chunk
+ * @param turnIndex - 0-based transcript turn the group belongs to: the user
+ *                    message or teammate relay it answers (empty turns consume
+ *                    a number), or its own pre-input turn (#100) — each AI
+ *                    group preceding the first turn input opens one
  * @returns AIGroup with semantic steps and metrics
  */
 function createAIGroupFromChunk(chunk: EnhancedAIChunk, turnIndex: number): AIGroup {

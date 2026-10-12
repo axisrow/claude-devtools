@@ -511,11 +511,12 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** Turns (user messages and teammate relays, sidechains/compact summaries
-   *  excluded) — the chat numbers chips the same way. A group's chip shows
-   *  the last turn it opened, so an unanswered trailing user turn has no
-   *  chip yet, while an unanswered trailing relay does (glued into the last
-   *  AI group) */
+  /** Turns (user messages and teammate relays; sidechains/compact summaries
+   *  excluded; #100: assistant responses before the first turn input count
+   *  one turn per run, as the chat numbers them) — the chat numbers chips
+   *  the same way. A group's chip shows the last turn it opened, so an
+   *  unanswered trailing user turn has no chip yet, while an unanswered
+   *  trailing relay does (glued into the last AI group) */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
