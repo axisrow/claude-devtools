@@ -94,6 +94,8 @@ export interface SnapshotFinding {
   turnIndex: number | null;
   severity: Finding['severity'];
   tokensWasted: number;
+  /** #82: waste priced at the shared table — absent for unpriced models */
+  wastedUsd?: number;
 }
 
 /** numeric-only snapshot: no summary, no texts, no paths, no raw ids (#79) */
@@ -139,6 +141,7 @@ export function buildSnapshot(
       turnIndex: f.turnIndex ?? null,
       severity: f.severity,
       tokensWasted: f.tokensWasted,
+      ...(f.wastedUsd !== undefined ? { wastedUsd: f.wastedUsd } : {}),
     })),
   };
 }
@@ -214,7 +217,8 @@ const findingEq = (a: SnapshotFinding, b: SnapshotFinding): boolean =>
   a.type === b.type &&
   a.turnIndex === b.turnIndex &&
   a.severity === b.severity &&
-  a.tokensWasted === b.tokensWasted;
+  a.tokensWasted === b.tokensWasted &&
+  a.wastedUsd === b.wastedUsd;
 
 /** multiset diff of findings (same key with different tokensWasted = removed + added) */
 export function diffSnapshots(before: SessionSnapshot, after: SessionSnapshot): SnapshotDiff {

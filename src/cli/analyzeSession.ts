@@ -30,7 +30,7 @@ import {
   WAIT_LOOP_MIN_TICKS,
 } from '@shared/constants/loopPolicy';
 import { asText, bashStem, normalizeCallKey } from '@shared/utils/callKey';
-import { roundCostUsd } from '@shared/utils/pricing';
+import { priceForRound, roundCostUsd } from '@shared/utils/pricing';
 import {
   estimateTokens,
   formatTokensCompact,
@@ -119,6 +119,12 @@ export interface Finding {
   type: FindingType;
   severity: 'low' | 'medium' | 'high';
   tokensWasted: number;
+  /** waste priced at the shared table with cache residency (#82) — absent when a needed round is unpriced or nothing was booked */
+  wastedUsd?: number;
+  /** the same waste in input-token equivalents (#82) */
+  tokensWastedInputEq?: number;
+  /** 'measured' — amount from API counters (contextSize/contextDelta/usage); 'estimated' — chars/4 sizes (#82) */
+  basis: 'measured' | 'estimated';
   turnIndex?: number;
   summary: string;
 }
@@ -131,28 +137,63 @@ interface Claim {
   owner: string;
   want: number;
   cap: number;
+  /** $ per claimed token at the shared table (#82); absent = unpriced source */
+  usdRate?: number;
+  /** input-token equivalents per claimed token (#82) */
+  inputEqRate?: number;
 }
 
 // internal shape during computeFindings: `tokensWasted` holds the RAW amount
 // until the allocation pass replaces it with the non-overlapping share;
 // `free` is uncontested waste (failed-call args, thinking estimate)
-type FindingCandidate = Finding & { free?: number; claims?: Claim[] };
+type FindingCandidate = Finding & {
+  free?: number;
+  claims?: Claim[];
+  freeUsd?: number;
+  freeInputEq?: number;
+};
 
 // each token source books at most once: claims are served in the sorted order
 // (severity, then raw size), a finding gets only the unclaimed remainder and
-// stays visible with 0 when fully overlapped
+// stays visible with 0 when fully overlapped. Dollars (#82) follow the served
+// tokens at the owner's per-token rate; an owner with no rate (unpriced) or a
+// finding with an unpriced free part books no dollars at all.
 function allocateWaste(findings: FindingCandidate[]): void {
   const remaining = new Map<string, number>();
+  const ownerUsdRate = new Map<string, number>();
+  const ownerEqRate = new Map<string, number>();
+  const ownerPriced = new Map<string, boolean>();
   for (const f of findings) {
     let allocated = f.free ?? 0;
+    // a finding with an uncontested free part needs its dollars priced upfront;
+    // claims-only findings start at 0 — their claims decide the pricing
+    let usd = f.free !== undefined ? f.freeUsd : 0;
+    let eq = f.free !== undefined ? f.freeInputEq : 0;
     for (const claim of f.claims ?? []) {
-      if (!remaining.has(claim.owner)) remaining.set(claim.owner, claim.cap);
+      if (!remaining.has(claim.owner)) {
+        remaining.set(claim.owner, claim.cap);
+        // the owner's rate comes from the first (highest-priority) claimant —
+        // result owners price identically for every claimant anyway
+        ownerUsdRate.set(claim.owner, claim.usdRate ?? 0);
+        ownerEqRate.set(claim.owner, claim.inputEqRate ?? 0);
+        ownerPriced.set(claim.owner, claim.usdRate !== undefined);
+      }
       const left = remaining.get(claim.owner) ?? 0;
       const take = Math.min(claim.want, left);
       remaining.set(claim.owner, left - take);
       allocated += take;
+      usd =
+        ownerPriced.get(claim.owner) && usd !== undefined
+          ? usd + take * (ownerUsdRate.get(claim.owner) ?? 0)
+          : undefined;
+      eq =
+        ownerPriced.get(claim.owner) && eq !== undefined
+          ? eq + take * (ownerEqRate.get(claim.owner) ?? 0)
+          : undefined;
     }
     f.tokensWasted = allocated;
+    if (usd !== undefined && usd > 0) f.wastedUsd = usd;
+    if (eq !== undefined && eq > 0) f.tokensWastedInputEq = eq;
   }
 }
 
@@ -164,7 +205,7 @@ interface StreakState {
   turn?: number;
   start: Date;
   end: Date;
-  members: { id: string; tok: number }[];
+  members: { id: string; tok: number; rates?: TokenRates }[];
 }
 
 export interface RoundRow {
@@ -181,6 +222,7 @@ export interface RoundRow {
   outputTokens: number;
   contextSize: number;
   contextDelta: number;
+  /** billed-thinking estimate (#83): output_tokens − visible output, chars/4 */
   thinkingTokens: number;
   tools: string[];
   /** tool-result tokens that landed between the previous request and this one — the contextDelta source (#89) */
@@ -226,13 +268,20 @@ export interface SessionLedger {
 // Ledger (port of the validated prototype)
 // =============================================================================
 
-function thinkingTokensOf(msg: ParsedMessage): number {
-  if (!Array.isArray(msg.content)) return 0;
-  let chars = 0;
-  for (const block of msg.content) {
-    if (block.type === 'thinking') chars += (block.thinking ?? '').length;
+// #83: billed thinking — the raw chain of thought never comes back (thinking
+// blocks hold a summary, often ''), the PAID thinking sits inside
+// output_tokens. Estimate = output − visible output (text blocks + tool_use
+// inputs at chars/4), floored at 0.
+function billedThinkingTokens(msg: ParsedMessage): number {
+  const output = msg.usage?.output_tokens ?? 0;
+  let visibleChars = 0;
+  if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (block.type === 'text') visibleChars += block.text.length;
+    }
   }
-  return Math.ceil(chars / 4);
+  for (const call of msg.toolCalls) visibleChars += JSON.stringify(call.input).length;
+  return Math.max(0, output - Math.ceil(visibleChars / 4));
 }
 
 // active work time of a turn: gaps between consecutive rounds, each capped —
@@ -484,7 +533,8 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     // TTL split only counts when there is a write to split (#72)
     const ttlSplit = cacheWrite > 0 ? u.cache_creation : undefined;
     const contextSize = input + cacheRead + cacheWrite;
-    const think = thinkingTokensOf(msg);
+    // #83: billed-thinking estimate, not the returned thinking text
+    const think = billedThinkingTokens(msg);
     const model = msg.model ?? 'unknown';
     const tools = msg.toolCalls.map((tc) => tc.name);
 
@@ -586,6 +636,110 @@ export function contextSpikeSummary(prev: RoundRow | undefined, r: RoundRow): st
 // since/until scope the tool-call walk (duplicate/failed/oversized) to the same
 // window as the ledger; the results map is still built from ALL messages, so a
 // call inside the window resolves a result that landed after --until
+
+// =============================================================================
+// Residency pricing (#82) — what a token of waste costs in $ once it exists
+// =============================================================================
+
+interface TokenRates {
+  usdRate?: number;
+  inputEqRate?: number;
+}
+
+interface ResidencyPricer {
+  /** result content of a call made at `ts`: write at its round + one cache read per later round */
+  resultRates: (ts: number) => TokenRates | undefined;
+  /** a whole round's context at its actual input-side billing mix */
+  roundRates: (r: RoundRow) => TokenRates | undefined;
+  /** round lookup by 1-based ledger index (cycle findings carry roundIndex) */
+  roundRatesByIndex: (index: number) => TokenRates | undefined;
+  /** cache_dead: only the fresh-input premium over a cache read, not the context */
+  premiumRates: (r: RoundRow) => TokenRates | undefined;
+  /** one-shot fresh input (failed-call args) at the appearing round's input rate */
+  inputRates: (ts: number) => TokenRates | undefined;
+}
+
+// Content appearing at round k is written to the cache once and re-read by
+// every later round until a context drop (compaction) cuts it — buildLedger's
+// negative contextDelta is that boundary. Ghost rounds (contextSize 0) read
+// nothing but do not end residency. Unpriced rounds poison their whole span:
+// a partial dollar figure would be worse than none.
+function residencyPricer(ledger: SessionLedger): ResidencyPricer {
+  const rounds = ledger.rounds;
+  // readAfter[k] = Σ cache-read $/MTok over readable rounds after k
+  const readAfter: (number | null)[] = [];
+  if (rounds.length > 0) readAfter[rounds.length - 1] = 0;
+  for (let k = rounds.length - 2; k >= 0; k--) {
+    const next = rounds[k + 1];
+    if (next.contextDelta < 0) {
+      readAfter[k] = 0; // compaction cut — nothing older is re-read after this
+      continue;
+    }
+    const tail = readAfter[k + 1];
+    const p = next.contextSize > 0 ? priceForRound(next) : null;
+    readAfter[k] = p && tail !== null ? p.cacheRead + tail : next.contextSize === 0 ? tail : null;
+  }
+
+  // the ledger round a call belongs to — its content lands in the gap after
+  // that round (rounds and the walked messages are both time-sorted)
+  let cursor = 0;
+  const appearingRoundOf = (ts: number): number => {
+    while (cursor + 1 < rounds.length && rounds[cursor + 1].timestamp.getTime() <= ts) {
+      cursor += 1;
+    }
+    return rounds.length > 0 && rounds[cursor].timestamp.getTime() <= ts ? cursor : -1;
+  };
+
+  const rates = (perMTok: number, inputPerMTok: number): TokenRates => ({
+    usdRate: perMTok / 1e6,
+    inputEqRate: perMTok / inputPerMTok,
+  });
+
+  return {
+    resultRates(ts: number): TokenRates | undefined {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return undefined;
+      // the content first bills as a cache WRITE on round k+1's request — it
+      // cannot be READ there (it is not cached yet), so the reads start at
+      // round k+2 until compaction cuts the residency
+      const next = rounds[k + 1];
+      if (!next) return { usdRate: 0, inputEqRate: 0 }; // never sent again — no future cost
+      const p = priceForRound(next);
+      const after = readAfter[k + 1];
+      if (!p || after === null) return undefined;
+      return rates(p.cacheWrite5m + after, p.input);
+    },
+    roundRates(r: RoundRow): TokenRates | undefined {
+      const p = priceForRound(r);
+      if (!p || r.contextSize === 0) return undefined;
+      const cw5 = r.cacheWrite5mTokens ?? r.cacheCreationTokens;
+      const cw1 = r.cacheWrite1hTokens ?? 0;
+      const perMTok =
+        r.inputTokens * p.input +
+        r.cacheReadTokens * p.cacheRead +
+        cw5 * p.cacheWrite5m +
+        cw1 * p.cacheWrite1h;
+      return rates(perMTok / r.contextSize, p.input);
+    },
+    roundRatesByIndex(index: number): TokenRates | undefined {
+      const r = rounds[index - 1]; // ledger round indexes are 1-based
+      return r ? this.roundRates(r) : undefined;
+    },
+    premiumRates(r: RoundRow): TokenRates | undefined {
+      const p = priceForRound(r);
+      if (!p) return undefined;
+      return rates(p.input - p.cacheRead, p.input);
+    },
+    inputRates(ts: number): TokenRates | undefined {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return undefined;
+      const p = priceForRound(rounds[k]);
+      if (!p) return undefined;
+      return rates(p.input, p.input);
+    },
+  };
+}
+
 export function computeFindings(
   messages: ParsedMessage[],
   ledger: SessionLedger,
@@ -594,6 +748,7 @@ export function computeFindings(
 ): Finding[] {
   const findings: FindingCandidate[] = [];
   const th = WASTE_THRESHOLDS;
+  const pricer = residencyPricer(ledger);
 
   const results = new Map<string, { content: string | unknown[]; isError: boolean }>();
   for (const msg of messages) {
@@ -609,7 +764,12 @@ export function computeFindings(
   const retryCopies = getRetryCopyMessageIds(messages);
   const seen = new Map<
     string,
-    { count: number; tokens: number; first: number; repeats: { id: string; tok: number }[] }
+    {
+      count: number;
+      tokens: number;
+      first: number;
+      repeats: { id: string; tok: number; rates?: TokenRates }[];
+    }
   >();
 
   // loop_streak: the same call repeated back-to-back — model no-op loops
@@ -634,8 +794,14 @@ export function computeFindings(
         severity: streak.count >= 5 ? 'high' : 'medium',
         tokensWasted: streak.tokens,
         turnIndex: streak.turn,
+        basis: 'estimated',
         summary: `${short(streakKey, 60)} — x${streak.count} back-to-back (${env ? 'env loop — same failure each time' : 'no-op loop'}) ${hhmm(streak.start)}–${hhmm(streak.end)}`,
-        claims: streak.members.map((m) => ({ owner: `result:${m.id}`, want: m.tok, cap: m.tok })),
+        claims: streak.members.map((m) => ({
+          owner: `result:${m.id}`,
+          want: m.tok,
+          cap: m.tok,
+          ...(m.rates ?? {}),
+        })),
       });
     }
     streak = null;
@@ -658,7 +824,11 @@ export function computeFindings(
         streak.count += 1;
         streak.tokens += resultTok;
         // repeats only — the first call was legitimate, its result is not waste
-        streak.members.push({ id: call.id, tok: resultTok });
+        streak.members.push({
+          id: call.id,
+          tok: resultTok,
+          rates: pricer.resultRates(msg.timestamp.getTime()),
+        });
         if (result?.isError) streak.errors += 1;
         streak.end = msg.timestamp;
       } else {
@@ -679,15 +849,28 @@ export function computeFindings(
         const rejected = REJECTION_PATTERNS.some((p) => text.includes(p));
         if (!rejected) {
           const inputTok = estimateTokens(JSON.stringify(call.input));
+          const ir = pricer.inputRates(msg.timestamp.getTime());
+          const rr = pricer.resultRates(msg.timestamp.getTime());
           findings.push({
             type: 'failed_call',
             severity: 'medium',
             tokensWasted: inputTok + resultTok,
+            basis: 'estimated',
             summary: `${call.name} failed: ${short(text, 80)}`,
             // the call's own args are uncontested; the result competes with
-            // oversized/duplicate/streak/probe claims on the same toolUseId
+            // oversized/duplicate/streak/probe claims on the same toolUseId —
+            // the claim stays unconditional (unpriced drops only the rates),
+            // otherwise the overlapped findings' raw booking would shift
             free: inputTok,
-            claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }],
+            ...(ir ? { freeUsd: inputTok * (ir.usdRate ?? 0), freeInputEq: inputTok } : {}),
+            claims: [
+              {
+                owner: `result:${call.id}`,
+                want: resultTok,
+                cap: resultTok,
+                ...(rr ?? {}),
+              },
+            ],
           });
         }
       }
@@ -696,8 +879,16 @@ export function computeFindings(
           type: 'oversized_output',
           severity: 'medium',
           tokensWasted: resultTok,
+          basis: 'estimated',
           summary: `${call.name} returned ~${formatTokensCompact(resultTok)} tok: ${short(call.name === 'Bash' ? asText(call.input.command) : JSON.stringify(call.input), 70)}`,
-          claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }],
+          claims: [
+            {
+              owner: `result:${call.id}`,
+              want: resultTok,
+              cap: resultTok,
+              ...(pricer.resultRates(msg.timestamp.getTime()) ?? {}),
+            },
+          ],
         });
       }
 
@@ -705,7 +896,11 @@ export function computeFindings(
       if (prev) {
         prev.count += 1;
         prev.tokens += resultTok;
-        prev.repeats.push({ id: call.id, tok: resultTok });
+        prev.repeats.push({
+          id: call.id,
+          tok: resultTok,
+          rates: pricer.resultRates(msg.timestamp.getTime()),
+        });
       } else {
         seen.set(key, { count: 1, tokens: resultTok, first: resultTok, repeats: [] });
       }
@@ -719,8 +914,14 @@ export function computeFindings(
         type: 'duplicate_call',
         severity: 'medium',
         tokensWasted: reread,
+        basis: 'estimated',
         summary: `${short(key, 90)} — called ${count}x (~${formatTokensCompact(reread)} tok of results re-read)`,
-        claims: repeats.map((rp) => ({ owner: `result:${rp.id}`, want: rp.tok, cap: rp.tok })),
+        claims: repeats.map((rp) => ({
+          owner: `result:${rp.id}`,
+          want: rp.tok,
+          cap: rp.tok,
+          ...(rp.rates ?? {}),
+        })),
       });
     }
   }
@@ -740,8 +941,16 @@ export function computeFindings(
         severity: 'high',
         tokensWasted: r.contextDelta,
         turnIndex: r.turnIndex,
+        basis: 'measured',
         summary: contextSpikeSummary(prev, r),
-        claims: [{ owner: `round:${r.index}`, want: r.contextDelta, cap: r.contextSize }],
+        claims: [
+          {
+            owner: `round:${r.index}`,
+            want: r.contextDelta,
+            cap: r.contextSize,
+            ...(pricer.roundRates(r) ?? {}),
+          },
+        ],
       });
     }
     if (
@@ -754,8 +963,17 @@ export function computeFindings(
         severity: 'high',
         tokensWasted: r.contextSize,
         turnIndex: r.turnIndex,
+        basis: 'measured',
         summary: `no prompt caching: ${formatTokensCompact(r.contextSize)} tok billed as fresh input (model ${r.model})`,
-        claims: [{ owner: `round:${r.index}`, want: r.contextSize, cap: r.contextSize }],
+        // #82: the dollars book only the fresh-input premium over a cache read
+        claims: [
+          {
+            owner: `round:${r.index}`,
+            want: r.contextSize,
+            cap: r.contextSize,
+            ...(pricer.premiumRates(r) ?? {}),
+          },
+        ],
       });
     }
   }
@@ -764,13 +982,29 @@ export function computeFindings(
     const rs = byTurn.get(turn.index) ?? [];
     const think = rs.reduce((s, r) => s + r.thinkingTokens, 0);
     if (think > th.thinkingHeavyTokens) {
+      // billed thinking is output-side waste: price it at each round's output
+      // rate; one unpriced round and the dollars stay absent (#82)
+      let usd: number | undefined = 0;
+      let eq: number | undefined = 0;
+      for (const r of rs) {
+        const p = priceForRound(r);
+        if (!p) {
+          usd = undefined;
+          eq = undefined;
+          break;
+        }
+        usd += (r.thinkingTokens * p.output) / 1e6;
+        eq += r.thinkingTokens * (p.output / p.input);
+      }
       findings.push({
         type: 'thinking_heavy',
         severity: 'low',
         tokensWasted: think,
         turnIndex: turn.index,
+        basis: 'estimated',
         summary: `thinking ~${formatTokensCompact(think)} tok in turn ${turn.index}`,
-        free: think, // chars/4 estimate — no competing claimant books thinking
+        free: think, // estimate — no competing claimant books thinking
+        ...(usd !== undefined && eq !== undefined ? { freeUsd: usd, freeInputEq: eq } : {}),
       });
     }
     if (turn.activeMinutes >= th.longTurnActiveMinutes) {
@@ -783,6 +1017,7 @@ export function computeFindings(
       findings.push({
         type: 'long_turn',
         severity: 'high',
+        basis: 'measured',
         // observation, not waste — unlike other findings this books no redundant
         // tokens (the summary carries the activity numbers), so consumers summing
         // tokensWasted don't count a healthy turn's whole billing as waste
@@ -804,11 +1039,13 @@ export function computeFindings(
         severity: ticks.length >= 20 ? 'high' : 'medium',
         tokensWasted: wasted,
         turnIndex: turn.index,
+        basis: 'measured',
         summary: `wait-loop: ${ticks.length} quiet rounds re-read ~${formatTokensCompact(wasted)} tok (≤300 tok of output each)`,
         claims: ticks.map((r) => ({
           owner: `round:${r.index}`,
           want: r.contextSize,
           cap: r.contextSize,
+          ...(pricer.roundRates(r) ?? {}),
         })),
       });
     }
@@ -828,11 +1065,13 @@ export function computeFindings(
           severity: stallRounds.length >= 5 ? 'high' : 'medium',
           tokensWasted: stallWasted,
           turnIndex: turn.index,
+          basis: 'measured',
           summary: `stall: ${stallRounds.length} rounds with no context growth re-read ~${formatTokensCompact(stallWasted)} tok (${short(stallStart.tools.join(', ') || 'tool calls', 40)}) ${hhmm(stallStart.timestamp)}–${hhmm(stallEnd.timestamp)}`,
           claims: stallRounds.map((r) => ({
             owner: `round:${r.index}`,
             want: r.contextSize,
             cap: r.contextSize,
+            ...(pricer.roundRates(r) ?? {}),
           })),
         });
       }
@@ -858,7 +1097,10 @@ export function computeFindings(
   // serves claims in exactly this order, so the direction is load-bearing
   findings.sort((a, b) => order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted);
   allocateWaste(findings);
-  return findings.map(({ free: _free, claims: _claims, ...finding }) => finding);
+  return findings.map(
+    ({ free: _free, claims: _claims, freeUsd: _freeUsd, freeInputEq: _freeInputEq, ...finding }) =>
+      finding
+  );
 }
 
 export function short(s: string, n: number): string {
@@ -913,7 +1155,8 @@ interface CycleRound {
 export function detectCycleFindings(
   messages: ParsedMessage[],
   ledger: SessionLedger,
-  results: Map<string, { content: string | unknown[]; isError: boolean }>
+  results: Map<string, { content: string | unknown[]; isError: boolean }>,
+  pricer: ResidencyPricer = residencyPricer(ledger)
 ): FindingCandidate[] {
   const findings: FindingCandidate[] = [];
   // same round source as buildLedger (dedup + filters), retry copies dropped
@@ -989,11 +1232,13 @@ export function detectCycleFindings(
             severity: reps >= 4 ? 'high' : 'medium',
             tokensWasted: wasted,
             turnIndex,
+            basis: 'measured',
             summary: `cycle: ${motif} — x${reps} repeats re-read ~${formatTokensCompact(wasted)} tok ${hhmm(rs[i].timestamp)}–${hhmm(rs[i + reps * L - 1].timestamp)}`,
             claims: rs.slice(i + L, i + reps * L).map((r) => ({
               owner: `round:${r.roundIndex}`,
               want: r.contextSize,
               cap: r.contextSize,
+              ...(pricer.roundRatesByIndex(r.roundIndex) ?? {}),
             })),
           });
           i += reps * L;
@@ -1006,12 +1251,21 @@ export function detectCycleFindings(
 
     // probe with the same result: same call key re-run, identical first+last
     // line — the loop re-asked its question without learning anything
-    const byKey = new Map<string, { id: string; sig: string; ts: Date; tok: number }[]>();
+    const byKey = new Map<
+      string,
+      { id: string; sig: string; ts: Date; tok: number; rates?: TokenRates }[]
+    >();
     for (const r of rs) {
       for (const c of r.calls) {
         if (!c.sig || MUTATING_TOOLS.has(c.toolName)) continue;
         const list = byKey.get(c.key);
-        const entry = { id: c.id, sig: c.sig, ts: r.timestamp, tok: c.tok };
+        const entry = {
+          id: c.id,
+          sig: c.sig,
+          ts: r.timestamp,
+          tok: c.tok,
+          rates: pricer.resultRates(r.timestamp.getTime()),
+        };
         if (list) list.push(entry);
         else byKey.set(c.key, [entry]);
       }
@@ -1031,8 +1285,14 @@ export function detectCycleFindings(
         severity: 'medium',
         tokensWasted: repeats.reduce((s, e) => s + e.tok, 0),
         turnIndex,
+        basis: 'estimated',
         summary: `probe no progress: ${short(key, 60)} — same result x${best.len}: ${short(list[best.start].sig, 70)}`,
-        claims: repeats.map((e) => ({ owner: `result:${e.id}`, want: e.tok, cap: e.tok })),
+        claims: repeats.map((e) => ({
+          owner: `result:${e.id}`,
+          want: e.tok,
+          cap: e.tok,
+          ...(e.rates ?? {}),
+        })),
       });
     }
   }
@@ -1329,7 +1589,7 @@ function printReport(
   );
   console.log(`cache_write (new)    : ${fmt(t.cacheCreationTokens)}`);
   console.log(`output               : ${fmt(t.outputTokens)}`);
-  console.log(`thinking (estimate)  : ~${fmt(t.thinkingTokens)}`);
+  console.log(`thinking (billed est.) : ~${fmt(t.thinkingTokens)}`);
   console.log(`TOTAL                : ${fmt(t.billedTokens)}`);
   console.log(`reread share         : ${Math.round(t.rereadShare * 100)}%`);
   console.log();
@@ -1404,7 +1664,10 @@ function printReport(
   } else {
     for (const f of visible) {
       const turnTag = f.turnIndex === undefined ? '' : ', turn ' + String(f.turnIndex);
-      console.log(`[${f.type}${turnTag}] ${f.summary}`);
+      const usdTag =
+        !opts.noCost && f.wastedUsd !== undefined ? ` ~$${f.wastedUsd.toFixed(4)}` : '';
+      const estTag = f.basis === 'estimated' ? ' (est)' : '';
+      console.log(`[${f.type}${turnTag}]${usdTag}${estTag} ${f.summary}`);
     }
   }
   console.log();
@@ -1512,6 +1775,10 @@ async function main(): Promise<void> {
     }
     const ledgerOut = opts.noCost ? { ...ledger, totals: totalsOut } : ledger;
     const breakdown = opts.breakdown ? breakdownFromRounds(ledger.rounds, !opts.noCost) : undefined;
+    // --no-cost is "no cost figures at all": findings' dollar fields go too
+    const findingsOut = opts.noCost
+      ? findings.map(({ wastedUsd: _usd, tokensWastedInputEq: _eq, ...f }) => f)
+      : findings;
     console.log(
       JSON.stringify(
         {
@@ -1519,7 +1786,7 @@ async function main(): Promise<void> {
           projectId,
           sessionId,
           ledger: ledgerOut,
-          findings,
+          findings: findingsOut,
           subagents: subagentSummaries,
           ...(breakdown ? { breakdown } : {}),
         },
