@@ -77,6 +77,7 @@ describe('corpus mini fixtures (CI stand-in for the real corpus)', () => {
     const ledger = buildLedger(messages);
     const findings = computeFindings(messages, ledger);
     const types = findings.map((f) => f.type);
+    console.log('DEBUG corpus loop-streak types:', JSON.stringify(types));
     expect(types).toContain('loop_streak');
     expect(types).toContain('failed_call');
   });
