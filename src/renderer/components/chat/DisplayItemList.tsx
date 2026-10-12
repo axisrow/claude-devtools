@@ -17,6 +17,7 @@ import { BaseItem } from './items/BaseItem';
 import { LinkedToolItem } from './items/LinkedToolItem';
 import { SlashItem } from './items/SlashItem';
 import { SubagentItem } from './items/SubagentItem';
+import { TaskNotificationItem } from './items/TaskNotificationItem';
 import { TeammateMessageItem } from './items/TeammateMessageItem';
 import { TextItem } from './items/TextItem';
 import { ThinkingItem } from './items/ThinkingItem';
@@ -263,6 +264,11 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 onReplyHover={handleReplyHover}
               />
             );
+            break;
+          }
+
+          case 'task_notification': {
+            element = <TaskNotificationItem notification={item.notification} />;
             break;
           }
 

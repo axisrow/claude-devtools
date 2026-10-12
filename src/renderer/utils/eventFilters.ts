@@ -43,6 +43,8 @@ export function displayItemFilterTypes(item: AIGroupDisplayItem): EventFilterTyp
       return ['subagents'];
     case 'teammate_message':
       return ['teammates'];
+    case 'task_notification':
+      return ['system'];
     case 'slash':
       return ['system'];
     case 'compact_boundary':

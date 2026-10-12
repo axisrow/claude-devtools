@@ -13,6 +13,7 @@ import type {
 export type { SemanticStep };
 import type { ClaudeMdStats } from './claudeMd';
 import type { CompactionTokenDelta } from './contextInjection';
+import type { TaskNotification } from '@shared/utils/contentSanitizer';
 import type { ModelInfo } from '@shared/utils/modelParser';
 
 // =============================================================================
@@ -254,6 +255,7 @@ export type AIGroupDisplayItem =
   | { type: 'output'; content: string; timestamp: Date; tokenCount?: number; roundId?: string }
   | { type: 'slash'; slash: SlashItem; roundId?: string }
   | { type: 'teammate_message'; teammateMessage: TeammateMessage }
+  | { type: 'task_notification'; notification: TaskNotification; timestamp: Date }
   | {
       type: 'subagent_input';
       content: string;

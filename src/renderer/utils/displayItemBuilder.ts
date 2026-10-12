@@ -5,6 +5,7 @@
  */
 
 import { isTeammateRelayLine } from '@shared/turnAccounting';
+import { parseTaskNotifications } from '@shared/utils/contentSanitizer';
 import { parseAllTeammateMessages } from '@shared/utils/teammateMessageParser';
 
 import { estimateTokens, formatToolInput, formatToolResult, toDate } from './aiGroupHelpers';
@@ -32,6 +33,8 @@ export function displayItemKey(item: AIGroupDisplayItem, index: number): string 
       return `slash-${item.slash.name}-${index}`;
     case 'teammate_message':
       return `teammate-${item.teammateMessage.id}-${index}`;
+    case 'task_notification':
+      return `task-${item.notification.taskId || index}-${index}`;
     case 'subagent_input':
       return `input-${index}`;
     case 'compact_boundary':
@@ -55,6 +58,8 @@ function getDisplayItemTimestamp(item: AIGroupDisplayItem): Date {
       return toDate(item.slash.timestamp);
     case 'teammate_message':
       return toDate(item.teammateMessage.timestamp);
+    case 'task_notification':
+      return toDate(item.timestamp);
     case 'subagent_input':
     case 'compact_boundary':
       return toDate(item.timestamp);
@@ -284,6 +289,14 @@ export function buildDisplayItems(
             timestamp: toDate(msg.timestamp),
             tokenCount: estimateTokens(parsed.content),
           },
+        });
+      }
+      // Background task wake-ups (#104): parsed from the same non-meta user lines
+      for (const notification of parseTaskNotifications(rawText)) {
+        displayItems.push({
+          type: 'task_notification',
+          notification,
+          timestamp: toDate(msg.timestamp),
         });
       }
     }
