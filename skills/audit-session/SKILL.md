@@ -45,7 +45,7 @@ Churning beats progressing: same-result probes inside a cycle mean it is stuck e
 | oversized_output | one tool result over ~8k tok | narrower flags on the command; write to a file and Read slices |
 | context_spike | context jumped +30k in one round | move that work into a subagent so the parent only sees the summary |
 | cache_dead | whole context billed as fresh input (no cache reads/writes) | check the provider/router setup — first-party Anthropic API should never look like this |
-| thinking_heavy | >8k estimated thinking tok in one turn — the estimate measures returned thinking text, not billed thinking tokens (open issue #83) | split the long turn, scope the task tighter |
+| thinking_heavy | >8k billed thinking tok in one turn — estimated as output_tokens minus visible output, since the raw chain of thought is never returned (#83) | split the long turn, scope the task tighter |
 | long_turn | observation, not waste: the turn ran ≥45 active minutes (tokensWasted is 0; the summary names the top tools) | usually fine — scope or split the task only when the turn also churns |
 | loop_streak | the same call back-to-back ×4+ — a no-op loop (e.g. `Bash true` ×N) or an env loop hammering the same failure | no-op → deny rule for the command; env loop → fix the failing setup, not the command |
 | stall_streak | rounds that make tool calls yet stop growing the context (echo-marker polling the repeat-key walk cannot see) ×4+ | the turn is spinning without progress — stop and change the approach |
@@ -53,5 +53,7 @@ Churning beats progressing: same-result probes inside a cycle mean it is stuck e
 | cycle_motif | a sequence of 3–5 rounds repeated 3+ times (diagnose-fix-verify churn) | look at probe_no_progress in the same turn: present → churning, change the approach; absent → legitimate work, consider a subagent for the loop |
 | probe_no_progress | a non-mutating probe re-run with the same result signature — the loop re-asked its question and learned nothing | change the approach: state is not moving |
 | !SLOW (SUBAGENTS table) | subagent ran past the threshold | split its prompt; pass less context in |
+
+Findings print `~$X` when the waste is priced at the shared table with cache residency (a result stays in context and is re-read every round until compaction — the $ includes those re-reads; cache_dead counts only the fresh-input premium), and `(est)` when the amount rides on chars/4 sizes rather than API counters (#82). `--json` carries `wastedUsd`, `tokensWastedInputEq` and `basis: measured | estimated` per finding.
 
 Finish with the numbers: total billed tokens, reread share, top findings by wasted tokens, and a concrete fix for each. The CLI observes, it does not prevent — prevention is deny rules in Claude Code settings.
