@@ -12,6 +12,8 @@ Runs the inventory CLI from a claude-devtools checkout (plugin root = repo root)
 
 - `--project <dir|encoded>` — one project (plain path or encoded dir name); omit for all projects
 - `--min-minutes N` — only sessions running at least N minutes
+- `--min-turn-minutes N` — only sessions whose longest turn ran at least N active minutes
+- `--min-streak N` — only sessions where some back-to-back cycle ran at least N times (floor 4 — shorter runs are not recorded)
 - `--sort duration|tokens|date` (default duration) and `--limit N`
 - `--since/--until YYYY-MM-DD` or `--last N` — by last-activity date
 - `--breakdown` — per-session model token split (models column shows shares)
