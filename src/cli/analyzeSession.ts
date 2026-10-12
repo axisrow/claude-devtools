@@ -23,7 +23,12 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
+import {
+  isQuietTick,
+  isStalledRound,
+  LOOP_MIN_STREAK,
+  WAIT_LOOP_MIN_TICKS,
+} from '@shared/constants/loopPolicy';
 import { asText, bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -155,7 +160,7 @@ export const WASTE_THRESHOLDS = {
   cacheDeadContextTokens: 20000,
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
-  loopStreakMin: 3,
+  loopStreakMin: LOOP_MIN_STREAK, // from @shared/constants/loopPolicy — shared with the panel and the bell's default cycleThreshold (#96)
   waitLoopTicks: WAIT_LOOP_MIN_TICKS, // from @shared/constants/loopPolicy — shared with the renderer
 } as const;
 
@@ -221,6 +226,10 @@ export interface RoundRow {
   contextDelta: number;
   thinkingTokens: number;
   tools: string[];
+  /** tool-result tokens that landed between the previous request and this one — the contextDelta source (#89) */
+  resultTokens: number;
+  /** user/meta text injected in the same gap (skill body, attachment, user prompt) (#89) */
+  injectedTextTokens: number;
   /** router-retry copy of the previous round — counted in sums, excluded from findings (#15) */
   isRetryCopy?: boolean;
 }
@@ -287,14 +296,15 @@ export function roundCostUsd(r: RoundRow): number | null {
 }
 
 // active work time of a turn: gaps between consecutive rounds, each capped —
-// hours of orchestrator silence between pings count as zero, not as a "turn"
+// hours of orchestrator silence between pings count as zero, not as a "turn".
+// Returns fractional minutes; only displayed totals are rounded (issue #91)
 export function turnActiveMinutes(rounds: RoundRow[]): number {
   let ms = 0;
   for (let i = 1; i < rounds.length; i++) {
     const gap = rounds[i].timestamp.getTime() - rounds[i - 1].timestamp.getTime();
     ms += Math.min(Math.max(gap, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
   }
-  return Math.round(ms / 60000);
+  return ms / 60000;
 }
 
 // one grouping of rounds by turn, shared by totals, findings and the report
@@ -491,6 +501,11 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
   let prevContext = 0;
   let minTs = Number.POSITIVE_INFINITY;
   let maxTs = Number.NEGATIVE_INFINITY;
+  // #89: everything that lands between request N−1 and request N — tool results
+  // of round N−1's calls + user/meta text (skill bodies, attachments, prompts).
+  // Round N's contextDelta is made of THIS gap, not of round N's own calls.
+  let gapToolTok = 0;
+  let gapTextTok = 0;
 
   const newTurn = (ts: Date): TurnRow => {
     const turn: TurnRow = { index: turns.length + 1, start: ts, activeMinutes: 0 };
@@ -505,10 +520,17 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
 
     if (msg.isCompactSummary) continue; // structural message — not a turn (app numbering, jsonl.ts:545)
     if (isParsedUserChunkMessage(msg) && !msg.isSidechain) {
+      gapTextTok += estimateTokens(injectedText(msg.content));
       newTurn(msg.timestamp);
       continue;
     }
-    if (msg.type !== 'assistant' || msg.isSidechain) continue;
+    if (msg.isSidechain) continue; // subagent context — never lands in the parent's gap
+    if (msg.type !== 'assistant') {
+      // user/meta carrier between rounds: tool results + injected text
+      for (const r of msg.toolResults) gapToolTok += estimateTokens(resultText(r.content));
+      gapTextTok += estimateTokens(injectedText(msg.content));
+      continue;
+    }
     if (!msg.usage || msg.model === '<synthetic>') continue;
 
     const turn = currentTurn ?? newTurn(msg.timestamp);
@@ -542,9 +564,17 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       contextDelta: rounds.length === 0 || contextSize === 0 ? 0 : contextSize - prevContext,
       thinkingTokens: think,
       tools,
+      // ghosts (#14) book no gap: contextSize 0 swallows nothing, the gap
+      // belongs to the next request that actually grows the context
+      resultTokens: contextSize > 0 ? gapToolTok : 0,
+      injectedTextTokens: contextSize > 0 ? gapTextTok : 0,
       isRetryCopy: isRetryCopy || undefined,
     };
-    if (contextSize > 0) prevContext = contextSize;
+    if (contextSize > 0) {
+      gapToolTok = 0;
+      gapTextTok = 0;
+      prevContext = contextSize;
+    }
     rounds.push(round);
     models.add(model);
   }
@@ -573,6 +603,42 @@ export { bashStem, normalizeCallKey } from '@shared/utils/callKey';
 
 function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
+}
+
+// text payload of a user message: string content or text blocks only —
+// tool_result blocks are counted via toolResults, so counting the whole
+// array here would double them (#89)
+function injectedText(content: ParsedMessage['content']): string {
+  if (typeof content === 'string') return content;
+  let text = '';
+  for (const block of content) {
+    if (block.type === 'text') text += `${block.text}\n`;
+  }
+  return text;
+}
+
+// #89: round N's contextDelta is what landed AFTER round N−1's calls — their
+// tool results plus any user/meta text between the requests. The spike round's
+// own `tools` are the response to the already-grown context, not the cause.
+export function contextSpikeSummary(prev: RoundRow | undefined, r: RoundRow): string {
+  const span = `(${formatTokensCompact(r.contextSize - r.contextDelta)} → ${formatTokensCompact(r.contextSize)})`;
+  const roundTag = prev ? `round ${prev.index}` : 'the previous round';
+  const sources: string[] = [];
+  if (r.resultTokens > 0) {
+    sources.push(
+      `~${formatTokensCompact(r.resultTokens)} tok of ${roundTag} results (${prev?.tools.join(', ') || 'tool calls'})`
+    );
+  }
+  if (r.injectedTextTokens > 0) {
+    sources.push(
+      `~${formatTokensCompact(r.injectedTextTokens)} tok injected as user/meta text (skill body, attachment, user message — not a tool result)`
+    );
+  }
+  const cause =
+    sources.length > 0
+      ? sources.join(' + ')
+      : `${roundTag}'s own output (no tool result or injection recorded)`;
+  return `context +${formatTokensCompact(r.contextDelta)} after ${cause} ${span}`;
 }
 
 // since/until scope the tool-call walk (duplicate/failed/oversized) to the same
@@ -704,15 +770,21 @@ export function computeFindings(
   }
 
   // context-side findings from the ledger
-  for (const r of ledger.rounds) {
+  for (let i = 0; i < ledger.rounds.length; i++) {
+    const r = ledger.rounds[i];
     if (r.isRetryCopy) continue; // findings already reported for the original round
     if (r.contextDelta > th.contextSpikeTokens) {
+      // prev = the round the delta is measured against — the last one with a
+      // non-zero context (ghosts #14 don't update prevContext, same walk)
+      let j = i - 1;
+      while (j >= 0 && ledger.rounds[j].contextSize === 0) j--;
+      const prev = ledger.rounds[j];
       findings.push({
         type: 'context_spike',
         severity: 'high',
         tokensWasted: r.contextDelta,
         turnIndex: r.turnIndex,
-        summary: `context +${formatTokensCompact(r.contextDelta)} in one round (${formatTokensCompact(r.contextSize - r.contextDelta)} → ${formatTokensCompact(r.contextSize)}), tools: ${r.tools.join(', ') || 'none'}`,
+        summary: contextSpikeSummary(prev, r),
       });
     }
     if (
@@ -757,7 +829,7 @@ export function computeFindings(
         // tokensWasted don't count a healthy turn's whole billing as waste
         tokensWasted: 0,
         turnIndex: turn.index,
-        summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
+        summary: `active ${Math.round(turn.activeMinutes)} min, ${calls} tool calls (${top || 'no tools'})`,
       });
     }
     // A tick is an IDLE round (no tool call) — see isQuietTick in loopPolicy:
@@ -1212,7 +1284,7 @@ function printTurnDeepDive(
   console.log(`=== TURN ${turnNo} ===`);
   console.log(`user  : ${preview}`);
   console.log(
-    `span  : ${dur(span)} wall, active ${turn.activeMinutes}m, ${rs.length} rounds, ${rs.reduce((s, r) => s + r.tools.length, 0)} tool calls`
+    `span  : ${dur(span)} wall, active ${Math.round(turn.activeMinutes)}m, ${rs.length} rounds, ${rs.reduce((s, r) => s + r.tools.length, 0)} tool calls`
   );
   if (first && last) {
     console.log(
@@ -1261,7 +1333,7 @@ function printReport(
   }
   if (t.longestTurn) {
     console.log(
-      `longest turn: #${t.longestTurn.turn} (active ${t.longestTurn.activeMinutes}m, ${t.longestTurn.rounds} rounds)`
+      `longest turn: #${t.longestTurn.turn} (active ${Math.round(t.longestTurn.activeMinutes)}m, ${t.longestTurn.rounds} rounds)`
     );
   }
   if (t.costUsd !== undefined && !opts.noCost) {
@@ -1313,7 +1385,7 @@ function printReport(
     const toolCounts = countTools(rs);
     const tools = [...toolCounts].map(([n, c]) => `${n} x${c}`).join(', ');
     console.log(
-      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(turn.activeMinutes + 'm', 5)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
+      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(Math.round(turn.activeMinutes) + 'm', 5)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
     );
   }
   console.log();

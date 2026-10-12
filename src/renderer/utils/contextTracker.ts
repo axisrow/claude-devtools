@@ -9,7 +9,12 @@
  * This builds on claudeMdTracker.ts and extends it to track all context sources.
  */
 
-import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
+import {
+  isQuietTick,
+  isStalledRound,
+  LOOP_MIN_STREAK,
+  WAIT_LOOP_MIN_TICKS,
+} from '@shared/constants/loopPolicy';
 import {
   billedRequestKey,
   firstAssistantTotalTokens,
@@ -238,8 +243,9 @@ function createMentionedFileInjection(
 
 /**
  * Aggregate tool outputs from all linked tools in a turn, splitting repeat
- * calls (2..N of a back-to-back identical series, same key as the live loop
- * detector) into the loop bucket. Slash/skill items stay in tool-output.
+ * calls (the LOOP_MIN_STREAK..N tail of a back-to-back identical series, same
+ * key and gate as the live loop detector) into the loop bucket. Slash/skill
+ * items stay in tool-output.
  * Advances loopState for every non-coordination call, even zero-token ones.
  */
 function aggregateToolOutputs(
@@ -283,10 +289,12 @@ function aggregateToolOutputs(
     // Classify BEFORE the token check — the streak advances for every
     // non-coordination call, even zero-token ones (same as live LoopDetector)
     const key = bashStem(normalizeCallKey(linkedTool.name, linkedTool.input ?? {}));
+    // same gate as the CLI's loop_streak and the bell's cycleThreshold
+    // (@shared/constants/loopPolicy) — early calls of a series are legit work
     let repeat = false;
     if (key === state.lastKey) {
       state.streak += 1;
-      repeat = true;
+      repeat = state.streak >= LOOP_MIN_STREAK;
     } else {
       state.lastKey = key;
       state.streak = 1;

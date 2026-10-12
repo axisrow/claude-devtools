@@ -248,6 +248,13 @@ pnpm analyze:session session.jsonl --since 2026-09-20 --until 2026-09-20 --no-co
 pnpm analyze:sessions --last 7 --sort date --limit 20
 ```
 
+**Active time** (both commands report the same number for the same file): the sum
+of capped gaps between consecutive billed requests' **last** usage lines, per
+turn — one billed request = one round anchored at its last line, so response
+generation time counts as API work. Gaps over 10 minutes are treated as idle
+(capped at 10). Active time is accumulated exactly; only displayed totals are
+rounded (JSON keeps the exact minutes).
+
 ### Positioning vs ccusage
 
 [ccusage](https://github.com/ryoppippi/ccusage) computes **macro usage aggregates** — daily/monthly/blocks reports across many agent sources, plus a statusline. claude-devtools does the opposite: a **deep per-session audit** of Claude Code sessions (ledger, waste findings, subagents, inventory). Complementary tools, zero feature mixing: no daily/monthly/blocks aggregates, no multi-agent sources, no statusline, no pricing-sync network logic here — and no per-session waste audit in ccusage. The commands above deliberately reuse ccusage's flag *conventions* (`--json`, `--since`/`--until`, `--last N`, `--breakdown`, `--no-cost`) so the two tools feel consistent side by side.

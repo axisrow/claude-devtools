@@ -17,6 +17,7 @@ import * as readline from 'readline';
 
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
 import { LocalFileSystemProvider } from '../services/infrastructure/LocalFileSystemProvider';
+import { categorizeMessage } from '../services/parsing/MessageClassifier';
 import {
   type ChatHistoryEntry,
   type ContentBlock,
@@ -510,11 +511,12 @@ export interface SessionFileMetadata {
   phaseBreakdown?: PhaseTokenBreakdown[];
   /** Total spend: sum of all assistant usage in this transcript (in+cache+out) */
   totalTokens: number;
-  /** Turns (user messages and teammate relays, sidechains/compact summaries
-   *  excluded) — the chat numbers chips the same way. A group's chip shows
-   *  the last turn it opened, so an unanswered trailing user turn has no
-   *  chip yet, while an unanswered trailing relay does (glued into the last
-   *  AI group) */
+  /** Turns (user messages and teammate relays; sidechains/compact summaries
+   *  excluded; #100: assistant responses before the first turn input count
+   *  one turn per run, as the chat numbers them) — the chat numbers chips
+   *  the same way. A group's chip shows the last turn it opened, so an
+   *  unanswered trailing user turn has no chip yet, while an unanswered
+   *  trailing relay does (glued into the last AI group) */
   turnCount: number;
   hasDisplayableContent: boolean;
 }
@@ -560,6 +562,11 @@ export async function analyzeSessionFileMetadata(
   // teammate relay (isTeammateRelayLine — issue #55), sidechain/compact-summary
   // exclusions apply, == one turn, whether or not it produced a response.
   let turnCount = 0;
+  // issue #100: pre-input assistant runs open turns of their own — track
+  // whether any turn input was seen and whether we are inside an assistant
+  // run (split by user/system/compact lines, per the chunk-boundary canon)
+  let hasTurnInput = false;
+  let inAssistantRun = false;
   let gitBranch: string | null = null;
 
   let activityIndex = 0;
@@ -623,7 +630,10 @@ export async function analyzeSessionFileMetadata(
         awaitingAIGroup = true;
       }
       // Compact summaries render as CompactBoundary, not a user turn
-      if (!parsed.isSidechain && !parsed.isCompactSummary) turnCount++;
+      if (!parsed.isSidechain && !parsed.isCompactSummary) {
+        turnCount++;
+        hasTurnInput = true;
+      }
     } else if (
       awaitingAIGroup &&
       parsed.type === 'assistant' &&
@@ -632,6 +642,26 @@ export async function analyzeSessionFileMetadata(
     ) {
       messageCount++;
       awaitingAIGroup = false;
+    }
+
+    // issue #100: assistant responses before the first turn input (user
+    // message or relay) open turns of their own — the chat numbers those
+    // runs as Turn N (aiTurnIndex fallback), so the scan counts one turn
+    // per assistant run. categorizeMessage is the canonical boundary
+    // predicate (same rules as chunk building — counts must not drift):
+    // user/system/compact lines split a run, hardNoise does not. Sidechain
+    // lines are invisible to the chunker and change nothing here either.
+    const category = categorizeMessage(parsed);
+    if (!hasTurnInput && !parsed.isSidechain && category === 'ai' && parsed.type === 'assistant') {
+      if (!inAssistantRun) {
+        turnCount++;
+        inAssistantRun = true;
+      }
+    } else if (
+      !parsed.isSidechain &&
+      (category === 'user' || category === 'system' || category === 'compact')
+    ) {
+      inAssistantRun = false;
     }
 
     if (!gitBranch && 'gitBranch' in entry && entry.gitBranch) {
