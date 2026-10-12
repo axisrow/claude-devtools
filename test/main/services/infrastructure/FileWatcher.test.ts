@@ -926,8 +926,10 @@ describe('FileWatcher', () => {
       const budgetError = vi.mocked(notificationManager.addError).mock.calls[0][0];
       expect(budgetError.source).toBe('turn_budget');
       expect(budgetError.triggerName).toBe('Turn budget');
-      expect(budgetError.message).toContain(
-        'Turn budget · phase 1 (08:00) · 12.0M at crossing / 10.0M'
+      // the printed time is the segment start in the runner's local zone —
+      // pin the key (phase + hh:mm format), not a TZ-specific wall clock
+      expect(budgetError.message).toMatch(
+        /Turn budget · phase 1 \(\d{2}:\d{2}\) · 12\.0M at crossing \/ 10\.0M/
       );
       // the bell reports the spend at the crossing, not the turn's final sum —
       // the wording must say so or it reads as a mismatch against the panel
