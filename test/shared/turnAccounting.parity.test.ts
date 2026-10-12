@@ -390,3 +390,135 @@ describe('a mid-turn compact does not cut the turn (#97)', () => {
     expect((entry?.longestTurnMs ?? 0) / 60_000).toBeCloseTo(cliMinutes ?? -1, 2);
   });
 });
+
+/**
+ * Issue #101 — the bell and the panel must speak ONE matching key. The bell
+ * reports the phase number and the segment start (first request after the
+ * last boundary); the panel's Re-read row shows ph{phaseNumber} and the AI
+ * group's start time. Acceptance: exactly ONE row matches the incident on
+ * number + time — the row whose segment crossed the budget.
+ */
+describe('turn budget bell ↔ panel Re-read row matching (#101)', () => {
+  const BUDGET = 10_000_000;
+  const hhmm = (d: string | Date) => new Date(d).toISOString().slice(11, 16);
+
+  let n = 0;
+  const user = (content: unknown, x: Record<string, unknown> = {}) => ({
+    uuid: `u${++n}`,
+    parentUuid: null,
+    sessionId: 's',
+    cwd: '/p',
+    isSidechain: false,
+    type: 'user',
+    message: { role: 'user', content },
+    ...x,
+  });
+  const ai = (i: number) => ({
+    uuid: `u${++n}`,
+    parentUuid: null,
+    sessionId: 's',
+    cwd: '/p',
+    isSidechain: false,
+    type: 'assistant',
+    requestId: `q${i}`,
+    message: {
+      id: `m${i}`,
+      role: 'assistant',
+      model: 'claude-x',
+      content: [{ type: 'text', text: `r${i}` }],
+      usage: {
+        input_tokens: 0,
+        cache_read_input_tokens: 4_000_000,
+        cache_creation_input_tokens: 0,
+        output_tokens: 10,
+      },
+    },
+  });
+  const COMPACT = () => user('This session is being continued...', { isCompactSummary: true });
+  const RELAY = () =>
+    user('<teammate-message teammate_id="b">status?</teammate-message>', { isMeta: false });
+
+  const scenario = async (steps: [kind: 'user' | 'ai' | 'compact' | 'relay', hm: string][]) => {
+    const linesOut = steps.map(([kind, hm], i) => {
+      const m =
+        kind === 'ai'
+          ? ai(i)
+          : kind === 'compact'
+            ? COMPACT()
+            : kind === 'relay'
+              ? RELAY()
+              : user('go');
+      return `${JSON.stringify({ ...m, timestamp: `2026-10-01T${hm}:00Z` })}`;
+    });
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { parseJsonlFile } = await import('../../src/main/utils/jsonl');
+    const { ChunkBuilder } = await import('../../src/main/services/analysis/ChunkBuilder');
+    const { transformChunksToConversation } =
+      await import('../../src/renderer/utils/groupTransformer');
+    const { processSessionContextWithPhases } =
+      await import('../../src/renderer/utils/contextTracker');
+
+    const f = join(mkdtempSync(join(tmpdir(), 'bell-panel-')), 's.jsonl');
+    writeFileSync(f, linesOut.join('\n') + '\n');
+    const msgs = await parseJsonlFile(f);
+
+    const det = new TurnBudgetDetector();
+    let incident: ReturnType<TurnBudgetDetector['feed']> = null;
+    for (const m of msgs) {
+      const hit = det.feed('f', [m], BUDGET);
+      if (!incident) incident = hit;
+    }
+    expect(incident).not.toBeNull();
+
+    const conv = transformChunksToConversation(new ChunkBuilder().buildChunks(msgs, []), [], false);
+    const { rereadAll } = processSessionContextWithPhases(
+      conv.items,
+      '/p',
+      {},
+      new Map(),
+      new Map()
+    ).phaseInfo;
+    return { incident: incident!, rows: rereadAll };
+  };
+
+  it('compact inside a turn — the crossing segment matches exactly one row', async () => {
+    const { incident, rows } = await scenario([
+      ['user', '07:00'],
+      ['ai', '07:01'],
+      ['ai', '07:02'],
+      ['compact', '07:30'],
+      ['ai', '07:31'],
+      ['ai', '07:32'],
+      ['ai', '07:33'],
+    ]);
+    const matched = rows.filter(
+      (r: { phaseNumber?: number; turnStartTs?: string }) =>
+        r.phaseNumber === incident.phaseNumber &&
+        hhmm(r.turnStartTs!) === hhmm(incident.segmentStartTs)
+    );
+    expect(matched).toHaveLength(1);
+    // the matched row is the crossing one: the post-compact segment (12M)
+    expect(matched[0].estimatedTokens).toBe(12_000_000);
+  });
+
+  it('relay after the crossing — the segment matches exactly one row', async () => {
+    const { incident, rows } = await scenario([
+      ['user', '08:00'],
+      ['ai', '08:01'],
+      ['ai', '08:02'],
+      ['ai', '08:03'],
+      ['relay', '08:10'],
+      ['ai', '08:11'],
+    ]);
+    const matched = rows.filter(
+      (r: { phaseNumber?: number; turnStartTs?: string }) =>
+        r.phaseNumber === incident.phaseNumber &&
+        hhmm(r.turnStartTs!) === hhmm(incident.segmentStartTs)
+    );
+    expect(matched).toHaveLength(1);
+    // the merged group (turn-1 crossing + post-relay round) holds the crossing
+    expect(matched[0].estimatedTokens).toBe(16_000_000);
+  });
+});

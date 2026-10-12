@@ -263,6 +263,11 @@ interface FileBudgetState {
   /** timestamp of the boundary that opened the current turn
    * (raw JSONL carries ISO strings, parsed transcripts carry Dates) */
   turnStartTs?: string | Date;
+  /** 1-based phase ordinal (compactions + 1); survives bucket resets */
+  phaseNumber: number;
+  /** first request after the last boundary — the panel's AI-group start;
+   * undefined until that request is seen */
+  segmentStartTs?: string | Date;
   cwd?: string;
 }
 
@@ -273,6 +278,7 @@ const freshBudgetState = (): FileBudgetState => ({
   notified: false,
   lastToolUseId: '',
   turnNumber: 0,
+  phaseNumber: 1,
 });
 
 export interface TurnBudgetIncident {
@@ -285,6 +291,13 @@ export interface TurnBudgetIncident {
   /** when the crossing turn started — the key to find it in the chat
    * (raw JSONL carries ISO strings, parsed transcripts carry Dates) */
   turnStartTs?: string | Date;
+  /** 1-based phase ordinal at the crossing (compactions + 1) — half of the
+   * panel-row matching key (with segmentStartTs); #101 */
+  phaseNumber: number;
+  /** start of the crossing segment — first request after the last boundary
+   * (user message or compaction): the AI group's startTime on the panel, so
+   * `phase N (hh:mm)` names exactly one Re-read row; #101 */
+  segmentStartTs?: string | Date;
   toolUseId: string;
   cwd?: string;
   batchIndex: number;
@@ -338,11 +351,14 @@ export class TurnBudgetDetector {
         state.turnNumber += 1;
         state.turnStartTs = msg.timestamp;
       }
-      // a new user turn (or compaction) starts a fresh budget bucket
+      // a new user turn (or compaction) starts a fresh budget bucket; the
+      // phase advances on compaction only, the segment restarts on both —
+      // panel side a boundary opens a new AI group with a fresh start time
       if (isTurnBoundary(msg)) {
         const numbered = freshBudgetState();
         numbered.turnNumber = state.turnNumber;
         numbered.turnStartTs = state.turnStartTs;
+        numbered.phaseNumber = state.phaseNumber + (msg.isCompactSummary === true ? 1 : 0);
         state = numbered;
         this.perFile.set(filePath, state);
       }
@@ -351,6 +367,8 @@ export class TurnBudgetDetector {
       if (msg.cwd) state.cwd = msg.cwd;
       const u = msg.usage;
       if (!u) continue;
+      // the segment's first request names the panel row the crossing lives in
+      if (!state.segmentStartTs) state.segmentStartTs = msg.timestamp;
       const side = inputSideTokens(u);
       const key = billedRequestKey(msg);
       if (key) {
@@ -374,6 +392,8 @@ export class TurnBudgetDetector {
             budget,
             turnNumber: state.turnNumber,
             turnStartTs: state.turnStartTs,
+            phaseNumber: state.phaseNumber,
+            segmentStartTs: state.segmentStartTs,
             toolUseId: state.lastToolUseId,
             cwd: state.cwd,
             batchIndex: i,
