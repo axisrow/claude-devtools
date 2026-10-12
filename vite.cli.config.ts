@@ -8,9 +8,11 @@
  * helpers) stays side-effect free.
  */
 
+import { chmodSync } from 'fs';
+
 import { resolve } from 'path';
 
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
 const nodeBuiltins = new Set([
   'fs',
@@ -37,7 +39,27 @@ const nodeBuiltins = new Set([
   'worker_threads',
 ]);
 
+/**
+ * `emptyOutDir` recreates outputs with the default 0644, which would strip
+ * the executable bit from the committed bundle and fail the CI freshness
+ * guard (`git diff --exit-code dist-cli`) on every run — the skills invoke
+ * the bins directly, so 0755 is part of what gets committed (#93).
+ */
+function preserveExecutableBit(): Plugin {
+  return {
+    name: 'preserve-executable-bit',
+    writeBundle(_, bundle) {
+      for (const [fileName, output] of Object.entries(bundle)) {
+        if (output.type === 'chunk' && output.isEntry) {
+          chmodSync(resolve(__dirname, 'dist-cli', fileName), 0o755);
+        }
+      }
+    },
+  };
+}
+
 export default defineConfig({
+  plugins: [preserveExecutableBit()],
   resolve: {
     alias: {
       '@main': resolve(__dirname, 'src/main'),
