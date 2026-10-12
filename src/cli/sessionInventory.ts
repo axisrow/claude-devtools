@@ -7,7 +7,7 @@
  * Flags:
  *   --min-minutes N           only sessions with at least N minutes of active (API) time
  *   --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes
- *   --min-streak N            only sessions where some back-to-back cycle ran at least N times (runs < 3x are never recorded)
+ *   --min-streak N            only sessions where some back-to-back cycle ran at least N times (runs shorter than WASTE_THRESHOLDS.loopStreakMin are never recorded)
  *   --sort FIELD              duration | active | turn | streak | tokens | date (default duration)
  *   --limit N                 show first N rows
  *   --breakdown               per-session model token split (models column + JSON tokensByModel)

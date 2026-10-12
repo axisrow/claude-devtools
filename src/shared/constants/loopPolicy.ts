@@ -5,6 +5,20 @@
  * input side) while producing almost nothing (<= OUTPUT tokens out).
  */
 
+/**
+ * Minimum back-to-back identical calls (bashStem(normalizeCallKey) key) before
+ * a run counts as a Loop — the one gate for the renderer's Visible Context
+ * loop category (contextTracker), the CLI's loop_streak finding, the
+ * inventory's cycles, and the default cycleThreshold of the live bell
+ * (LoopDetector), so all four surfaces flag the same runs (#96).
+ *
+ * Value 4, not 2 or 3: the early calls of a series are legitimate iteration
+ * (Read → fix → Read) — #26's original rationale; the bell has always
+ * defaulted to 4, so 4 keeps the bell unchanged while un-breaking the panel
+ * (#27 regressed it to 2) and aligning the CLI (was 3).
+ */
+export const LOOP_MIN_STREAK = 4;
+
 /** Minimum input-side tokens (input + cache_read + cache_creation) for a quiet round to count */
 export const WAIT_TICK_CONTEXT_TOKENS = 50_000;
 

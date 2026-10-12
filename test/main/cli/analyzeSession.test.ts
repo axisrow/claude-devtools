@@ -284,6 +284,92 @@ describe('computeFindings', () => {
   });
 });
 
+describe('context spike attribution (#89)', () => {
+  // ~40k tok of payload that lands between two requests
+  const big = 'r'.repeat(160_000);
+  const spikeOf = (messages: ParsedMessage[]) =>
+    computeFindings(messages, buildLedger(messages)).find((f) => f.type === 'context_spike');
+
+  it("blames the previous round's call for the results that arrived before the spike round", () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(1000, 0, 0, 10),
+        toolCalls: [{ id: 't1', name: 'Bash', input: { command: 'cat big.log' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't1', content: big, isError: false }],
+      }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(1000, 41_000, 0, 10),
+        toolCalls: [{ id: 't2', name: 'Read', input: { file_path: '/a' }, isTask: false }],
+      }),
+    ];
+    const f = spikeOf(messages);
+    expect(f).toBeDefined();
+    expect(f?.summary).toContain('Bash');
+    expect(f?.summary).toContain('round 1');
+    expect(f?.summary).not.toContain('Read'); // the spike round's own call is not the culprit
+  });
+
+  it('keeps the gap across zero-usage ghost rounds: the next real round owns the spike', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(1000, 0, 0, 10),
+        toolCalls: [{ id: 't1', name: 'Bash', input: { command: 'cat big.log' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't1', content: big, isError: false }],
+      }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(0, 0, 0, 0) }), // ghost, #14
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(1000, 41_000, 0, 10) }),
+    ];
+    const ledger = buildLedger(messages);
+    // the ghost books no gap and no delta; the next real round carries both
+    expect(ledger.rounds[2].contextDelta).toBe(41_000);
+    expect(ledger.rounds[2].resultTokens).toBeGreaterThan(0);
+    const spike = computeFindings(messages, ledger).find((f) => f.type === 'context_spike');
+    expect(spike?.summary).toContain('Bash');
+  });
+
+  it('marks a spike fed by injected isMeta text (skill body) as not a tool result', () => {
+    const skillBody = 's'.repeat(160_000);
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(1000, 0, 0, 10),
+        toolCalls: [{ id: 'k1', name: 'Skill', input: { skill: 'x' }, isTask: false }],
+      }),
+      // the body arrives as plain user/meta text, not as a tool_result
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        content: [{ type: 'text', text: skillBody } as never],
+      }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(1000, 41_000, 0, 10) }),
+    ];
+    const f = spikeOf(messages);
+    expect(f).toBeDefined();
+    expect(f?.summary).toContain('injected');
+    expect(f?.summary).toContain('skill'); // names the non-tool source class
+    expect(f?.summary).not.toContain('Skill'); // not blamed as a tool result
+    expect(f?.summary).not.toContain('tools:');
+  });
+});
+
 describe('scanSessionFile', () => {
   it('computes duration, dedups usage per requestId, excludes synthetic and sidechain usage', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'devtools-inv-'));
@@ -741,16 +827,35 @@ describe('long turns and loop streaks', () => {
         type: 'assistant',
         model: 'm1',
         usage: usage(10, 0, 0, 1),
-        toolCalls: [call('a1'), call('a2'), call('a3')],
+        toolCalls: [call('a1'), call('a2'), call('a3'), call('a4')],
       }),
-      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('a1'), ok('a2'), ok('a3')] }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [ok('a1'), ok('a2'), ok('a3'), ok('a4')],
+      }),
     ];
     const findings = computeFindings(messages, buildLedger(messages));
     const streak = findings.find((f) => f.type === 'loop_streak');
     expect(streak).toBeDefined();
-    expect(streak?.severity).toBe('medium'); // x3 — not yet a hang
-    expect(streak?.summary).toContain('x3 back-to-back (no-op loop)');
-    expect(streak?.tokensWasted).toBe(2 * estimateTokens('ok')); // repeats only
+    expect(streak?.severity).toBe('medium'); // x4 — the shared LOOP_MIN_STREAK gate, high is x5+
+    expect(streak?.summary).toContain('x4 back-to-back (no-op loop)');
+    expect(streak?.tokensWasted).toBe(3 * estimateTokens('ok')); // repeats only
+  });
+
+  it('a 2-call series stays below the shared loop gate', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(10, 0, 0, 1),
+        toolCalls: [call('a1'), call('a2')],
+      }),
+      makeMsg({ type: 'user', isMeta: true, toolResults: [ok('a1'), ok('a2')] }),
+    ];
+    const findings = computeFindings(messages, buildLedger(messages));
+    expect(findings.filter((f) => f.type === 'loop_streak')).toHaveLength(0); // legit iteration
   });
 
   it('a streak where every result is an error is an env loop', () => {
