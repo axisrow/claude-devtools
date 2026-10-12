@@ -47,12 +47,13 @@ function usageOfRaw(m: Record<string, unknown>): Parameters<typeof inputSideToke
 }
 
 /** Rounds summed straight from raw lines: canonical primitives
- * (isMainChainAssistantLine + billedRequestKey dedup + inputSideTokens), the
- * same arithmetic analyzeTurn bills under, but whole-session requestId dedup
- * mirroring deduplicateByRequestId. Independent of ledger.rounds, so the
- * rounds checksum cannot compare a sum with itself (#102). */
+ * (isMainChainAssistantLine + billedRequestKey + inputSideTokens), the same
+ * arithmetic analyzeTurn bills under. Per billedRequestKey the LAST raw line
+ * wins — deduplicateByRequestId merges into `{...last}`, so the checksum side
+ * must keep the newest counts too. Independent of ledger.rounds, so the rounds
+ * checksum actually fails when rounds drift (#102). */
 function roundsInputSideFromRaw(rawLines: string[]): { inputSide: number; output: number } {
-  const billed = new Set<string>();
+  const byKey = new Map<string, { inputSide: number; output: number }>();
   let inputSide = 0;
   let output = 0;
   for (const line of rawLines) {
@@ -62,15 +63,21 @@ function roundsInputSideFromRaw(rawLines: string[]): { inputSide: number; output
     } catch {
       continue;
     }
-    if (!isMainChainAssistantLine(m) || !usageOfRaw(m)) continue;
+    const u = usageOfRaw(m);
+    if (!isMainChainAssistantLine(m) || !u) continue;
     const key = billedRequestKey(m);
     if (key) {
-      if (billed.has(key)) continue;
-      billed.add(key);
+      // keep-last: a key's final line carries the final usage counts
+      byKey.set(key, { inputSide: inputSideTokens(u), output: u.output_tokens ?? 0 });
+      continue;
     }
-    const u = usageOfRaw(m)!;
+    // keyless lines bill individually (analyzeTurn sums them every time)
     inputSide += inputSideTokens(u);
     output += u.output_tokens ?? 0;
+  }
+  for (const v of byKey.values()) {
+    inputSide += v.inputSide;
+    output += v.output;
   }
   return { inputSide, output };
 }

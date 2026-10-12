@@ -200,6 +200,31 @@ describe('session:sums', () => {
     expect(sums.checksums).toMatchObject({ roundsSumEqualsTurnsSum: false });
   });
 
+  it('rounds checksum keeps the last line per requestId (turns side bills {...last})', async () => {
+    const part = (n: number, input: number): Record<string, unknown> => ({
+      type: 'assistant',
+      uuid: `a${n}`,
+      timestamp: T,
+      requestId: 'req_1',
+      message: {
+        id: 'msg1',
+        model: 'm1',
+        usage: {
+          input_tokens: input,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 10,
+        },
+        content: [],
+      },
+    });
+    const sums = await sumsFor([user(1, 'go'), part(2, 100), part(3, 300)]);
+    // ledger merges the requestId split into the last line's usage (300);
+    // the raw side must keep the last too — keep-first would fail the check
+    expect(sums.session).toMatchObject({ inputSide: 300 });
+    expect(sums.checksums).toMatchObject({ roundsSumEqualsTurnsSum: true });
+  });
+
   it('a session opening with a relay or compact summary keeps hook parity (implicit turn 1)', async () => {
     const relayFirst = [
       relay(1, 'do X'),
