@@ -86,7 +86,7 @@ export interface InventoryEntry {
   sessionId: string;
   filePath: string;
   durationMs: number;
-  /** API work time: capped gaps between main-chain usage lines (one anchor per requestId) — same cap as turnActiveMinutes */
+  /** API work time: capped gaps between consecutive requests' last usage lines, per turn — same accounting as buildLedger's turnActiveMinutes (issue #91) */
   activeMs: number;
   /** longest single turn's active time — a 96h-active session may have no turn over 20 min */
   longestTurnMs: number;
@@ -120,7 +120,16 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   let activeMs = 0;
   let turnActiveMs = 0;
   let longestTurnMs = 0;
+  // active-time anchors (issue #91 parity with buildLedger): a gap runs from
+  // the previous request's LAST line to the in-flight request's LAST line —
+  // the ledger keeps one round per requestId anchored at the last line, so
+  // generation time counts as API work. Streaming snapshots extend the pending
+  // gap; commitGap books it when the request closes (new requestId, turn
+  // boundary, end of file).
   let prevUsageTs: number | null = null;
+  let baseGapTs = 0;
+  let pendingGapMs = 0;
+  let gapPending = false;
   let messageCount = 0;
   const seenCallIds = new Set<string>();
   // back-to-back run tracking: one entry per maximal run of >= loopStreakMin
@@ -140,6 +149,15 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
         toolUseId: curStreakToolUseId,
       });
     }
+  };
+  // close the in-flight request: book its capped pending gap
+  const commitGap = (): void => {
+    if (!gapPending) return;
+    const gap = Math.min(Math.max(pendingGapMs, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
+    activeMs += gap;
+    turnActiveMs += gap;
+    gapPending = false;
+    pendingGapMs = 0;
   };
   const countCalls = (line: ScanEntry): void => {
     const m = line.message;
@@ -206,6 +224,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
         content: e.message?.content,
       } as unknown as ParsedMessage)
     ) {
+      commitGap();
       longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
       turnActiveMs = 0;
       prevUsageTs = null;
@@ -231,17 +250,24 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
       e.message?.usage &&
       e.message.model !== '<synthetic>'
     ) {
-      // API time: gap to the previous main-chain usage line, capped — same
-      // accounting as turnActiveMinutes, hours of silence cost zero. Streaming
-      // snapshots of an already-seen request add no gap (analyze:session keeps
-      // one round per request, anchored at the last line) but still advance the
-      // anchor, so the next gap starts from the newest line of the request.
+      // API time: a pending gap from the previous request's LAST line to the
+      // in-flight request's LAST line, capped at commit — the ledger keeps one
+      // round per requestId anchored at the last line, so generation time is
+      // part of API work (issue #91). A new requestId closes the in-flight
+      // request and commits its gap; streaming snapshots extend the pending
+      // gap to the newest line. prevUsageTs stays "newest usage line" and
+      // becomes the next request's gap base when it opens.
       const billedKey = billedRequestKey(e);
       const snapshot = billedKey !== undefined && usageByRequestId.has(billedKey);
-      if (prevUsageTs !== null && !snapshot) {
-        const gap = Math.min(Math.max(ts - prevUsageTs, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
-        activeMs += gap;
-        turnActiveMs += gap;
+      if (!snapshot) {
+        commitGap();
+        if (prevUsageTs !== null) {
+          baseGapTs = prevUsageTs;
+          pendingGapMs = Math.max(ts - prevUsageTs, 0);
+          gapPending = true;
+        }
+      } else if (gapPending) {
+        pendingGapMs = Math.max(ts - baseGapTs, 0);
       }
       prevUsageTs = ts;
       if (e.message.model) models.add(e.message.model);
@@ -264,6 +290,7 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
   }
 
   if (firstTs === null || lastTs === null) return null;
+  commitGap();
   longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
   flushStreak();
 

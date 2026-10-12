@@ -153,6 +153,66 @@ describe('parseDayBound / inDateRange', () => {
   });
 });
 
+describe('active time parity: analyze:session vs analyze:sessions (issue #91)', () => {
+  // One file, both consumers: streaming snapshots (several lines per requestId)
+  // inside one turn. The ledger anchors a round at the request's LAST line
+  // (keep-last dedup), so the inventory must measure gap last(i-1) → last(i) —
+  // generation time counts as API work — and round only the displayed total.
+  it('reports the same active time and longest turn for the same file', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'devtools-parity-'));
+    try {
+      const file = path.join(dir, 'session-parity.jsonl');
+      const usageLine = (uuid: string, ts: string, requestId: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          uuid,
+          timestamp: ts,
+          requestId,
+          message: {
+            model: 'claude-sonnet-5',
+            content: [],
+            usage: { input_tokens: 5, output_tokens: 1 },
+          },
+        });
+      const userLine = (uuid: string, ts: string): string =>
+        JSON.stringify({
+          type: 'user',
+          uuid,
+          timestamp: ts,
+          message: { role: 'user', content: 'go' },
+        });
+      // turn 1: r1 10:00→10:01:30, r2 10:03→10:04:30, r3 10:06→10:06:30 →
+      // gaps last→last: 3 min + 2 min = 5 min; turn 2: r4 10:09→r5 10:10:45
+      // → 1.75 min (per-turn rounding would make it 2)
+      const lines = [
+        userLine('u1', '2026-09-20T09:59:00Z'),
+        usageLine('a1', '2026-09-20T10:00:00Z', 'r1'),
+        usageLine('a2', '2026-09-20T10:01:30Z', 'r1'),
+        usageLine('a3', '2026-09-20T10:03:00Z', 'r2'),
+        usageLine('a4', '2026-09-20T10:04:30Z', 'r2'),
+        usageLine('a5', '2026-09-20T10:06:00Z', 'r3'),
+        usageLine('a6', '2026-09-20T10:06:30Z', 'r3'),
+        userLine('u2', '2026-09-20T10:08:00Z'),
+        usageLine('a7', '2026-09-20T10:09:00Z', 'r4'),
+        usageLine('a8', '2026-09-20T10:10:45Z', 'r5'),
+      ];
+      await writeFile(file, lines.join('\n') + '\n');
+
+      const ledger = buildLedger(await parseJsonlFile(file));
+      const entry = await scanSessionFile(file);
+      expect(entry).not.toBeNull();
+      // identical active time: 6.75 min (no per-turn rounding before the sum)
+      expect(ledger.activeMinutes * 60000).toBe(405000);
+      expect(entry?.activeMs).toBe(ledger.activeMinutes * 60000);
+      // identical longest turn: turn 1's 5 min
+      expect(entry?.longestTurnMs).toBe(ledger.totals.longestTurn!.activeMinutes * 60000);
+      expect(entry?.longestTurnMs).toBe(300000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('scanSessionFile tokensByModel', () => {
   it('splits tokens per model, keeping synthetic and sidechain out', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'devtools-tbm-'));
