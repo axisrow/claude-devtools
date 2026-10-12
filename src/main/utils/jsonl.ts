@@ -13,6 +13,7 @@ import {
 } from '@shared/turnAccounting';
 import { isCommandOutputContent, sanitizeDisplayContent } from '@shared/utils/contentSanitizer';
 import { createLogger } from '@shared/utils/logger';
+import { roundCostUsd } from '@shared/utils/pricing';
 import * as readline from 'readline';
 
 import { SessionContentFilter } from '../services/discovery/SessionContentFilter';
@@ -428,7 +429,8 @@ export function calculateMetrics(messages: ParsedMessage[]): SessionMetrics {
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
-  const costUsd = 0;
+  let costUsd = 0;
+  let unpricedRound = false;
 
   // Get timestamps for duration (loop instead of Math.min/max spread to avoid stack overflow on large sessions)
   const timestamps = messages.map((m) => m.timestamp.getTime()).filter((t) => !isNaN(t));
@@ -453,6 +455,31 @@ export function calculateMetrics(messages: ParsedMessage[]): SessionMetrics {
     }
   }
 
+  // Cost (#73): price the same rounds the CLI ledger bills (buildLedger's
+  // selection — main-chain assistant rounds with usage, deduped above), so
+  // calculateMetrics and totalsFromRounds agree on one transcript (parity
+  // test in test/shared/turnAccounting.parity.test.ts). Unpriced models are
+  // excluded from the sum and flag it partial instead of silently dropping
+  // the cost.
+  for (const msg of dedupedMessages) {
+    if (msg.type !== 'assistant' || msg.isSidechain) continue;
+    const u = msg.usage;
+    if (!u || msg.model === '<synthetic>') continue;
+    const cacheWrite = u.cache_creation_input_tokens ?? 0;
+    const ttlSplit = cacheWrite > 0 ? u.cache_creation : undefined;
+    const c = roundCostUsd({
+      model: msg.model ?? 'unknown',
+      inputTokens: u.input_tokens ?? 0,
+      cacheReadTokens: u.cache_read_input_tokens ?? 0,
+      cacheCreationTokens: cacheWrite,
+      outputTokens: u.output_tokens ?? 0,
+      cacheWrite5mTokens: ttlSplit ? (ttlSplit.ephemeral_5m_input_tokens ?? 0) : undefined,
+      cacheWrite1hTokens: ttlSplit ? (ttlSplit.ephemeral_1h_input_tokens ?? 0) : undefined,
+    });
+    if (c === null) unpricedRound = true;
+    else costUsd += c;
+  }
+
   return {
     durationMs: maxTime - minTime,
     totalTokens: inputTokens + cacheCreationTokens + cacheReadTokens + outputTokens,
@@ -462,6 +489,7 @@ export function calculateMetrics(messages: ParsedMessage[]): SessionMetrics {
     cacheCreationTokens,
     messageCount: messages.length,
     costUsd: costUsd > 0 ? costUsd : undefined,
+    costPartial: costUsd > 0 ? unpricedRound : undefined,
   };
 }
 

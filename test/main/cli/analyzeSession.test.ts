@@ -265,7 +265,10 @@ describe('computeFindings', () => {
     // only the two in-window 'pytest -q' calls count — the Sep 1 call is out of scope
     const dup = findings.find((f) => f.type === 'duplicate_call');
     expect(dup).toBeDefined();
-    expect(dup?.tokensWasted).toBe(estimateTokens('all passed'));
+    // window scoping still holds (dup claims only the in-window repeat), but its
+    // result tokens are booked by probe_no_progress — bigger raw claim, same
+    // severity, so allocation gives the repeats to probe (no double counting)
+    expect(dup?.tokensWasted).toBe(0);
     // 'boom' fails inside the window, its result lands after --until and still resolves
     expect(findings.filter((f) => f.type === 'failed_call')).toHaveLength(1);
   });
@@ -1012,7 +1015,12 @@ describe('long turns and loop streaks', () => {
     const wait = findings.find((f) => f.type === 'wait_loop');
     expect(wait).toBeDefined();
     expect(wait?.severity).toBe('medium'); // 5 ticks — not yet a night watch
-    expect(wait?.tokensWasted).toBe(5 * 60_000);
+    // these ticks are also cache_dead rounds (cr = cw = 0): the higher-severity
+    // cache_dead claims book each round, wait_loop stays visible with 0
+    expect(wait?.tokensWasted).toBe(0);
+    expect(
+      findings.filter((f) => f.type === 'cache_dead').reduce((s, f) => s + f.tokensWasted, 0)
+    ).toBe(5 * 60_000);
   });
 
   it('needs 5 ticks: loud rounds and retry copies do not count', () => {

@@ -30,7 +30,7 @@ import {
   WAIT_LOOP_MIN_TICKS,
 } from '@shared/constants/loopPolicy';
 import { asText, bashStem, normalizeCallKey } from '@shared/utils/callKey';
-import { parseModelString } from '@shared/utils/modelParser';
+import { roundCostUsd } from '@shared/utils/pricing';
 import {
   estimateTokens,
   formatTokensCompact,
@@ -50,86 +50,9 @@ import {
 
 import type { ParsedMessage, Process } from '@main/types';
 
-// =============================================================================
-// Pricing (#72) — USD per MTok with explicit columns: input / output /
-// cacheRead / cacheWrite5m / cacheWrite1h. Hand-checked against Anthropic's
-// published prices on 2026-10-12 (https://platform.claude.com/pricing) —
-// re-check when a new generation ships. Cache WRITE is 1.25x/2x input across
-// the board; cache READ is NOT a fixed ratio (opus 5.5 = 0.05x, fable = 0.025x).
-// Test values in test/main/cli/analyzeSession.test.ts are hand-written from
-// the same price page, so a table edit cannot silently pass them.
-// ponytail: single-file pricing table; extract to a module when something else needs it
-// =============================================================================
-
-interface ModelPrice {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite5m: number;
-  cacheWrite1h: number;
-}
-
-// glm: public rates (OpenRouter/z.ai, verified 2026-09-21); cache write assumed = input rate
-const GLM_PRICE: ModelPrice = {
-  input: 0.075,
-  output: 0.25,
-  cacheRead: 0.015,
-  cacheWrite5m: 0.075,
-  cacheWrite1h: 0.075,
-};
-
-const mkPrice = (
-  input: number,
-  output: number,
-  cacheRead: number,
-  cacheWrite5m: number,
-  cacheWrite1h: number
-): ModelPrice => ({ input, output, cacheRead, cacheWrite5m, cacheWrite1h });
-
-// price by (family, major, minor); a future version lands on the latest known
-// row of its family until priced
-function claudePriceFor(family: string, major: number, minor: number | null): ModelPrice | null {
-  switch (family) {
-    case 'opus':
-      // 5.5+ at the reduced rate; 4.5–5 at 5/25; ≤4.1 legacy at 15/75.
-      // 4.x needs an explicit minor: dated ids (claude-opus-4-20250514) parse
-      // with minor=null and are old-generation, not 4.5+
-      if (major > 5 || (major === 5 && minor !== null && minor >= 5)) {
-        return mkPrice(4, 20, 0.2, 5, 8);
-      }
-      if (major >= 5 || (major === 4 && minor !== null && minor >= 5)) {
-        return mkPrice(5, 25, 0.5, 6.25, 10);
-      }
-      return mkPrice(15, 75, 1.5, 18.75, 30);
-    case 'sonnet':
-      // 5+ at 2/10; 4.x and older at 3/15
-      return major >= 5 ? mkPrice(2, 10, 0.2, 2.5, 4) : mkPrice(3, 15, 0.3, 3.75, 6);
-    case 'haiku':
-      // 5.5 at 0.10/0.50 (long-prompt tier applied in priceForRound); 4.5 and older at 1/5
-      return major >= 5 ? mkPrice(0.1, 0.5, 0.01, 0.125, 0.2) : mkPrice(1, 5, 0.1, 1.25, 2);
-    case 'fable':
-      // fable 5 / 5.1
-      return major >= 5 ? mkPrice(10, 50, 0.25, 12.5, 20) : null;
-    default:
-      return null;
-  }
-}
-
-// price of a round's model: claude via parser (version-aware), glm literal,
-// everything else unpriced; null = unpriced model
-function priceForRound(r: RoundRow): ModelPrice | null {
-  const info = parseModelString(r.model);
-  if (!info) {
-    // non-claude: first id segment (glm-5.3-flash → glm)
-    return r.model.toLowerCase().split('-')[0] === 'glm' ? GLM_PRICE : null;
-  }
-  const price = claudePriceFor(info.family, info.majorVersion, info.minorVersion);
-  if (!price || info.family !== 'haiku' || info.majorVersion < 5) return price;
-  // haiku 5.5 long-prompt tier: prompts >100K bill 0.50/2.50 in/out (cache
-  // rates above 100K unpublished — base cache rates applied; ponytail)
-  const prompt = r.inputTokens + r.cacheReadTokens + r.cacheCreationTokens;
-  return prompt > 100_000 ? { ...price, input: 0.5, output: 2.5 } : price;
-}
+// Pricing (#72) — see @shared/utils/pricing: the table and roundCostUsd are
+// shared with the app's calculateMetrics so both surfaces price identically.
+export { roundCostUsd };
 
 export type BillingScheme = 'anthropic-style' | 'router-style' | 'no-cache' | 'mixed';
 
@@ -200,6 +123,39 @@ export interface Finding {
   summary: string;
 }
 
+// one booking request against a token source: `round:<index>` caps at the
+// round's contextSize, `result:<toolUseId>` caps at the result's estimated
+// tokens. Overlapping findings must not double-book a source (the corpus
+// invariant wasted-le-billed tripped on 9/868 real sessions when they did)
+interface Claim {
+  owner: string;
+  want: number;
+  cap: number;
+}
+
+// internal shape during computeFindings: `tokensWasted` holds the RAW amount
+// until the allocation pass replaces it with the non-overlapping share;
+// `free` is uncontested waste (failed-call args, thinking estimate)
+type FindingCandidate = Finding & { free?: number; claims?: Claim[] };
+
+// each token source books at most once: claims are served in the sorted order
+// (severity, then raw size), a finding gets only the unclaimed remainder and
+// stays visible with 0 when fully overlapped
+function allocateWaste(findings: FindingCandidate[]): void {
+  const remaining = new Map<string, number>();
+  for (const f of findings) {
+    let allocated = f.free ?? 0;
+    for (const claim of f.claims ?? []) {
+      if (!remaining.has(claim.owner)) remaining.set(claim.owner, claim.cap);
+      const left = remaining.get(claim.owner) ?? 0;
+      const take = Math.min(claim.want, left);
+      remaining.set(claim.owner, left - take);
+      allocated += take;
+    }
+    f.tokensWasted = allocated;
+  }
+}
+
 // run of back-to-back identical calls being tracked for loop_streak
 interface StreakState {
   count: number;
@@ -208,6 +164,7 @@ interface StreakState {
   turn?: number;
   start: Date;
   end: Date;
+  members: { id: string; tok: number }[];
 }
 
 export interface RoundRow {
@@ -276,23 +233,6 @@ function thinkingTokensOf(msg: ParsedMessage): number {
     if (block.type === 'thinking') chars += (block.thinking ?? '').length;
   }
   return Math.ceil(chars / 4);
-}
-
-// cost of one round at the built-in price table; null = unpriced model
-export function roundCostUsd(r: RoundRow): number | null {
-  const price = priceForRound(r);
-  if (!price) return null;
-  // without a TTL split the whole write is billed at the 5m rate
-  const cw5m = r.cacheWrite5mTokens ?? r.cacheCreationTokens;
-  const cw1h = r.cacheWrite1hTokens ?? 0;
-  return (
-    (r.inputTokens * price.input +
-      r.outputTokens * price.output +
-      r.cacheReadTokens * price.cacheRead +
-      cw5m * price.cacheWrite5m +
-      cw1h * price.cacheWrite1h) /
-    1e6
-  );
 }
 
 // active work time of a turn: gaps between consecutive rounds, each capped —
@@ -652,7 +592,7 @@ export function computeFindings(
   since?: Date,
   until?: Date
 ): Finding[] {
-  const findings: Finding[] = [];
+  const findings: FindingCandidate[] = [];
   const th = WASTE_THRESHOLDS;
 
   const results = new Map<string, { content: string | unknown[]; isError: boolean }>();
@@ -667,7 +607,10 @@ export function computeFindings(
   // re-logged router copies (#15) are skipped: their calls were already walked
   // with the original — counting them doubles duplicate/failed/oversized
   const retryCopies = getRetryCopyMessageIds(messages);
-  const seen = new Map<string, { count: number; tokens: number; first: number }>();
+  const seen = new Map<
+    string,
+    { count: number; tokens: number; first: number; repeats: { id: string; tok: number }[] }
+  >();
 
   // loop_streak: the same call repeated back-to-back — model no-op loops
   // (Bash true x114) and env retry loops (same failure hammered). Turn
@@ -692,6 +635,7 @@ export function computeFindings(
         tokensWasted: streak.tokens,
         turnIndex: streak.turn,
         summary: `${short(streakKey, 60)} — x${streak.count} back-to-back (${env ? 'env loop — same failure each time' : 'no-op loop'}) ${hhmm(streak.start)}–${hhmm(streak.end)}`,
+        claims: streak.members.map((m) => ({ owner: `result:${m.id}`, want: m.tok, cap: m.tok })),
       });
     }
     streak = null;
@@ -713,6 +657,8 @@ export function computeFindings(
       if (streak && streakKey === key) {
         streak.count += 1;
         streak.tokens += resultTok;
+        // repeats only — the first call was legitimate, its result is not waste
+        streak.members.push({ id: call.id, tok: resultTok });
         if (result?.isError) streak.errors += 1;
         streak.end = msg.timestamp;
       } else {
@@ -725,6 +671,7 @@ export function computeFindings(
           turn: turnOf(msg.timestamp.getTime()),
           start: msg.timestamp,
           end: msg.timestamp,
+          members: [],
         };
       }
 
@@ -737,6 +684,10 @@ export function computeFindings(
             severity: 'medium',
             tokensWasted: inputTok + resultTok,
             summary: `${call.name} failed: ${short(text, 80)}`,
+            // the call's own args are uncontested; the result competes with
+            // oversized/duplicate/streak/probe claims on the same toolUseId
+            free: inputTok,
+            claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }],
           });
         }
       }
@@ -746,6 +697,7 @@ export function computeFindings(
           severity: 'medium',
           tokensWasted: resultTok,
           summary: `${call.name} returned ~${formatTokensCompact(resultTok)} tok: ${short(call.name === 'Bash' ? asText(call.input.command) : JSON.stringify(call.input), 70)}`,
+          claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }],
         });
       }
 
@@ -753,13 +705,14 @@ export function computeFindings(
       if (prev) {
         prev.count += 1;
         prev.tokens += resultTok;
+        prev.repeats.push({ id: call.id, tok: resultTok });
       } else {
-        seen.set(key, { count: 1, tokens: resultTok, first: resultTok });
+        seen.set(key, { count: 1, tokens: resultTok, first: resultTok, repeats: [] });
       }
     }
   }
   flushStreak();
-  for (const [key, { count, tokens, first }] of seen) {
+  for (const [key, { count, tokens, first, repeats }] of seen) {
     if (count > 1) {
       const reread = tokens - first; // repeats only — the first read was legitimate
       findings.push({
@@ -767,6 +720,7 @@ export function computeFindings(
         severity: 'medium',
         tokensWasted: reread,
         summary: `${short(key, 90)} — called ${count}x (~${formatTokensCompact(reread)} tok of results re-read)`,
+        claims: repeats.map((rp) => ({ owner: `result:${rp.id}`, want: rp.tok, cap: rp.tok })),
       });
     }
   }
@@ -787,6 +741,7 @@ export function computeFindings(
         tokensWasted: r.contextDelta,
         turnIndex: r.turnIndex,
         summary: contextSpikeSummary(prev, r),
+        claims: [{ owner: `round:${r.index}`, want: r.contextDelta, cap: r.contextSize }],
       });
     }
     if (
@@ -800,6 +755,7 @@ export function computeFindings(
         tokensWasted: r.contextSize,
         turnIndex: r.turnIndex,
         summary: `no prompt caching: ${formatTokensCompact(r.contextSize)} tok billed as fresh input (model ${r.model})`,
+        claims: [{ owner: `round:${r.index}`, want: r.contextSize, cap: r.contextSize }],
       });
     }
   }
@@ -814,6 +770,7 @@ export function computeFindings(
         tokensWasted: think,
         turnIndex: turn.index,
         summary: `thinking ~${formatTokensCompact(think)} tok in turn ${turn.index}`,
+        free: think, // chars/4 estimate — no competing claimant books thinking
       });
     }
     if (turn.activeMinutes >= th.longTurnActiveMinutes) {
@@ -848,6 +805,11 @@ export function computeFindings(
         tokensWasted: wasted,
         turnIndex: turn.index,
         summary: `wait-loop: ${ticks.length} quiet rounds re-read ~${formatTokensCompact(wasted)} tok (≤300 tok of output each)`,
+        claims: ticks.map((r) => ({
+          owner: `round:${r.index}`,
+          want: r.contextSize,
+          cap: r.contextSize,
+        })),
       });
     }
 
@@ -855,33 +817,32 @@ export function computeFindings(
     // calls yet stop growing the context (echo-marker loops like `echo w/v/u`
     // — distinct args, so the repeat-key walk above sees no streak). See
     // isStalledRound in loopPolicy.
-    let stallStart: RoundRow | null = null;
-    let stallEnd: RoundRow | null = null;
-    let stallCount = 0;
-    let stallWasted = 0;
+    let stallRounds: RoundRow[] = [];
     const flushStall = (): void => {
-      if (stallCount >= th.loopStreakMin && stallStart && stallEnd) {
+      if (stallRounds.length >= th.loopStreakMin) {
+        const stallStart = stallRounds[0];
+        const stallEnd = stallRounds[stallRounds.length - 1];
+        const stallWasted = stallRounds.reduce((s, r) => s + r.contextSize, 0);
         findings.push({
           type: 'stall_streak',
-          severity: stallCount >= 5 ? 'high' : 'medium',
+          severity: stallRounds.length >= 5 ? 'high' : 'medium',
           tokensWasted: stallWasted,
           turnIndex: turn.index,
-          summary: `stall: ${stallCount} rounds with no context growth re-read ~${formatTokensCompact(stallWasted)} tok (${short(stallStart.tools.join(', ') || 'tool calls', 40)}) ${hhmm(stallStart.timestamp)}–${hhmm(stallEnd.timestamp)}`,
+          summary: `stall: ${stallRounds.length} rounds with no context growth re-read ~${formatTokensCompact(stallWasted)} tok (${short(stallStart.tools.join(', ') || 'tool calls', 40)}) ${hhmm(stallStart.timestamp)}–${hhmm(stallEnd.timestamp)}`,
+          claims: stallRounds.map((r) => ({
+            owner: `round:${r.index}`,
+            want: r.contextSize,
+            cap: r.contextSize,
+          })),
         });
       }
-      stallStart = null;
-      stallEnd = null;
-      stallCount = 0;
-      stallWasted = 0;
+      stallRounds = [];
     };
     let stallPrev = 0;
     for (const r of rs) {
       if (r.isRetryCopy) continue; // copies already walked with their original
       if (isStalledRound(stallPrev, r.contextSize, r.outputTokens, r.tools.length)) {
-        if (stallCount === 0) stallStart = r;
-        stallCount += 1;
-        stallWasted += r.contextSize;
-        stallEnd = r;
+        stallRounds.push(r);
       } else {
         flushStall();
       }
@@ -893,8 +854,11 @@ export function computeFindings(
 
   const order = { high: 0, medium: 1, low: 2 } as const;
   findings.push(...detectCycleFindings(messages, ledger, results));
-  findings.sort((a, b) => order[b.severity] - order[a.severity] || b.tokensWasted - a.tokensWasted);
-  return findings;
+  // high severity first, then the bigger raw claim — the allocation pass below
+  // serves claims in exactly this order, so the direction is load-bearing
+  findings.sort((a, b) => order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted);
+  allocateWaste(findings);
+  return findings.map(({ free: _free, claims: _claims, ...finding }) => finding);
 }
 
 export function short(s: string, n: number): string {
@@ -932,9 +896,11 @@ function resultSignature(text: string): string {
 
 interface CycleRound {
   turnIndex: number;
+  /** ledger round index — the waste-claim owner key (round:<index>) */
+  roundIndex: number;
   contextSize: number;
   timestamp: Date;
-  calls: { toolName: string; key: string; sig: string; tok: number }[];
+  calls: { id: string; toolName: string; key: string; sig: string; tok: number }[];
 }
 
 /**
@@ -948,8 +914,8 @@ export function detectCycleFindings(
   messages: ParsedMessage[],
   ledger: SessionLedger,
   results: Map<string, { content: string | unknown[]; isError: boolean }>
-): Finding[] {
-  const findings: Finding[] = [];
+): FindingCandidate[] {
+  const findings: FindingCandidate[] = [];
   // same round source as buildLedger (dedup + filters), retry copies dropped
   // on both sides — positional zip with ledger.rounds; drift → skip whole
   // detection (ponytail: the lists have matched on every real session so far)
@@ -967,12 +933,14 @@ export function detectCycleFindings(
 
   const rounds: CycleRound[] = msgs.map((m, i) => ({
     turnIndex: ledgerRounds[i].turnIndex,
+    roundIndex: ledgerRounds[i].index,
     contextSize: ledgerRounds[i].contextSize,
     timestamp: ledgerRounds[i].timestamp,
     calls: m.toolCalls.map((c) => {
       const res = results.get(c.id);
       const text = res ? resultText(res.content) : '';
       return {
+        id: c.id,
         toolName: c.name,
         key: bashStem(normalizeCallKey(c.name, c.input)),
         sig: res ? resultSignature(text) : '',
@@ -1022,6 +990,11 @@ export function detectCycleFindings(
             tokensWasted: wasted,
             turnIndex,
             summary: `cycle: ${motif} — x${reps} repeats re-read ~${formatTokensCompact(wasted)} tok ${hhmm(rs[i].timestamp)}–${hhmm(rs[i + reps * L - 1].timestamp)}`,
+            claims: rs.slice(i + L, i + reps * L).map((r) => ({
+              owner: `round:${r.roundIndex}`,
+              want: r.contextSize,
+              cap: r.contextSize,
+            })),
           });
           i += reps * L;
         } else {
@@ -1033,12 +1006,12 @@ export function detectCycleFindings(
 
     // probe with the same result: same call key re-run, identical first+last
     // line — the loop re-asked its question without learning anything
-    const byKey = new Map<string, { sig: string; ts: Date; tok: number }[]>();
+    const byKey = new Map<string, { id: string; sig: string; ts: Date; tok: number }[]>();
     for (const r of rs) {
       for (const c of r.calls) {
         if (!c.sig || MUTATING_TOOLS.has(c.toolName)) continue;
         const list = byKey.get(c.key);
-        const entry = { sig: c.sig, ts: r.timestamp, tok: c.tok };
+        const entry = { id: c.id, sig: c.sig, ts: r.timestamp, tok: c.tok };
         if (list) list.push(entry);
         else byKey.set(c.key, [entry]);
       }
@@ -1059,6 +1032,7 @@ export function detectCycleFindings(
         tokensWasted: repeats.reduce((s, e) => s + e.tok, 0),
         turnIndex,
         summary: `probe no progress: ${short(key, 60)} — same result x${best.len}: ${short(list[best.start].sig, 70)}`,
+        claims: repeats.map((e) => ({ owner: `result:${e.id}`, want: e.tok, cap: e.tok })),
       });
     }
   }
