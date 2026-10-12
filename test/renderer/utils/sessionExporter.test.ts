@@ -347,6 +347,15 @@ describe('exportAsPlainText', () => {
     expect(result).toContain('N/A');
   });
 
+  it('marks partial cost (#73)', () => {
+    const detail = makeSessionDetail({
+      metrics: makeMetrics({ costPartial: true }),
+    });
+    const result = exportAsPlainText(detail as any);
+
+    expect(result).toContain('$0.05 (partial');
+  });
+
   it('includes branch info when available', () => {
     const detail = makeSessionDetail();
     const result = exportAsPlainText(detail as any);
