@@ -123,9 +123,9 @@ async function auditFile(filePath: string): Promise<void> {
     return { ...m, usage: m.usage ?? inner?.usage, model: inner?.model, toolCalls: [] };
   });
 
-  // turn slices (1-based numbering, the ledger's canon — real user lines via
-  // isTurnNumberLine, the same set buildLedger numbers; NOT the bell's
-  // turnNumber, which transcript canon and teammate relays advance):
+  // turn slices (1-based numbering, the app's canon — transcript turns via
+  // isTurnNumberLine: real user lines and teammate relays minus sidechain and
+  // compact (#99), the same set buildLedger numbers and the bell advances):
   // turn 1 opens at the FIRST boundary; metadata before it is not a turn.
   // A compaction marker splits the slice but prints the SAME bucket number.
   const slices: string[][] = [];

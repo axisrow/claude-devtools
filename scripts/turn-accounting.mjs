@@ -213,19 +213,20 @@ export function isTurnBoundary(m) {
 }
 
 /** Which boundary CONSUMES a turn number — and the turn boundary for TIME and
- * LOSSES (turn clocks, wait-loop gates): real user messages only (the same
- * sidechain exclusion as the boundary — a slice may stop splitting on an
- * inline subagent prompt but its number must not grow either, #98/#109). A
- * compaction marker resets the token-budget bucket (isTurnBoundary — the
- * post-compact context starts fresh) but cuts no turn anywhere else: it opens
- * no turn, and the turn's active time and quiet-tick counts continue across
- * it (#97 — inventory and panel now gate on this predicate, not on
- * isUserChunkMessage, so all three surfaces agree with analyze:session). App
- * parity: CompactChunk is a structural boundary, the post-compact segment
- * keeps the current number until the next real user message. */
+ * LOSSES (turn clocks, wait-loop gates): transcript turns — real user messages
+ * and teammate relays (the app's canon, jsonl.ts turnCount and the chat Turn N
+ * chips, #99) — minus sidechain (the same sidechain exclusion as the boundary —
+ * a slice may stop splitting on an inline subagent prompt but its number must
+ * not grow either, #98/#109). A compaction marker resets the token-budget
+ * bucket (isTurnBoundary — the post-compact context starts fresh) but cuts no
+ * turn anywhere else: it opens no turn, and the turn's active time and
+ * quiet-tick counts continue across it (#97 — inventory and panel now gate on
+ * this predicate, not on isUserChunkMessage, so all three surfaces agree with
+ * analyze:session). CompactChunk is a structural boundary, the post-compact
+ * segment keeps the current number until the next transcript turn. */
 export function isTurnNumberLine(m) {
   if (m.isSidechain === true) return false;
-  return isUserChunkLine(m) && m.isCompactSummary !== true;
+  return isTranscriptTurnLine(m) && m.isCompactSummary !== true;
 }
 
 /** Main-chain assistant line — the only lines whose usage is billed to the

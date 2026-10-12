@@ -20,7 +20,7 @@
  */
 
 import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
-import { isParsedUserChunkMessage } from '@main/types';
+import { isParsedTeammateRelayMessage, isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
 import {
@@ -519,7 +519,9 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     maxTs = Math.max(maxTs, msg.timestamp.getTime());
 
     if (msg.isCompactSummary) continue; // structural message — not a turn (app numbering, jsonl.ts:545)
-    if (isParsedUserChunkMessage(msg) && !msg.isSidechain) {
+    // transcript turns only: real user messages and teammate relays (#99 —
+    // the chips' numbering), sidechain lines are the subagent's own context
+    if ((isParsedUserChunkMessage(msg) || isParsedTeammateRelayMessage(msg)) && !msg.isSidechain) {
       gapTextTok += estimateTokens(injectedText(msg.content));
       newTurn(msg.timestamp);
       continue;
@@ -1269,7 +1271,12 @@ function printTurnDeepDive(
     let n = 0;
     for (const m of messages) {
       if (m.isCompactSummary) continue; // same numbering as buildLedger
-      if (isParsedUserChunkMessage(m) && !m.isSidechain && ++n === turnNo) return m;
+      if (
+        (isParsedUserChunkMessage(m) || isParsedTeammateRelayMessage(m)) &&
+        !m.isSidechain &&
+        ++n === turnNo
+      )
+        return m;
     }
     return null;
   })();

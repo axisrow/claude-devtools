@@ -25,6 +25,7 @@ import { resolve, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { analyzeTurn } from '../../scripts/turn-budget-hook.mjs';
+import { isTurnNumberLine, isTranscriptTurnLine } from '../../scripts/turn-accounting.mjs';
 import { TurnBudgetDetector } from '../../src/main/utils/loopDetection';
 import { feedLine } from '../../src/cli/turnSpendStats';
 import {
@@ -71,6 +72,29 @@ function flatten(
     model: (m.message as { model?: string } | undefined)?.model,
     toolCalls: [],
   };
+}
+
+// buildLedger consumes ParsedMessage — minimal raw→Parsed mapping (the
+// fixture lines carry no uuid, so parseJsonlFile would skip them)
+function toParsed(l: string, i: number) {
+  const m = JSON.parse(l);
+  const inner = m.message ?? {};
+  return {
+    uuid: `line${i}`,
+    parentUuid: null,
+    timestamp: new Date(m.timestamp ?? 0),
+    type: m.type,
+    content: inner.content ?? '',
+    toolCalls: [],
+    toolResults: [],
+    isSidechain: m.isSidechain ?? false,
+    isMeta: m.isMeta ?? false,
+    isCompactSummary: m.isCompactSummary === true,
+    usage: inner.usage,
+    model: inner.model,
+    requestId: m.requestId,
+    messageId: inner.id,
+  } as never;
 }
 
 describe('turn accounting — golden parity across consumers', () => {
@@ -144,41 +168,52 @@ describe('turn accounting — golden parity across consumers', () => {
     // this PR fixes
     const { hookSpentByTurn } = await import('../../src/cli/sessionSums');
     const { buildLedger } = await import('../../src/cli/analyzeSession');
-    // buildLedger consumes ParsedMessage — minimal raw→Parsed mapping (the
-    // fixture lines carry no uuid, so parseJsonlFile would skip them)
-    const toParsed = (l: string, i: number) => {
-      const m = JSON.parse(l);
-      const inner = m.message ?? {};
-      return {
-        uuid: `line${i}`,
-        parentUuid: null,
-        timestamp: new Date(m.timestamp ?? 0),
-        type: m.type,
-        content: inner.content ?? '',
-        toolCalls: [],
-        toolResults: [],
-        isSidechain: m.isSidechain ?? false,
-        isMeta: m.isMeta ?? false,
-        isCompactSummary: m.isCompactSummary === true,
-        usage: inner.usage,
-        model: inner.model,
-        requestId: m.requestId,
-        messageId: inner.id,
-      } as never;
-    };
     // turn 5 = issue #95 fragments (no requestId, one message.id — billed once)
+    // (#99) the relay (line 12) consumes a turn number: slice numbers follow
+    // app canon — slice 1 spans the relay+interrupt, so it flushes as number
+    // 2; the ledger opens turn 2 on the relay (no rounds → context 0)
     expect([...hookSpentByTurn(lines).entries()]).toEqual([
-      [1, 310_700],
-      [2, 10_798],
-      [3, 102_320],
-      [4, 110_000],
-      [5, 6_600],
+      [2, 310_700],
+      [3, 10_798],
+      [4, 102_320],
+      [5, 110_000],
+      [6, 6_600],
     ]);
     const ledger = buildLedger(lines.map(toParsed));
-    expect(ledger.turns).toHaveLength(5);
+    expect(ledger.turns).toHaveLength(6);
     const contextByTurn = (no: number) =>
       ledger.rounds.filter((r) => r.turnIndex === no).reduce((sum, r) => sum + r.contextSize, 0);
-    expect([1, 2, 3, 4, 5].map(contextByTurn)).toEqual([310_700, 10_798, 102_320, 110_000, 6_600]);
+    expect([1, 2, 3, 4, 5, 6].map(contextByTurn)).toEqual([
+      310_700, 0, 10_798, 102_320, 110_000, 6_600,
+    ]);
+  });
+
+  it('a teammate relay is a turn in the CLI too — one numbering with the app (#99)', async () => {
+    // app canon (jsonl.ts:558 turnCount, loopDetection.ts:337 bell): transcript
+    // turns minus sidechain/compact — the fixture has 6 (5 user prompts + the
+    // relay at line 12). The CLI must number the SAME set; the sidechain
+    // prompt (line 7) opens no turn anywhere (#98/#109).
+    const { buildLedger } = await import('../../src/cli/analyzeSession');
+    const transcriptTurns = lines.filter((l) => {
+      const m = JSON.parse(l);
+      return isTranscriptTurnLine(m) && m.isSidechain !== true && m.isCompactSummary !== true;
+    });
+    expect(transcriptTurns).toHaveLength(6);
+    expect(isTurnNumberLine(JSON.parse(lines[11]))).toBe(true); // the relay
+    expect(isTurnNumberLine(JSON.parse(lines[6]))).toBe(false); // sidechain prompt
+    expect(buildLedger(lines.map(toParsed)).turns).toHaveLength(6);
+    // a response after a relay bills to the relay's turn — `--turn 2` opens
+    // what the chip «Turn 2» shows (issue repro: team session with a relay)
+    const teamLedger = buildLedger(
+      [
+        '{"type":"user","timestamp":"2026-10-08T03:00:00.000Z","message":{"role":"user","content":"lead task"}}',
+        '{"type":"assistant","requestId":"q1","message":{"id":"m1","content":[],"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":0,"output_tokens":1}}}',
+        '{"type":"user","timestamp":"2026-10-08T03:00:01.000Z","isMeta":false,"message":{"role":"user","content":"<teammate-message teammate_id=\\"lead\\">status?</teammate-message>"}}',
+        '{"type":"assistant","requestId":"q2","message":{"id":"m2","content":[],"usage":{"input_tokens":20,"cache_read_input_tokens":200,"cache_creation_input_tokens":0,"output_tokens":2}}}',
+      ].map(toParsed)
+    );
+    expect(teamLedger.turns).toHaveLength(2);
+    expect(teamLedger.rounds.map((r) => (r as { turnIndex: number }).turnIndex)).toEqual([1, 2]);
   });
 
   it('TurnBudgetDetector.feed agrees with analyzeTurn at every batch boundary', () => {
