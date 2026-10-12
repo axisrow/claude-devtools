@@ -845,7 +845,7 @@ export function computeFindings(
         if (!rejected) {
           const inputTok = estimateTokens(JSON.stringify(call.input));
           const ir = pricer.inputRates(msg.timestamp.getTime());
-          const rr = resultTok > 0 ? pricer.resultRates(msg.timestamp.getTime()) : undefined;
+          const rr = pricer.resultRates(msg.timestamp.getTime());
           findings.push({
             type: 'failed_call',
             severity: 'medium',
@@ -853,20 +853,19 @@ export function computeFindings(
             basis: 'estimated',
             summary: `${call.name} failed: ${short(text, 80)}`,
             // the call's own args are uncontested; the result competes with
-            // oversized/duplicate/streak/probe claims on the same toolUseId
+            // oversized/duplicate/streak/probe claims on the same toolUseId —
+            // the claim stays unconditional (unpriced drops only the rates),
+            // otherwise the overlapped findings' raw booking would shift
             free: inputTok,
             ...(ir ? { freeUsd: inputTok * (ir.usdRate ?? 0), freeInputEq: inputTok } : {}),
-            claims:
-              rr && resultTok > 0
-                ? [
-                    {
-                      owner: `result:${call.id}`,
-                      want: resultTok,
-                      cap: resultTok,
-                      ...(rr ?? {}),
-                    },
-                  ]
-                : [],
+            claims: [
+              {
+                owner: `result:${call.id}`,
+                want: resultTok,
+                cap: resultTok,
+                ...(rr ?? {}),
+              },
+            ],
           });
         }
       }
@@ -1660,7 +1659,8 @@ function printReport(
   } else {
     for (const f of visible) {
       const turnTag = f.turnIndex === undefined ? '' : ', turn ' + String(f.turnIndex);
-      const usdTag = f.wastedUsd !== undefined ? ` ~$${f.wastedUsd.toFixed(4)}` : '';
+      const usdTag =
+        !opts.noCost && f.wastedUsd !== undefined ? ` ~$${f.wastedUsd.toFixed(4)}` : '';
       const estTag = f.basis === 'estimated' ? ' (est)' : '';
       console.log(`[${f.type}${turnTag}]${usdTag}${estTag} ${f.summary}`);
     }
@@ -1772,6 +1772,10 @@ async function main(): Promise<void> {
     }
     const ledgerOut = opts.noCost ? { ...ledger, totals: totalsOut } : ledger;
     const breakdown = opts.breakdown ? breakdownFromRounds(ledger.rounds, !opts.noCost) : undefined;
+    // --no-cost is "no cost figures at all": findings' dollar fields go too
+    const findingsOut = opts.noCost
+      ? findings.map(({ wastedUsd: _usd, tokensWastedInputEq: _eq, ...f }) => f)
+      : findings;
     console.log(
       JSON.stringify(
         {
@@ -1779,7 +1783,7 @@ async function main(): Promise<void> {
           projectId,
           sessionId,
           ledger: ledgerOut,
-          findings,
+          findings: findingsOut,
           subagents: subagentSummaries,
           ...(breakdown ? { breakdown } : {}),
         },

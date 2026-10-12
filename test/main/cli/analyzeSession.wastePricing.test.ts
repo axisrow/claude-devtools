@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildLedger, computeFindings } from '../../../src/cli/analyzeSession';
 import type { Finding, FindingType } from '../../../src/cli/analyzeSession';
+import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
 import type { ParsedMessage } from '../../../src/main/types';
 
 let seq = 0;
@@ -103,7 +104,7 @@ describe('waste in dollars with cache residency (#82)', () => {
     makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, lastCtxRead, 0, 22) }),
   ];
   const dupOf = (findings: Finding[]): Finding =>
-    findings.find((f) => f.type === 'duplicate_call') as Finding;
+    findings.find((f) => f.type === 'duplicate_call')!;
 
   it('a repeat in round k of M rounds costs write + (M−k)·S·cache_read', () => {
     const messages = dupSession(500); // no compaction — M=5, k=2 → 3 re-reads
@@ -174,6 +175,35 @@ describe('waste in dollars with cache residency (#82)', () => {
     expect(f?.wastedUsd).toBeUndefined();
     expect(f?.tokensWastedInputEq).toBeUndefined();
     expect(f?.basis).toBe('measured');
+  });
+
+  it('a failed call keeps its raw claim even when unpriced (allocation unchanged)', () => {
+    const result = 'x'.repeat(40_000); // ~10k tok — also oversized
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1', // unpriced — no rates, but the claim must survive
+        usage: usage(100, 0, 0, 50),
+        toolCalls: [{ id: 't9', name: 'Bash', input: { command: 'dump stuff' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't9', content: result, isError: true }],
+      }),
+    ];
+    const ledger = buildLedger(messages);
+    const findings = computeFindings(messages, ledger);
+    const failed = findings.find((f) => f.type === 'failed_call');
+    const oversized = findings.find((f) => f.type === 'oversized_output');
+    // failed_call's raw claim (args + result > oversized's) is served first on
+    // the same toolUseId → oversized books 0 — exactly main's allocation
+    expect(failed?.tokensWasted).toBe(
+      estimateTokens(JSON.stringify({ command: 'dump stuff' })) + estimateTokens(result)
+    );
+    expect(oversized?.tokensWasted).toBe(0);
+    expect(failed?.wastedUsd).toBeUndefined();
   });
 
   it('every finding is marked measured or estimated', () => {

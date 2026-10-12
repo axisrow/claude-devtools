@@ -54,6 +54,6 @@ Churning beats progressing: same-result probes inside a cycle mean it is stuck e
 | probe_no_progress | a non-mutating probe re-run with the same result signature — the loop re-asked its question and learned nothing | change the approach: state is not moving |
 | !SLOW (SUBAGENTS table) | subagent ran past the threshold | split its prompt; pass less context in |
 
-Findings print `~$X` when the waste is priced at the shared table with cache residency (a result stays in context and is re-read every round until compaction — the $ includes those re-reads; cache_dead counts only the fresh-input premium), and `(est)` when the amount rides on chars/4 sizes rather than API counters (#82). `--json` carries `wastedUsd`, `tokensWastedInputEq` and `basis: measured | estimated` per finding.
+Findings print `~$X` when the waste is priced at the shared table with cache residency (a result stays in context and is re-read every round until compaction — the $ includes those re-reads; cache_dead counts only the fresh-input premium), and `(est)` when the amount rides on chars/4 sizes rather than API counters (#82). `--json` carries `wastedUsd`, `tokensWastedInputEq` and `basis: measured | estimated` per finding; `--no-cost` omits the dollar figures everywhere, findings included.
 
 Finish with the numbers: total billed tokens, reread share, top findings by wasted tokens, and a concrete fix for each. The CLI observes, it does not prevent — prevention is deny rules in Claude Code settings.
