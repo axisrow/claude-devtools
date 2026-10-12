@@ -23,7 +23,12 @@ import { ProjectScanner, SubagentResolver } from '@main/services/discovery';
 import { isParsedUserChunkMessage } from '@main/types';
 import { deduplicateByRequestId, getTaskCalls, parseJsonlFile } from '@main/utils/jsonl';
 import { encodePath, extractSessionId, getProjectsBasePath } from '@main/utils/pathDecoder';
-import { isQuietTick, isStalledRound, WAIT_LOOP_MIN_TICKS } from '@shared/constants/loopPolicy';
+import {
+  isQuietTick,
+  isStalledRound,
+  LOOP_MIN_STREAK,
+  WAIT_LOOP_MIN_TICKS,
+} from '@shared/constants/loopPolicy';
 import { asText, bashStem, normalizeCallKey } from '@shared/utils/callKey';
 import { parseModelString } from '@shared/utils/modelParser';
 import {
@@ -155,7 +160,7 @@ export const WASTE_THRESHOLDS = {
   cacheDeadContextTokens: 20000,
   thinkingHeavyTokens: 8000,
   longTurnActiveMinutes: 45,
-  loopStreakMin: 3,
+  loopStreakMin: LOOP_MIN_STREAK, // from @shared/constants/loopPolicy — shared with the panel and the bell's default cycleThreshold (#96)
   waitLoopTicks: WAIT_LOOP_MIN_TICKS, // from @shared/constants/loopPolicy — shared with the renderer
 } as const;
 
