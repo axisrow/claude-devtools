@@ -112,6 +112,18 @@ brew install --cask claude-devtools
 | **Windows** | [`.exe`](https://github.com/matt1398/claude-devtools/releases/latest) | Standard installer. May trigger SmartScreen — click "More info" → "Run anyway" |
 | **Docker** | `docker compose up` | Open `http://localhost:3456`. See [Docker deployment](#docker--standalone-deployment) |
 
+### Claude Code Plugin
+
+Session audit and inventory as Claude Code skills — no app install, no `pnpm install`, no npm package needed: the plugin ships self-contained binaries (`dist-cli/`).
+
+```bash
+# in Claude Code
+/plugin marketplace add axisrow/claude-devtools
+/plugin install session-audit@claude-devtools
+```
+
+Then ask Claude to audit a session (`/audit-session`) or list sessions (`/sessions-inventory`). The bundled binaries are self-contained executables; the skill pre-approves its own binary, so no extra setup is needed.
+
 ---
 
 ## Key Features

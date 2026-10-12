@@ -1,0 +1,405 @@
+#!/usr/bin/env node
+import { i as isDirectRun, w as wantsHelp, WASTE_THRESHOLDS, resolveProjectDir, g as getProjectsBasePath, a as inDateRange, padL, pad, d as decodePath, dur, short, f as formatTokensCompact, t as takeFlagValue, p as parseDayBound, l as lastDaysSince, n as normalizeDriveLetter, b as translateWslMountPath, c as isTurnNumberLine, e as billedRequestKey, billingFromFlags, h as extractSessionId, bashStem, normalizeCallKey, TURN_IDLE_GAP_CAP_MINUTES } from "./session-audit.js";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as readline from "readline";
+import "crypto";
+import "url";
+function mergeUsage(a, b) {
+  return {
+    input_tokens: (a.input_tokens ?? 0) + (b.input_tokens ?? 0),
+    output_tokens: (a.output_tokens ?? 0) + (b.output_tokens ?? 0),
+    cache_read_input_tokens: (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0),
+    cache_creation_input_tokens: (a.cache_creation_input_tokens ?? 0) + (b.cache_creation_input_tokens ?? 0)
+  };
+}
+async function scanSessionFile(filePath) {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity
+  });
+  let firstTs = null;
+  let lastTs = null;
+  let activeMs = 0;
+  let turnActiveMs = 0;
+  let longestTurnMs = 0;
+  let prevUsageTs = null;
+  let baseGapTs = 0;
+  let pendingGapMs = 0;
+  let gapPending = false;
+  let messageCount = 0;
+  const seenCallIds = /* @__PURE__ */ new Set();
+  let lastStreakKey = "";
+  let curStreak = 0;
+  let curStreakStartTs = "";
+  let curStreakToolUseId = "";
+  const runs = [];
+  const flushStreak = () => {
+    if (lastStreakKey && curStreak >= WASTE_THRESHOLDS.loopStreakMin) {
+      runs.push({
+        key: lastStreakKey,
+        count: curStreak,
+        startTs: curStreakStartTs,
+        toolUseId: curStreakToolUseId
+      });
+    }
+  };
+  const commitGap = () => {
+    if (!gapPending) return;
+    const gap = Math.min(Math.max(pendingGapMs, 0), TURN_IDLE_GAP_CAP_MINUTES * 6e4);
+    activeMs += gap;
+    turnActiveMs += gap;
+    gapPending = false;
+    pendingGapMs = 0;
+  };
+  const countCalls = (line) => {
+    const m = line.message;
+    if (!m || !Array.isArray(m.content)) return;
+    for (const block of m.content) {
+      const b = block;
+      if (b?.type !== "tool_use" || !b.name) continue;
+      const dedupId = `${line.requestId ?? ""}|${b.id ?? ""}`;
+      if (seenCallIds.has(dedupId)) continue;
+      seenCallIds.add(dedupId);
+      const key = bashStem(normalizeCallKey(b.name, b.input ?? {}));
+      if (key === lastStreakKey) {
+        curStreak += 1;
+      } else {
+        flushStreak();
+        lastStreakKey = key;
+        curStreak = 1;
+        curStreakStartTs = line.timestamp ?? "";
+      }
+      curStreakToolUseId = b.id ?? curStreakToolUseId;
+    }
+  };
+  let cwd;
+  const models = /* @__PURE__ */ new Set();
+  let sawWrite = false;
+  let sawRead = false;
+  const usageByRequestId = /* @__PURE__ */ new Map();
+  const directByModel = /* @__PURE__ */ new Map();
+  for await (const line of rl) {
+    if (line === "") continue;
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!e.timestamp) continue;
+    const ts = new Date(e.timestamp).getTime();
+    if (Number.isNaN(ts)) continue;
+    if (firstTs === null || ts < firstTs) firstTs = ts;
+    if (lastTs === null || ts > lastTs) lastTs = ts;
+    if (e.type === "user" || e.type === "assistant") messageCount++;
+    if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
+    if (isTurnNumberLine(e)) {
+      commitGap();
+      longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
+      turnActiveMs = 0;
+      prevUsageTs = null;
+    }
+    if (e.type === "assistant" && !e.isSidechain && e.message && e.message.model !== "<synthetic>") {
+      countCalls(e);
+    }
+    if (e.type === "assistant" && !e.isSidechain && e.message?.usage && e.message.model !== "<synthetic>") {
+      const billedKey = billedRequestKey(e);
+      const snapshot = billedKey !== void 0 && usageByRequestId.has(billedKey);
+      if (!snapshot) {
+        commitGap();
+        if (prevUsageTs !== null) {
+          baseGapTs = prevUsageTs;
+          pendingGapMs = Math.max(ts - prevUsageTs, 0);
+          gapPending = true;
+        }
+      } else if (gapPending) {
+        pendingGapMs = Math.max(ts - baseGapTs, 0);
+      }
+      prevUsageTs = ts;
+      if (e.message.model) models.add(e.message.model);
+      if (e.message.usage.cache_creation_input_tokens) sawWrite = true;
+      else if (e.message.usage.cache_read_input_tokens) sawRead = true;
+      if (billedKey !== void 0) {
+        usageByRequestId.set(billedKey, {
+          model: e.message.model ?? "unknown",
+          usage: e.message.usage
+        });
+      } else {
+        const m = e.message.model ?? "unknown";
+        directByModel.set(m, mergeUsage(directByModel.get(m) ?? {}, e.message.usage));
+      }
+    }
+  }
+  if (firstTs === null || lastTs === null) return null;
+  commitGap();
+  longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
+  flushStreak();
+  let totals = {};
+  const byModel = /* @__PURE__ */ new Map();
+  const acc = (model, u) => {
+    totals = mergeUsage(totals, u);
+    byModel.set(model, mergeUsage(byModel.get(model) ?? {}, u));
+  };
+  for (const { model, usage } of usageByRequestId.values()) acc(model, usage);
+  for (const [model, usage] of directByModel) acc(model, usage);
+  const tokensByModel = {};
+  for (const [model, u] of byModel) {
+    tokensByModel[model] = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  }
+  const rel = path.relative(getProjectsBasePath(), path.resolve(filePath));
+  const [projectId = "", sessionId = ""] = rel.split(path.sep);
+  const inputTokens = totals.input_tokens ?? 0;
+  const outputTokens = totals.output_tokens ?? 0;
+  const cacheReadTokens = totals.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = totals.cache_creation_input_tokens ?? 0;
+  return {
+    projectId,
+    sessionId: extractSessionId(sessionId),
+    filePath,
+    durationMs: Math.max(0, lastTs - firstTs),
+    activeMs,
+    longestTurnMs,
+    cycles: runs.toSorted((a, b) => b.count - a.count).slice(0, 10),
+    lastTs: new Date(lastTs),
+    models: [...models],
+    messageCount,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+    tokensByModel,
+    sizeBytes: fs.statSync(filePath).size,
+    billing: billingFromFlags(sawWrite, sawRead),
+    cwd
+  };
+}
+async function listSessionFiles(projectDir) {
+  const out = [];
+  for (const e of await fs.promises.readdir(projectDir, { withFileTypes: true })) {
+    if (e.isFile() && e.name.endsWith(".jsonl") && !e.name.startsWith("agent-")) {
+      out.push(path.join(projectDir, e.name));
+    }
+  }
+  return out;
+}
+async function mapWithConcurrency(items, limit, fn) {
+  const results = [];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next];
+      next += 1;
+      try {
+        results.push(await fn(item));
+      } catch (err) {
+        console.error(`(skipped ${String(item)}: ${String(err)})`);
+        results.push(null);
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+async function collect(projectsRoot, projectArg) {
+  let dirs;
+  if (projectArg) {
+    dirs = [projectArg];
+  } else {
+    const es = await fs.promises.readdir(projectsRoot, { withFileTypes: true });
+    dirs = es.filter((e) => e.isDirectory()).map((e) => path.join(projectsRoot, e.name));
+  }
+  const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
+  const files = fileGroups.filter((g) => g !== null).flat();
+  const scanned = await mapWithConcurrency(files, 8, scanSessionFile);
+  return scanned.filter((e) => e !== null);
+}
+const shortenHome = (p) => {
+  const home = os.homedir();
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+};
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function parseInventoryArgs(argv) {
+  const opts = {
+    minMinutes: 0,
+    sort: "duration",
+    limit: Number.POSITIVE_INFINITY,
+    json: false,
+    breakdown: false,
+    minTurnMinutes: 0,
+    minStreak: 0
+  };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    const { value, next } = takeFlagValue(argv, i);
+    if (a === "--project") {
+      opts.projectArg = value;
+      i = next;
+      continue;
+    }
+    if (a === "--min-minutes") {
+      opts.minMinutes = parseInt(value, 10) || 0;
+      i = next;
+      continue;
+    }
+    if (a === "--min-turn-minutes") {
+      opts.minTurnMinutes = parseInt(value, 10) || 0;
+      i = next;
+      continue;
+    }
+    if (a === "--min-streak") {
+      opts.minStreak = parseInt(value, 10) || 0;
+      i = next;
+      continue;
+    }
+    if (a === "--sort") {
+      opts.sort = value === "tokens" || value === "date" || value === "active" || value === "turn" || value === "streak" ? value : "duration";
+      i = next;
+      continue;
+    }
+    if (a === "--limit") {
+      const n = parseInt(value, 10);
+      opts.limit = n > 0 ? n : Number.POSITIVE_INFINITY;
+      i = next;
+      continue;
+    }
+    if (a === "--since" || a === "--until") {
+      const d = parseDayBound(value, a === "--until");
+      if (!d) opts.error = `invalid ${a} date (expected YYYY-MM-DD or YYYYMMDD): '${value}'`;
+      else if (a === "--since") opts.since = d;
+      else opts.until = d;
+      i = next;
+      continue;
+    }
+    if (a === "--last") {
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.since = lastDaysSince(parseInt(value, 10));
+        i = next;
+      } else {
+        opts.error = `--last expects a number of days >= 1, got '${value || "(missing)"}'`;
+        i += 1;
+      }
+      continue;
+    }
+    if (a === "--breakdown") {
+      opts.breakdown = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-cost") {
+      i += 1;
+      continue;
+    }
+    if (a === "--json") {
+      opts.json = true;
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  return opts;
+}
+async function main() {
+  const argv = process.argv.slice(2);
+  if (wantsHelp(argv)) {
+    console.log(
+      [
+        "usage: session-inventory [--project <dir|encoded>] [flags]",
+        "",
+        "flags:",
+        "  --min-minutes N           only sessions with at least N minutes of active (API) time",
+        "  --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes",
+        `  --min-streak N            only sessions where some back-to-back cycle ran at least N times (floor: ${String(WASTE_THRESHOLDS.loopStreakMin)}x — shorter runs are not recorded)`,
+        "  --sort FIELD              duration | active | turn | streak | tokens | date (default duration)",
+        "  --limit N                 show first N rows",
+        "  --breakdown               per-session model token split",
+        "  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)",
+        "  --until DATE              only sessions whose last activity is on/before this date",
+        "  --last N                  sessions whose last activity falls in the last N calendar days",
+        "  --no-cost                 accepted for the shared grammar; inventory has no cost figures",
+        "  --json                    machine-readable output"
+      ].join("\n")
+    );
+    return;
+  }
+  const opts = parseInventoryArgs(argv);
+  if (opts.error) {
+    console.error(opts.error);
+    process.exitCode = 1;
+    return;
+  }
+  let projectDir;
+  if (opts.projectArg) {
+    projectDir = resolveProjectDir(opts.projectArg);
+    if (!fs.existsSync(projectDir)) {
+      console.error(`project dir not found: ${opts.projectArg}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const entries = await collect(getProjectsBasePath(), projectDir);
+  entries.sort((a, b) => {
+    if (opts.sort === "tokens") return b.totalTokens - a.totalTokens;
+    if (opts.sort === "date") return (b.lastTs?.getTime() ?? 0) - (a.lastTs?.getTime() ?? 0);
+    if (opts.sort === "active") return b.activeMs - a.activeMs;
+    if (opts.sort === "turn") return b.longestTurnMs - a.longestTurnMs;
+    if (opts.sort === "streak") {
+      return (b.cycles[0]?.count ?? 0) - (a.cycles[0]?.count ?? 0);
+    }
+    return b.durationMs - a.durationMs;
+  });
+  const hasDateFilter = opts.since !== void 0 || opts.until !== void 0;
+  const shown = entries.filter((e) => e.activeMs >= opts.minMinutes * 6e4).filter((e) => e.longestTurnMs >= opts.minTurnMinutes * 6e4).filter((e) => (e.cycles[0]?.count ?? 0) >= opts.minStreak).filter(
+    (e) => hasDateFilter ? e.lastTs !== null && inDateRange(e.lastTs, opts.since, opts.until) : true
+  ).slice(0, opts.limit);
+  if (opts.json) {
+    const out = shown.map((e) => {
+      if (opts.breakdown) return e;
+      const copy = { ...e };
+      delete copy.tokensByModel;
+      return copy;
+    });
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+  const notes = [];
+  if (opts.minMinutes > 0) notes.push(`>= ${String(opts.minMinutes)} min active`);
+  if (opts.minTurnMinutes > 0) notes.push(`turn >= ${String(opts.minTurnMinutes)} min`);
+  if (opts.minStreak > 0) notes.push(`cycle >= ${String(opts.minStreak)}x`);
+  if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
+  else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
+  else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
+  const note = notes.length > 0 ? ` (${notes.join(", ")})` : "";
+  console.log(`sessions: ${entries.length} total, showing ${shown.length}${note}`);
+  console.log();
+  console.log(
+    `${padL("active", 9)} ${padL("wall", 9)} ${padL("max turn", 8)} ${padL("cycle", 9)} ${pad("date", 11)} ${pad("file", 9)} ${pad("project", 42)} ${pad(opts.breakdown ? "by model (share)" : "models", 30)} ${padL("tokens", 9)} ${padL("msgs", 6)} ${pad("billing", 15)}`
+  );
+  for (const e of shown) {
+    const project = e.cwd ? shortenHome(e.cwd) : shortenHome(decodePath(e.projectId));
+    const models = opts.breakdown ? modelShareCell(e) : e.models.join(", ");
+    console.log(
+      `${padL(dur(e.activeMs), 9)} ${padL(dur(e.durationMs), 9)} ${padL(dur(e.longestTurnMs), 8)} ${padL(cycleCell(e), 9)} ${pad(e.lastTs ? e.lastTs.toISOString().slice(0, 10) : "n/a", 11)} ${pad(e.sessionId.slice(0, 8), 9)} ${pad(short(project, 42), 42)} ${pad(short(models, 30), 30)} ${padL(formatTokensCompact(e.totalTokens), 9)} ${padL(String(e.messageCount), 6)} ${pad(e.billing, 15)}`
+    );
+  }
+}
+const cycleCell = (e) => e.cycles.length > 0 ? `${String(e.cycles.length)}c/${String(e.cycles[0].count)}x` : "-";
+function modelShareCell(e) {
+  const total = Object.values(e.tokensByModel).reduce((s, v) => s + v, 0);
+  if (total === 0) return "n/a";
+  return Object.entries(e.tokensByModel).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${m} ${Math.round(v / total * 100)}%`).join(", ");
+}
+if (isDirectRun(import.meta.url)) {
+  void main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}
+export {
+  mapWithConcurrency,
+  parseInventoryArgs,
+  scanSessionFile
+};
