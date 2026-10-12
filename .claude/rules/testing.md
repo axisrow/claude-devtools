@@ -71,4 +71,8 @@ test/
 - Utility functions in `*/utils/`
 
 ## Test Data
-Test fixtures use real JSONL session data from `~/.claude/projects/`.
+Fixtures are real or synthetic JSONL session data:
+- **Real, anonymized**: `test/fixtures/golden/` (golden totals validation, #74) and the regression corpus snapshots — see each fixture's README for provenance and the anonymization method.
+- **Synthetic, hand-written**: `test/fixtures/turn-accounting/session.jsonl` (parity fixtures) and inline fixtures in `test/mocks/`.
+
+Test fixtures use real JSONL session data from `~/.claude/projects/` only after anonymization (paths, prompts, ids scrubbed; usage numbers kept).

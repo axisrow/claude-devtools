@@ -1,0 +1,67 @@
+{
+  "provenance": "reference.mjs output over session.jsonl — see README.md",
+  "fixture": {
+    "lines": 387,
+    "models": [
+      "<synthetic>",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "deepseek-v4-flash:0731",
+      "glm-5.3",
+      "glm-5.3-flash"
+    ],
+    "fragmentGroups": 79,
+    "compactLines": 1,
+    "sidechainLines": 17,
+    "cacheWrite1hRounds": 107,
+    "syntheticLines": 1
+  },
+  "ledger": {
+    "turns": 22,
+    "inputTokens": 2083818,
+    "cacheReadTokens": 5350113,
+    "cacheCreationTokens": 345969,
+    "outputTokens": 47997,
+    "billedTokens": 7827897
+  },
+  "app": {
+    "inputTokens": 2083826,
+    "cacheReadTokens": 5451880,
+    "cacheCreationTokens": 389143,
+    "outputTokens": 48823,
+    "totalTokens": 7973672
+  },
+  "cost": {
+    "usd": 5.802142140000002,
+    "partial": true
+  },
+  "hook": {
+    "turns": 23,
+    "perTurnInputSide": [
+      158967,
+      236965,
+      328403,
+      345718,
+      71327,
+      366688,
+      151416,
+      78318,
+      238475,
+      324916,
+      82355,
+      0,
+      0,
+      916972,
+      735242,
+      893808,
+      420512,
+      1092029,
+      516975,
+      0,
+      177383,
+      357635,
+      285796
+    ],
+    "inputSideTotal": 7779900
+  }
+}
