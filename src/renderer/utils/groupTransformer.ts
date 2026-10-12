@@ -109,6 +109,9 @@ export function transformChunksToConversation(
   // Teammate relays open transcript turns (issue #55) but land in AI chunks —
   // count them so the chips agree with the scanner's turnCount.
   let relayCount = 0;
+  // AI groups before the first turn input each open their own turn (#100) —
+  // the offset that keeps numbering continuous into the post-input range.
+  let preInputAICount = 0;
 
   for (const chunk of chunks) {
     if (isEnhancedUserChunk(chunk)) {
@@ -126,14 +129,15 @@ export function transformChunksToConversation(
       // Count the chunk's relays BEFORE numbering it: a relay opens the turn
       // its own group answers.
       relayCount += countTeammateRelays(chunk.responses);
+      const turnInputs = userCount + relayCount;
       items.push({
         type: 'ai',
-        // Turn N = ordinal of the user message or teammate relay this group
-        // answers (0-based); empty turns consume a number. Fallback to
-        // AI-sequence before the first turn input (session not starting with
-        // a user message or relay).
-        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount + relayCount, aiCount)),
+        // Turn N = ordinal of the turn this group belongs to: the user message
+        // or teammate relay it answers, or its own pre-input turn (#100) when
+        // the transcript has no turn input yet.
+        group: createAIGroupFromChunk(chunk, aiTurnIndex(turnInputs, preInputAICount)),
       });
+      if (turnInputs === 0) preInputAICount++;
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
       items.push({
@@ -241,6 +245,9 @@ export function incrementalUpdateConversation(
   let aiCount = 0;
   let compactCount = 0;
   let relayCount = 0;
+  // AI groups before the first turn input each open their own turn (#100) —
+  // recounted from reused items alongside the other counters.
+  let preInputAICount = 0;
   for (const item of items) {
     switch (item.type) {
       case 'user':
@@ -252,8 +259,10 @@ export function incrementalUpdateConversation(
       case 'ai':
         aiCount++;
         // Relays of reused groups must re-count or appended groups get a
-        // stale number (issue #55).
+        // stale number (issue #55). AI groups while no turn input has been
+        // seen each carry their own pre-input turn (#100).
         relayCount += countTeammateRelays(item.group.responses);
+        if (userCount + relayCount === 0) preInputAICount++;
         break;
       case 'compact':
         compactCount++;
@@ -296,10 +305,12 @@ export function incrementalUpdateConversation(
       systemCount++;
     } else if (isEnhancedAIChunk(chunk)) {
       relayCount += countTeammateRelays(chunk.responses);
+      const turnInputs = userCount + relayCount;
       items.push({
         type: 'ai',
-        group: createAIGroupFromChunk(chunk, aiTurnIndex(userCount + relayCount, aiCount)),
+        group: createAIGroupFromChunk(chunk, aiTurnIndex(turnInputs, preInputAICount)),
       });
+      if (turnInputs === 0) preInputAICount++;
       aiCount++;
     } else if (isEnhancedCompactChunk(chunk)) {
       items.push({
@@ -644,23 +655,25 @@ function countTeammateRelays(responses: ParsedMessage[] | undefined): number {
 }
 
 /**
- * Turn-index policy for AI groups: the ordinal of the user message or
- * teammate relay the group answers (empty turns consume a number); falls
- * back to AI-sequence numbering before the first turn input. Single
- * definition — full and incremental transforms must number the same
- * transcript identically.
+ * Turn-index policy for AI groups: the ordinal of the turn the group belongs
+ * to — the user message or teammate relay it answers, or, before the first
+ * turn input (session #100), the group's own pre-input turn. Numbering is
+ * continuous: each pre-input AI group opens its own turn, so chips never
+ * collide with the post-input numbering. Single definition — full and
+ * incremental transforms must number the same transcript identically.
  */
-function aiTurnIndex(turnInputs: number, aiCount: number): number {
-  return turnInputs > 0 ? turnInputs - 1 : aiCount;
+function aiTurnIndex(turnInputs: number, preInputAIGroups: number): number {
+  return turnInputs > 0 ? preInputAIGroups + turnInputs - 1 : preInputAIGroups;
 }
 
 /**
  * Creates an AIGroup from an EnhancedAIChunk.
  *
  * @param chunk - The AI chunk to transform
- * @param turnIndex - 0-based transcript turn = ordinal of the user message this
- *                    group answers (empty turns consume a number); falls back to
- *                    AI-sequence numbering for groups preceding the first user chunk
+ * @param turnIndex - 0-based transcript turn the group belongs to: the user
+ *                    message or teammate relay it answers (empty turns consume
+ *                    a number), or its own pre-input turn (#100) — each AI
+ *                    group preceding the first turn input opens one
  * @returns AIGroup with semantic steps and metrics
  */
 function createAIGroupFromChunk(chunk: EnhancedAIChunk, turnIndex: number): AIGroup {

@@ -165,9 +165,30 @@ describe('groupTransformer turn numbering', () => {
     expect(aiTurnIndexes(chunks)).toEqual([0, 0]);
   });
 
-  it('falls back to AI-sequence numbering before the first user chunk', () => {
+  it('numbers pre-input AI groups as their own turns and does not restart after the first input (#100)', () => {
     const chunks = [makeAIChunk(), makeAIChunk(), makeUserChunk(), makeAIChunk()];
-    expect(aiTurnIndexes(chunks)).toEqual([0, 1, 0]);
+    expect(aiTurnIndexes(chunks)).toEqual([0, 1, 2]);
+  });
+
+  it('pre-input numbering continues across a compact boundary (#100)', () => {
+    // continued session: [AI, compact, AI] — both groups precede any turn input
+    const chunks = [makeAIChunk(), makeCompactChunk(), makeAIChunk()];
+    expect(aiTurnIndexes(chunks)).toEqual([0, 1]);
+  });
+
+  it('incremental path recounts pre-input AI groups from reused items (#100)', () => {
+    const base = [makeAIChunk(), makeAIChunk()];
+    const prev = transformChunksToConversation(base, [], false);
+    const grown = incrementalUpdateConversation(
+      prev,
+      [...base, makeUserChunk(), makeAIChunk()],
+      [],
+      false
+    );
+    const aiItems = grown.items.filter((item) => item.type === 'ai');
+    expect(aiItems.map((item) => (item.group as { turnIndex: number }).turnIndex)).toEqual([
+      0, 1, 2,
+    ]);
   });
 
   it('incremental path agrees with the full transform', () => {
