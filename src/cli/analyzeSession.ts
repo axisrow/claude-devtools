@@ -699,8 +699,13 @@ function residencyPricer(ledger: SessionLedger): ResidencyPricer {
     resultRates(ts: number): TokenRates | undefined {
       const k = appearingRoundOf(ts);
       if (k < 0) return undefined;
-      const p = priceForRound(rounds[k]);
-      const after = readAfter[k];
+      // the content first bills as a cache WRITE on round k+1's request — it
+      // cannot be READ there (it is not cached yet), so the reads start at
+      // round k+2 until compaction cuts the residency
+      const next = rounds[k + 1];
+      if (!next) return { usdRate: 0, inputEqRate: 0 }; // never sent again — no future cost
+      const p = priceForRound(next);
+      const after = readAfter[k + 1];
       if (!p || after === null) return undefined;
       return rates(p.cacheWrite5m + after, p.input);
     },

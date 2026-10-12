@@ -1,11 +1,12 @@
 /**
  * Waste pricing tests (#82, #83):
  *  - #82: findings carry wastedUsd (shared price table) and
- *    tokensWastedInputEq with cache residency — a result of size S from round
- *    k costs one cache write + one cache read per later round, cut by
- *    compaction; cache_dead books only the uncached-input premium; every
- *    finding is marked measured | estimated. tokensWasted keeps its raw
- *    once-per-result semantics (PR #124 allocation + #131 harness contract).
+ *    tokensWastedInputEq with cache residency — a result first bills as a
+ *    cache write on the next round's request, then as a cache read per
+ *    further round until compaction cuts it; cache_dead books only the
+ *    uncached-input premium; every finding is marked measured | estimated.
+ *    tokensWasted keeps its raw once-per-result semantics (PR #124 allocation
+ *    + #131 harness contract).
  *  - #83: thinking is the BILLED estimate (output_tokens − visible output),
  *    not chars/4 of the returned (often empty) thinking text.
  */
@@ -106,16 +107,18 @@ describe('waste in dollars with cache residency (#82)', () => {
   const dupOf = (findings: Finding[]): Finding =>
     findings.find((f) => f.type === 'duplicate_call')!;
 
-  it('a repeat in round k of M rounds costs write + (M−k)·S·cache_read', () => {
-    const messages = dupSession(500); // no compaction — M=5, k=2 → 3 re-reads
+  it('a repeat in round k of M rounds costs its cache write + the re-reads after it', () => {
+    const messages = dupSession(500); // no compaction — write at round 3, re-reads at 4–5
     const ledger = buildLedger(messages);
     const dup = dupOf(computeFindings(messages, ledger));
     // raw booking unchanged (PR #124 / #131 contract): the repeat result once
     expect(dup.tokensWasted).toBe(200);
-    // $: S×(cacheWrite5m + 3×cacheRead) = 200×(2.5 + 3×0.2)/1e6
-    expect(dup.wastedUsd).toBeCloseTo(0.00062, 12);
-    // input-token equivalent at the appearing round's input rate ($2/MTok)
-    expect(dup.tokensWastedInputEq).toBeCloseTo(310, 6);
+    // the result first bills as a cache WRITE on the next round's request (it
+    // cannot be read there — not cached yet), then as reads: rounds 4–5
+    // $ = S×(cacheWrite5m + 2×cacheRead) = 200×(2.5 + 2×0.2)/1e6
+    expect(dup.wastedUsd).toBeCloseTo(0.00058, 12);
+    // input-token equivalent at the input rate ($2/MTok)
+    expect(dup.tokensWastedInputEq).toBeCloseTo(290, 6);
     expect(dup.basis).toBe('estimated'); // result size is chars/4
   });
 
@@ -125,8 +128,9 @@ describe('waste in dollars with cache residency (#82)', () => {
     const ledger = buildLedger(messages);
     const dup = dupOf(computeFindings(messages, ledger));
     expect(dup.tokensWasted).toBe(200); // raw booking unchanged
-    expect(dup.wastedUsd).toBeCloseTo(0.00058, 12); // 200×(2.5 + 2×0.2)/1e6
-    expect(dup.tokensWastedInputEq).toBeCloseTo(290, 6);
+    // write at round 3 + a single re-read at round 4; round 5's compaction cut
+    expect(dup.wastedUsd).toBeCloseTo(0.00054, 12); // 200×(2.5 + 1×0.2)/1e6
+    expect(dup.tokensWastedInputEq).toBeCloseTo(270, 6);
   });
 
   it('cache_dead books only the uncached-input premium in $, raw tokens stay compat', () => {
