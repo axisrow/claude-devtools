@@ -8,12 +8,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  ci:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check branch is up to date with main
+        # Issue #105 (#67 merged from a stale branch): fail when the PR branch
+        # is missing commits from main. On pull_request the checkout is the
+        # merge commit (its merge-base with main is always main), so compare
+        # the PR head sha instead. Evaluated at push/PR time only — main
+        # moving afterwards needs branch protection to re-block the merge.
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch origin main
+          if [ "$(git merge-base "$HEAD_SHA" origin/main)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::Branch is behind main — merge or rebase main into this branch."
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -33,10 +51,39 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        run: pnpm test
+      - name: Build
+        run: pnpm build
+
+      - name: Build CLI
+        run: pnpm build:cli
 
       - name: Validate plugin
         # npm, not pnpm: pnpm 10 blocks the package postinstall that
         # downloads the native binary (Ignored build scripts).
         run: npm install -g @anthropic-ai/claude-code@2.1.282 && claude plugin validate .
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
