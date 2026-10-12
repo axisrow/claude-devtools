@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeSessionFileMetadata,
   calculateMetrics,
+  deduplicateByRequestId,
   mergeAssistantFragments,
   parseJsonlFile,
   readSessionName,
@@ -337,6 +338,82 @@ describe('jsonl', () => {
       expect(ai[0].responses).toHaveLength(1);
       expect(ai[0].responses[0].content).toHaveLength(2);
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
+  describe('requestId split-response lines (issue #88)', () => {
+    const usageA = { input_tokens: 1000, output_tokens: 100 };
+
+    // Claude Code 2.1.296 writes ONE content block per JSONL line; every line
+    // of a requestId carries the same usage — the lines PARTITION the response.
+    const fragment = (
+      uuid: string,
+      content: ParsedMessage['content'],
+      toolCalls: ParsedMessage['toolCalls'] = []
+    ): ParsedMessage =>
+      createMessage({
+        uuid,
+        requestId: 'req_1',
+        messageId: 'msg_1',
+        usage: usageA,
+        content,
+        toolCalls,
+      });
+
+    it('deduplicateByRequestId keeps every block of a split response', () => {
+      const messages = [
+        fragment('r1', [{ type: 'thinking', thinking: 'plan', signature: 'sig' }]),
+        fragment('r2', [{ type: 'text', text: 'hi' }]),
+        fragment(
+          'r3',
+          [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+          [{ id: 't1', name: 'Read', input: {}, isTask: false }]
+        ),
+      ];
+
+      const deduped = deduplicateByRequestId(messages);
+      expect(deduped).toHaveLength(1);
+      expect(deduped[0].content).toHaveLength(3);
+      expect(deduped[0].toolCalls).toHaveLength(1);
+      expect(deduped[0].usage).toEqual(usageA);
+    });
+
+    it('old snapshot format: accumulating lines do not double blocks', () => {
+      const messages = [
+        createMessage({
+          uuid: 's1',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          usage: { input_tokens: 100, output_tokens: 10 },
+          content: [{ type: 'text', text: 'hel' }],
+        }),
+        createMessage({
+          uuid: 's2',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          usage: { input_tokens: 100, output_tokens: 20 },
+          content: [{ type: 'text', text: 'hello' }],
+        }),
+        createMessage({
+          uuid: 's3',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          usage: { input_tokens: 100, output_tokens: 30 },
+          content: [
+            { type: 'text', text: 'hello' },
+            { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+          ],
+          toolCalls: [{ id: 't1', name: 'Read', input: {}, isTask: false }],
+        }),
+      ];
+
+      const deduped = deduplicateByRequestId(messages);
+      expect(deduped).toHaveLength(1);
+      const texts = deduped[0].content.filter((b) => b.type === 'text');
+      expect(texts).toHaveLength(1);
+      expect(texts[0].type === 'text' && texts[0].text).toBe('hello');
+      expect(deduped[0].toolCalls).toHaveLength(1);
+      expect(deduped[0].usage?.output_tokens).toBe(30);
     });
   });
 
