@@ -14,6 +14,7 @@ import {
 import { ChunkBuilder } from '../../../src/main/services/analysis/ChunkBuilder';
 import { isAIChunk, isParsedTeammateRelayMessage, isUserChunk } from '../../../src/main/types';
 import type { ParsedMessage } from '../../../src/main/types';
+import { transformChunksToConversation } from '../../../src/renderer/utils/groupTransformer';
 
 // Helper to create a minimal ParsedMessage
 function createMessage(overrides: Partial<ParsedMessage> = {}): ParsedMessage {
@@ -921,6 +922,83 @@ describe('jsonl', () => {
             force: true,
             maxRetries: 5,
             retryDelay: 200,
+          });
+        } catch {
+          // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
+        }
+      }
+    });
+
+    it('parity — a session with no turn input: last chip equals scan turnCount, chips unique (#100)', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-parity-nouser-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const user = (uuid: string, parentUuid: string | null, content: string, x = {}): string =>
+          JSON.stringify({
+            type: 'user',
+            uuid,
+            parentUuid: parentUuid ?? undefined,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            isMeta: false,
+            isSidechain: false,
+            message: { role: 'user', content },
+            ...x,
+          });
+        const assistant = (uuid: string, parentUuid: string): string =>
+          JSON.stringify({
+            type: 'assistant',
+            uuid,
+            parentUuid,
+            timestamp: '2026-01-01T00:00:01.000Z',
+            message: {
+              role: 'assistant',
+              model: 'claude-fable-5-1',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: { input_tokens: 10, output_tokens: 2 },
+            },
+          });
+        const compactLine = (uuid: string, parentUuid: string): string =>
+          user(uuid, parentUuid, 'This session is being continued from a previous conversation', {
+            isCompactSummary: true,
+          });
+
+        // case 1 — continued session: summary → response → user → response
+        // case 2 — no user input at all: response → summary → response
+        const cases: Record<string, string[]> = {
+          'continues from a compact summary': [
+            compactLine('c1', null),
+            assistant('a1', 'c1'),
+            user('u1', 'a1', 'go on'),
+            assistant('a2', 'u1'),
+          ],
+          'has no user input at all': [
+            assistant('a3', null),
+            compactLine('c2', 'a3'),
+            assistant('a4', 'c2'),
+          ],
+        };
+
+        for (const [name, lines] of Object.entries(cases)) {
+          fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+          const messages = await parseJsonlFile(filePath);
+          const chipNumbers = (
+            transformChunksToConversation(new ChunkBuilder().buildChunks(messages, []), [], false)
+              .items as { type: string; group: { turnIndex: number } }[]
+          )
+            .filter((item) => item.type === 'ai')
+            .map((item) => item.group.turnIndex + 1);
+          const scan = await analyzeSessionFileMetadata(filePath);
+
+          // last chip == sidebar counter; numbers unique (no "Turn 1, Turn 1")
+          expect(chipNumbers[chipNumbers.length - 1], name).toBe(scan.turnCount);
+          expect(new Set(chipNumbers).size, name).toBe(chipNumbers.length);
+        }
+      } finally {
+        try {
+          fs.rmSync(tempDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
           });
         } catch {
           // Best-effort cleanup; ignore ENOTEMPTY on Windows when dir is in use
