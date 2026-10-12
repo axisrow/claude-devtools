@@ -203,10 +203,11 @@ export function buildSums(
  * slices, like turnSpendStats), number segments by isTurnNumberLine (compact
  * keeps the current number), sum analyzeTurn per number.
  *
- * Numbering mirrors buildLedger (#102): assistant rounds before the first user
- * message open the implicit turn 1, each real user message opens the next —
- * hook and ledger numbers then name the same turns. Segments accumulate from
- * the first line, so the implicit turn's spend is counted too. */
+ * Numbering mirrors buildLedger (#102, #99): assistant rounds before the first
+ * transcript turn open the implicit turn 1, each real user message or teammate
+ * relay opens the next (app canon — the chat chips' numbering) — hook and
+ * ledger numbers then name the same turns. Segments accumulate from the first
+ * line, so the implicit turn's spend is counted too. */
 export function hookSpentByTurn(rawLines: string[]): Map<number, number> {
   const spent = new Map<number, number>();
   const add = (no: number, lines: string[]): void => {

@@ -68,8 +68,9 @@ export declare function isTranscriptTurnLine(m: AccountableMessage): boolean;
 /** Turn boundary: user-initiated message or compaction marker. */
 export declare function isTurnBoundary(m: AccountableMessage): boolean;
 
-/** Which boundary consumes a turn number: real user messages only (compact
- * resets the bucket but opens no turn — app parity, CompactChunk). */
+/** Which boundary consumes a turn number: transcript turns (real user
+ * messages and teammate relays — app canon, #99) minus sidechain; compact
+ * resets the bucket but opens no turn. */
 export declare function isTurnNumberLine(m: AccountableMessage): boolean;
 
 /** Main-chain assistant line — the only lines billed to the turn's re-read
