@@ -349,8 +349,9 @@ describe('a mid-turn compact does not cut the turn (#97)', () => {
     const cliMinutes = ledger.totals.longestTurn?.activeMinutes;
     // one turn across the compact: 4 working gaps of 241s + 301s across the
     // boundary = 21.1 min — the inventory must measure the same clock, not
-    // reset it on the compact summary (it reported 8 min before the fix)
-    expect(cliMinutes).toBe(21);
-    expect(Math.round((entry?.longestTurnMs ?? 0) / 60_000)).toBe(cliMinutes);
+    // reset it on the compact summary (it reported 8 min before the fix).
+    // #121 keeps fractional minutes; both consumers see the same gap set
+    expect(cliMinutes).toBeCloseTo(21.083, 2);
+    expect((entry?.longestTurnMs ?? 0) / 60_000).toBeCloseTo(cliMinutes ?? -1, 2);
   });
 });
