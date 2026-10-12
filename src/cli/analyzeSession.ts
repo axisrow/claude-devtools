@@ -296,14 +296,15 @@ export function roundCostUsd(r: RoundRow): number | null {
 }
 
 // active work time of a turn: gaps between consecutive rounds, each capped —
-// hours of orchestrator silence between pings count as zero, not as a "turn"
+// hours of orchestrator silence between pings count as zero, not as a "turn".
+// Returns fractional minutes; only displayed totals are rounded (issue #91)
 export function turnActiveMinutes(rounds: RoundRow[]): number {
   let ms = 0;
   for (let i = 1; i < rounds.length; i++) {
     const gap = rounds[i].timestamp.getTime() - rounds[i - 1].timestamp.getTime();
     ms += Math.min(Math.max(gap, 0), TURN_IDLE_GAP_CAP_MINUTES * 60000);
   }
-  return Math.round(ms / 60000);
+  return ms / 60000;
 }
 
 // one grouping of rounds by turn, shared by totals, findings and the report
@@ -828,7 +829,7 @@ export function computeFindings(
         // tokensWasted don't count a healthy turn's whole billing as waste
         tokensWasted: 0,
         turnIndex: turn.index,
-        summary: `active ${turn.activeMinutes} min, ${calls} tool calls (${top || 'no tools'})`,
+        summary: `active ${Math.round(turn.activeMinutes)} min, ${calls} tool calls (${top || 'no tools'})`,
       });
     }
     // A tick is an IDLE round (no tool call) — see isQuietTick in loopPolicy:
@@ -1283,7 +1284,7 @@ function printTurnDeepDive(
   console.log(`=== TURN ${turnNo} ===`);
   console.log(`user  : ${preview}`);
   console.log(
-    `span  : ${dur(span)} wall, active ${turn.activeMinutes}m, ${rs.length} rounds, ${rs.reduce((s, r) => s + r.tools.length, 0)} tool calls`
+    `span  : ${dur(span)} wall, active ${Math.round(turn.activeMinutes)}m, ${rs.length} rounds, ${rs.reduce((s, r) => s + r.tools.length, 0)} tool calls`
   );
   if (first && last) {
     console.log(
@@ -1332,7 +1333,7 @@ function printReport(
   }
   if (t.longestTurn) {
     console.log(
-      `longest turn: #${t.longestTurn.turn} (active ${t.longestTurn.activeMinutes}m, ${t.longestTurn.rounds} rounds)`
+      `longest turn: #${t.longestTurn.turn} (active ${Math.round(t.longestTurn.activeMinutes)}m, ${t.longestTurn.rounds} rounds)`
     );
   }
   if (t.costUsd !== undefined && !opts.noCost) {
@@ -1384,7 +1385,7 @@ function printReport(
     const toolCounts = countTools(rs);
     const tools = [...toolCounts].map(([n, c]) => `${n} x${c}`).join(', ');
     console.log(
-      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(turn.activeMinutes + 'm', 5)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
+      `${pad(String(turn.index), 3)} ${pad(hhmm(turn.start), 6)} ${padL(Math.round(turn.activeMinutes) + 'm', 5)} ${padL(fmt(ctx), 9)} ${padL(fmt(reread), 9)} ${padL(fmt(fresh), 8)} ${padL(fmt(out), 7)} ${pad(thinkPct + '%', 7)}  ${short(tools, 60)}`
     );
   }
   console.log();
