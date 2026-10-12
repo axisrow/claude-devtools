@@ -33,8 +33,9 @@ export const SNAPSHOT_DIR_NAME = 'corpus-snapshots';
 
 // repo root from this file's location (src/cli/), independent of process.cwd();
 // vitest hands modules a non-file: import.meta.url → fall back to cwd (pnpm
-// scripts and vitest both run at the package root)
-const REPO_ROOT = (() => {
+// scripts and vitest both run at the package root).
+// Exported for the precision CLI (#81).
+export const REPO_ROOT = (() => {
   try {
     return fileURLToPath(new URL('../..', import.meta.url));
   } catch {
@@ -243,7 +244,8 @@ export function diffSnapshots(before: SessionSnapshot, after: SessionSnapshot): 
 // CLI plumbing
 // =============================================================================
 
-interface ComputedSession {
+// exported for the precision CLI (#81), which samples findings over the corpus
+export interface ComputedSession {
   file: string;
   ledger: SessionLedger;
   findings: Finding[];
@@ -262,7 +264,8 @@ async function computeSession(file: string, corpusDir: string): Promise<Computed
   return { file, ledger, findings, snapshot: buildSnapshot(sessionId, ledger, findings) };
 }
 
-async function computeCorpus(corpusDir: string): Promise<ComputedSession[]> {
+// exported for the precision CLI (#81), which samples findings over the corpus
+export async function computeCorpus(corpusDir: string): Promise<ComputedSession[]> {
   const files = listSessionFiles(corpusDir);
   if (files.length === 0) {
     throw new Error(`no .jsonl sessions found in CORPUS_DIR: ${corpusDir}`);
