@@ -26,9 +26,9 @@ function formatNumber(n: number): string {
   return n.toLocaleString('en-US');
 }
 
-function formatCost(cost?: number): string {
+function formatCost(cost?: number, partial?: boolean): string {
   if (cost == null) return 'N/A';
-  return `$${cost.toFixed(2)}`;
+  return `$${cost.toFixed(2)}${partial ? ' (partial — unpriced models excluded)' : ''}`;
 }
 
 function formatTimestamp(date: Date): string {
@@ -318,7 +318,7 @@ export function exportAsPlainText(detail: SessionDetail): string {
   lines.push(`Cache Read:     ${formatNumber(metrics.cacheReadTokens)}`);
   lines.push(`Cache Created:  ${formatNumber(metrics.cacheCreationTokens)}`);
   lines.push(`Messages:       ${formatNumber(metrics.messageCount)}`);
-  lines.push(`Cost:           ${formatCost(metrics.costUsd)}`);
+  lines.push(`Cost:           ${formatCost(metrics.costUsd, metrics.costPartial)}`);
   lines.push('');
 
   // Conversation
@@ -373,7 +373,7 @@ export function exportAsMarkdown(detail: SessionDetail): string {
   lines.push(`| Cache Read | ${formatNumber(metrics.cacheReadTokens)} |`);
   lines.push(`| Cache Created | ${formatNumber(metrics.cacheCreationTokens)} |`);
   lines.push(`| Messages | ${formatNumber(metrics.messageCount)} |`);
-  lines.push(`| Cost | ${formatCost(metrics.costUsd)} |`);
+  lines.push(`| Cost | ${formatCost(metrics.costUsd, metrics.costPartial)} |`);
   lines.push('');
 
   // Conversation
