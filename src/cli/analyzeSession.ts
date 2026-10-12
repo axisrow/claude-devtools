@@ -480,13 +480,17 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
       contextDelta: rounds.length === 0 || contextSize === 0 ? 0 : contextSize - prevContext,
       thinkingTokens: think,
       tools,
-      resultTokens: gapToolTok,
-      injectedTextTokens: gapTextTok,
+      // ghosts (#14) book no gap: contextSize 0 swallows nothing, the gap
+      // belongs to the next request that actually grows the context
+      resultTokens: contextSize > 0 ? gapToolTok : 0,
+      injectedTextTokens: contextSize > 0 ? gapTextTok : 0,
       isRetryCopy: isRetryCopy || undefined,
     };
-    gapToolTok = 0;
-    gapTextTok = 0;
-    if (contextSize > 0) prevContext = contextSize;
+    if (contextSize > 0) {
+      gapToolTok = 0;
+      gapTextTok = 0;
+      prevContext = contextSize;
+    }
     rounds.push(round);
     models.add(model);
   }
@@ -686,12 +690,17 @@ export function computeFindings(
     const r = ledger.rounds[i];
     if (r.isRetryCopy) continue; // findings already reported for the original round
     if (r.contextDelta > th.contextSpikeTokens) {
+      // prev = the round the delta is measured against — the last one with a
+      // non-zero context (ghosts #14 don't update prevContext, same walk)
+      let j = i - 1;
+      while (j >= 0 && ledger.rounds[j].contextSize === 0) j--;
+      const prev = ledger.rounds[j];
       findings.push({
         type: 'context_spike',
         severity: 'high',
         tokensWasted: r.contextDelta,
         turnIndex: r.turnIndex,
-        summary: contextSpikeSummary(ledger.rounds[i - 1], r),
+        summary: contextSpikeSummary(prev, r),
       });
     }
     if (

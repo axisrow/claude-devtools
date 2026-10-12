@@ -288,7 +288,7 @@ describe('context spike attribution (#89)', () => {
   const spikeOf = (messages: ParsedMessage[]) =>
     computeFindings(messages, buildLedger(messages)).find((f) => f.type === 'context_spike');
 
-  it('blames the previous round\'s call for the results that arrived before the spike round', () => {
+  it("blames the previous round's call for the results that arrived before the spike round", () => {
     const messages = [
       makeMsg({ type: 'user', content: 'go' }),
       makeMsg({
@@ -314,6 +314,31 @@ describe('context spike attribution (#89)', () => {
     expect(f?.summary).toContain('Bash');
     expect(f?.summary).toContain('round 1');
     expect(f?.summary).not.toContain('Read'); // the spike round's own call is not the culprit
+  });
+
+  it('keeps the gap across zero-usage ghost rounds: the next real round owns the spike', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'm1',
+        usage: usage(1000, 0, 0, 10),
+        toolCalls: [{ id: 't1', name: 'Bash', input: { command: 'cat big.log' }, isTask: false }],
+      }),
+      makeMsg({
+        type: 'user',
+        isMeta: true,
+        toolResults: [{ toolUseId: 't1', content: big, isError: false }],
+      }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(0, 0, 0, 0) }), // ghost, #14
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(1000, 41_000, 0, 10) }),
+    ];
+    const ledger = buildLedger(messages);
+    // the ghost books no gap and no delta; the next real round carries both
+    expect(ledger.rounds[2].contextDelta).toBe(41_000);
+    expect(ledger.rounds[2].resultTokens).toBeGreaterThan(0);
+    const spike = computeFindings(messages, ledger).find((f) => f.type === 'context_spike');
+    expect(spike?.summary).toContain('Bash');
   });
 
   it('marks a spike fed by injected isMeta text (skill body) as not a tool result', () => {
