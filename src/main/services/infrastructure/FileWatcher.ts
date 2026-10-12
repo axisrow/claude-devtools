@@ -103,19 +103,19 @@ function detectorIncidentToError(args: {
   };
   if (kind === 'turn_budget') {
     const budget = incident as TurnBudgetIncident;
-    // turn number + wall-clock start — the keys to find the crossing turn in
-    // the chat and the Visible Context panel (Re-read section shows both)
+    // phase + segment start — the SAME key the panel's Re-read row prints
+    // (ph{N} · hh:mm), so notification and row match unambiguously (#101).
+    // The chat's Turn chip can drift (a relay can open a later turn inside
+    // the crossing group), so it is context, not the key.
     const turnLabel =
-      budget.turnNumber > 0
-        ? `turn ${budget.turnNumber}` +
-          (budget.turnStartTs
-            ? ` (${new Date(budget.turnStartTs).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                hourCycle: 'h23', // deterministic 24h — CI locale would print "06:46 AM"
-              })})`
-            : '')
-        : 'current turn';
+      `phase ${budget.phaseNumber}` +
+      (budget.segmentStartTs
+        ? ` (${new Date(budget.segmentStartTs).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23', // deterministic 24h — CI locale would print "06:46 AM"
+          })})`
+        : '');
     return createDetectedError({
       ...common,
       source: 'turn_budget',

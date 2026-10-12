@@ -376,13 +376,17 @@ describe('TurnBudgetDetector', () => {
 
   it('fires once at the crossing; stays quiet for the rest of the turn', () => {
     const det = new TurnBudgetDetector();
-    expect(det.feed('s', [big('a', 4_000_000), big('b', 4_000_000)], budget)).toBeNull();
+    const a = big('a', 4_000_000);
+    expect(det.feed('s', [a, big('b', 4_000_000)], budget)).toBeNull();
     const incident = det.feed('s', [big('c', 4_000_000)], budget);
     expect(incident).toEqual({
       spent: 12_000_000,
       budget,
       turnNumber: 0,
       turnStartTs: undefined,
+      phaseNumber: 1,
+      // the segment opened with this turn's first request
+      segmentStartTs: a.timestamp,
       toolUseId: 't-c',
       cwd: undefined,
       batchIndex: 0,
