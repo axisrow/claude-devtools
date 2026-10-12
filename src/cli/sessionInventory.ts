@@ -17,7 +17,6 @@
  *   --json                    machine-readable output
  */
 
-import { isParsedUserChunkMessage, type ParsedMessage } from '@main/types';
 import {
   decodePath,
   extractSessionId,
@@ -25,7 +24,7 @@ import {
   normalizeDriveLetter,
   translateWslMountPath,
 } from '@main/utils/pathDecoder';
-import { billedRequestKey } from '@shared/turnAccounting';
+import { billedRequestKey, isTurnNumberLine } from '@shared/turnAccounting';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -67,6 +66,7 @@ interface ScanEntry {
   requestId?: string;
   isSidechain?: boolean;
   isMeta?: boolean;
+  isCompactSummary?: boolean;
   cwd?: string;
   message?: { id?: string; model?: string; usage?: RawUsage; content?: unknown };
 }
@@ -210,20 +210,12 @@ export async function scanSessionFile(filePath: string): Promise<InventoryEntry 
     // normalize like extractCwd: uppercase drive letter, WSL mount → Windows path
     if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
 
-    // turn boundary = real user message, via the same isParsedUserChunkMessage
-    // guard buildLedger uses (system-output tags, array content, teammate pings
-    // all behave identically — the divergence this way is structural). !isSidechain
-    // stays local: sidechain lines never split the main-chain turn accounting.
-    // cast: the guard reads only type/isMeta/content, all present on the raw line
-    if (
-      e.type === 'user' &&
-      !e.isSidechain &&
-      isParsedUserChunkMessage({
-        type: e.type,
-        isMeta: e.isMeta,
-        content: e.message?.content,
-      } as unknown as ParsedMessage)
-    ) {
+    // turn boundary = the line that consumes a turn number, via the canonical
+    // isTurnNumberLine the hook and buildLedger number turns with (system-
+    // output tags, array content, teammate pings all behave identically; a
+    // compact summary keeps the current turn — #97). Sidechains stay local:
+    // they never split the main-chain turn accounting.
+    if (isTurnNumberLine(e as never)) {
       commitGap();
       longestTurnMs = Math.max(longestTurnMs, turnActiveMs);
       turnActiveMs = 0;
