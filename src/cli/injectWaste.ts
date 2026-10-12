@@ -29,6 +29,7 @@ import { buildLedger, computeFindings, WASTE_THRESHOLDS } from './analyzeSession
 import { isDirectRun } from './args';
 import { listSessionFiles, resolveCorpusDir } from './corpus';
 
+import type { Finding } from './analyzeSession';
 import type { ParsedMessage } from '@main/types';
 
 // =============================================================================
@@ -424,21 +425,36 @@ export function evaluateInjection(source: ParsedMessage[], session?: string): In
     }
     const ledger = buildLedger(inj.messages);
     const findings = computeFindings(inj.messages, ledger);
-    // marker hits summary-carried patterns; round-shaped ones (cache_dead,
-    // wait_loop) attribute by exact amount inside the injected turn
-    const hit = findings.find(
-      (f) =>
-        f.type === type &&
-        f.tokensWasted === inj.expected &&
-        (f.summary.includes(inj.marker) || f.turnIndex === inj.turnIndex)
-    );
+    // Marker hits attribute summary-carried patterns; round-shaped ones
+    // (cache_dead, wait_loop) attribute by exact amount inside the injected
+    // turn. Since #124's claim allocation, overlapping findings share the
+    // same result tokens: probe_no_progress's repeats are served to its
+    // co-firing duplicate_call first, so the pattern's booked amount is the
+    // sum over ALL marker-carrying findings of the pattern (probe + dup).
+    const sameType = findings.filter((f) => f.type === type && f.summary.includes(inj.marker));
+    let hit: Finding | undefined = sameType[0];
+    let booked: number | null = sameType.length
+      ? sameType.reduce((s, f) => s + f.tokensWasted, 0)
+      : null;
+    if (type === 'probe_no_progress' && hit) {
+      const dup = findings.find(
+        (f) => f.type === 'duplicate_call' && f.summary.includes(inj.marker)
+      );
+      if (dup) booked = (booked ?? 0) + dup.tokensWasted;
+    }
+    if (!hit) {
+      hit = findings.find(
+        (f) => f.type === type && f.tokensWasted === inj.expected && f.turnIndex === inj.turnIndex
+      );
+      booked = hit?.tokensWasted ?? null;
+    }
     return {
       type,
       session,
       expected: inj.expected,
       found: hit !== undefined,
-      booked: hit?.tokensWasted ?? null,
-      relError: hit ? Math.abs(hit.tokensWasted - inj.expected) / inj.expected : null,
+      booked,
+      relError: hit ? Math.abs((booked ?? 0) - inj.expected) / inj.expected : null,
     };
   });
 }
