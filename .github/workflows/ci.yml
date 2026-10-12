@@ -19,12 +19,16 @@ jobs:
 
       - name: Check branch is up to date with main
         # Issue #105 (#67 merged from a stale branch): fail when the PR branch
-        # is missing commits from main. Evaluated at push/PR time only — main
+        # is missing commits from main. On pull_request the checkout is the
+        # merge commit (its merge-base with main is always main), so compare
+        # the PR head sha instead. Evaluated at push/PR time only — main
         # moving afterwards needs branch protection to re-block the merge.
         if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch origin main
-          if [ "$(git merge-base HEAD origin/main)" != "$(git rev-parse origin/main)" ]; then
+          if [ "$(git merge-base "$HEAD_SHA" origin/main)" != "$(git rev-parse origin/main)" ]; then
             echo "::error::Branch is behind main — merge or rebase main into this branch."
             exit 1
           fi
