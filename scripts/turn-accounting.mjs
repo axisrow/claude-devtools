@@ -200,20 +200,26 @@ export function isRealUserLine(m) {
   return false;
 }
 
-/** Turn boundary: a user-initiated message (system output and teammate
- * relays don't count) — or a compaction marker (the post-compact context
- * starts fresh, pre-compact spend must not count). The calibration CLI
- * (src/cli/turnSpendStats.ts) imports this exact predicate so both
- * accountings cannot drift. */
+/** Turn boundary: a user-initiated message (system output, teammate
+ * relays and sidechain lines don't count — an inline subagent prompt is
+ * the subagent's own context, the panel never sees it, so hook and bell
+ * must not restart the turn on it, #98) — or a compaction marker (the
+ * post-compact context starts fresh, pre-compact spend must not count).
+ * The calibration CLI (src/cli/turnSpendStats.ts) imports this exact
+ * predicate so both accountings cannot drift. */
 export function isTurnBoundary(m) {
+  if (m.isSidechain === true) return false;
   return isUserChunkLine(m) || m.isCompactSummary === true;
 }
 
-/** Which boundary CONSUMES a turn number: real user messages only. A
+/** Which boundary CONSUMES a turn number: real user messages only (the same
+ * sidechain exclusion as the boundary — a slice may stop splitting on an
+ * inline subagent prompt but its number must not grow either, #98/#109). A
  * compaction marker resets the budget bucket (isTurnBoundary) but opens no
  * turn — app parity: CompactChunk is a structural boundary, the post-compact
  * segment keeps the current number until the next real user message. */
 export function isTurnNumberLine(m) {
+  if (m.isSidechain === true) return false;
   return isUserChunkLine(m) && m.isCompactSummary !== true;
 }
 

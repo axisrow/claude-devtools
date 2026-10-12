@@ -10,10 +10,12 @@
  * The fixture pins: GLM stream fragments (same requestId, full usage each),
  * GLM fragments WITHOUT requestId sharing one message.id (issue #95 — billed
  * once via billedRequestKey), a keyless assistant line (own request), a
- * sidechain round (excluded — main-chain only accounting everywhere), a ghost
- * line WITHOUT usage (skipped), junk usage fields (ignored), and all the
- * non-boundary user-line shapes (teammate, interrupt, isMeta tool_result) plus
- * the current boundary canon (<local-command-stdout> IS a boundary).
+ * sidechain round (excluded — main-chain only accounting everywhere) with
+ * its inline subagent prompt (an isSidechain user line — opens no turn
+ * boundary anywhere, #98), a ghost line WITHOUT usage (skipped), junk
+ * usage fields (ignored), and all the non-boundary user-line shapes
+ * (teammate, interrupt, isMeta tool_result) plus the current boundary canon
+ * (<local-command-stdout> IS a boundary).
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -83,7 +85,8 @@ describe('turn accounting — golden parity across consumers', () => {
 
     // canonical boundary: <local-command-stdout> is system output, NOT a turn
     // boundary — turn 1 now spans fixture lines 2..10 (306.3k main + 4.4k;
-    // the sidechain round's 5.5k is excluded, main-chain only)
+    // the sidechain round's 5.5k is excluded, main-chain only) and contains
+    // an inline subagent prompt that must not split it (#98)
     // turn 5 (issue #95): GLM fragments WITHOUT requestId, one message.id —
     // one round, billed once. It stays unflushed in state.current (no EOF
     // flush), so spends ends with turn 4 (110k), NOT turn 5.
@@ -101,6 +104,71 @@ describe('turn accounting — golden parity across consumers', () => {
     const reread = sumTurnReread(turn1Responses as never[]);
     expect(reread.tokens).toBe(306_300);
     expect(reread.requests).toBe(3);
+  });
+
+  it('an inline subagent prompt does not split the turn — hook, bell, panel agree (#98)', () => {
+    // fixture lines 1..11: the isSidechain user prompt sits mid-turn. The
+    // panel (ChunkBuilder drops sidechain lines) bills the whole turn —
+    // hook and bell must produce the SAME single reread, not restart on
+    // the subagent prompt
+    const turn1 = lines.slice(0, 11);
+    const hookSpent = analyzeTurn([...turn1].reverse()).spent;
+    const det = new TurnBudgetDetector();
+    det.feed('f', turn1.map((l) => flatten(JSON.parse(l))) as never[], Number.MAX_SAFE_INTEGER);
+    const responses = turn1
+      .map((l) => flatten(JSON.parse(l)))
+      .filter((m) => m.type === 'assistant');
+    expect(hookSpent).toBe(310_700);
+    expect(det.currentTurnTotal('f')).toBe(310_700);
+    expect(sumTurnReread(responses as never[])).toMatchObject({
+      tokens: 310_700,
+      requests: 4,
+    });
+  });
+
+  it('ledger and hookSpentByTurn number turns without the sidechain prompt (#109 review)', async () => {
+    // the un-split slice must keep its turn NUMBER: hookSpentByTurn numbers
+    // slices by isTurnNumberLine, buildLedger opens turns on real user
+    // messages — a sidechain prompt inflating either would pair ledger turn
+    // N with hook turn N+1 (sessionSums buildSums) on exactly the sessions
+    // this PR fixes
+    const { hookSpentByTurn } = await import('../../src/cli/sessionSums');
+    const { buildLedger } = await import('../../src/cli/analyzeSession');
+    // buildLedger consumes ParsedMessage — minimal raw→Parsed mapping (the
+    // fixture lines carry no uuid, so parseJsonlFile would skip them)
+    const toParsed = (l: string, i: number) => {
+      const m = JSON.parse(l);
+      const inner = m.message ?? {};
+      return {
+        uuid: `line${i}`,
+        parentUuid: null,
+        timestamp: new Date(m.timestamp ?? 0),
+        type: m.type,
+        content: inner.content ?? '',
+        toolCalls: [],
+        toolResults: [],
+        isSidechain: m.isSidechain ?? false,
+        isMeta: m.isMeta ?? false,
+        isCompactSummary: m.isCompactSummary === true,
+        usage: inner.usage,
+        model: inner.model,
+        requestId: m.requestId,
+        messageId: inner.id,
+      } as never;
+    };
+    // turn 5 = issue #95 fragments (no requestId, one message.id — billed once)
+    expect([...hookSpentByTurn(lines).entries()]).toEqual([
+      [1, 310_700],
+      [2, 10_798],
+      [3, 102_320],
+      [4, 110_000],
+      [5, 6_600],
+    ]);
+    const ledger = buildLedger(lines.map(toParsed));
+    expect(ledger.turns).toHaveLength(5);
+    const contextByTurn = (no: number) =>
+      ledger.rounds.filter((r) => r.turnIndex === no).reduce((sum, r) => sum + r.contextSize, 0);
+    expect([1, 2, 3, 4, 5].map(contextByTurn)).toEqual([310_700, 10_798, 102_320, 110_000, 6_600]);
   });
 
   it('TurnBudgetDetector.feed agrees with analyzeTurn at every batch boundary', () => {
