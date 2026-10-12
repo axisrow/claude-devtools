@@ -1,17 +1,17 @@
 ---
 name: audit-session
 description: Audit one Claude Code session JSONL for token waste — per-turn context growth, cache reread share, duplicate/failed/oversized tool calls, context spikes, dead prompt cache, thinking-heavy turns, slow subagents, and loop diagnostics (no-op loops, stalled rounds, wait-loops, repeating cycles with no progress). Use when the user asks to audit a session, find wasted tokens or cost, or asks where a session's tokens went.
-allowed-tools: Bash(pnpm analyze:session:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/dist-cli/session-audit.js:*)
 ---
 
 # Session audit
 
-Runs the token-audit CLI from a claude-devtools checkout (plugin root = repo root). If `pnpm analyze:session` fails with "no such script", cd to this plugin's checkout first and run `pnpm install` once. Those two steps are outside the `allowed-tools` prefix, so a permission prompt there is expected — approve it, it is not a failure.
+Runs the token-audit CLI bundled with this plugin — `${CLAUDE_PLUGIN_ROOT}/dist-cli/session-audit.js`. The binary is self-contained (executable, no install or build step needed); call it directly by that path, shown in full in the examples so the skill's own allowed-tools rule matches.
 
 ## Pick the session
 
-- Newest session of a project: `pnpm analyze:session --project <dir> --last` — `<dir>` is the plain filesystem path of the project (e.g. `~/Projects/foo`) or its encoded dir name (`-Users-name-Projects-foo`). `--project` always requires `--last`.
-- Explicit file: `pnpm analyze:session <path-to.jsonl>`.
+- Newest session of a project: `${CLAUDE_PLUGIN_ROOT}/dist-cli/session-audit.js --project <dir> --last` — `<dir>` is the plain filesystem path of the project (e.g. `~/Projects/foo`) or its encoded dir name (`-Users-name-Projects-foo`). `--project` always requires `--last`.
+- Explicit file: `${CLAUDE_PLUGIN_ROOT}/dist-cli/session-audit.js <path-to.jsonl>`.
 - Narrow the window: `--since/--until YYYY-MM-DD` or `--last N` (last N calendar days).
 
 Other flags: `--breakdown` (per-model table), `--min-severity medium|high`, `--subagent-min-minutes N` (default 5), `--rounds N` (rounds table length, default 20), `--no-cost`, `--json`.

@@ -10,17 +10,27 @@ For the full list of merged PRs per release, see [GitHub Releases](https://githu
 
 Development continues in this fork — see the [Upstream sync policy](README.md#upstream-sync-policy). Upstream entries below are kept unchanged.
 
-## [0.1.0-fork.1] — 2026-09-21
-
-### Added
-- Session-audit CLI: `pnpm analyze:session` (deep per-session ledger, waste findings, slow subagents, cost estimate) and `pnpm analyze:sessions` (session inventory), with a unified ccusage-style flag grammar (#1).
-- Session-audit CLI packaged as a Claude Code plugin with marketplace manifest and skills (#12).
-
-### Fixed
-- Treat the `Agent` tool as a subagent spawn (renamed from `Task` in Claude Code 2.1.63).
-- Short model ids parsed correctly; removed the `priceFamily` stopgap (#13).
-
 ## [Unreleased]
+
+### Fork (since 0.1.0-fork.1)
+
+**Added**
+- Loop diagnostics: `long_turn`, `loop_streak`, `stall_streak`, `wait_loop`, `cycle_motif` findings plus `probe_no_progress`, and the `--turn N` deep-dive with «цикл или длинный ход» verdicts (cycle-churning / cycle-progressing / long-turn / normal).
+- Claude Code plugin ships self-contained `dist-cli/` binaries committed in-repo — skills run `node dist-cli/…` with no checkout-wide `pnpm install` (#93).
+- Version-aware pricing with explicit cache rates; session `costUsd` from the shared pricing table (#72, #73).
+- Regression corpus with numeric-only snapshots and ledger invariants (#79).
+
+**Changed**
+- CLI usage/help names the binaries (`session-audit`, `session-inventory`) instead of `pnpm analyze:*` scripts (#93).
+- Skills run the bundled binaries via `node`, with turn/inventory flags documented (#92); inventory gained `--min-turn-minutes` / `--min-streak` filters.
+
+**Fixed**
+- `context_spike` blames the round whose calls produced the growth (previous round's results), not the later row (#89).
+- Ledger keeps split response content blocks — keep-last dedup no longer drops them (#88).
+- One turn stays one turn across a compact summary (#97); teammate relays count as transcript turns in CLI numbering (#99).
+- Turn-budget bell matches its Re-read row (#101).
+
+### Upstream (unreleased upstream work, kept unchanged)
 
 ### Added
 - `general.autoExpandAIGroups` setting: automatically expands all AI response groups when opening a transcript or when new AI responses arrive in a live session. Defaults to off. Persists across restarts.
@@ -42,6 +52,16 @@ Development continues in this fork — see the [Upstream sync policy](README.md#
 - Lint violations in navigation and markdown / subagent UI components.
 - Test mock drift causing runtime errors in test output.
 - Multiple Windows path handling edge cases.
+
+## [0.1.0-fork.1] — 2026-09-21
+
+### Added
+- Session-audit CLI: `pnpm analyze:session` (deep per-session ledger, waste findings, slow subagents, cost estimate) and `pnpm analyze:sessions` (session inventory), with a unified ccusage-style flag grammar (#1).
+- Session-audit CLI packaged as a Claude Code plugin with marketplace manifest and skills (#12).
+
+### Fixed
+- Treat the `Agent` tool as a subagent spawn (renamed from `Task` in Claude Code 2.1.63).
+- Short model ids parsed correctly; removed the `priceFamily` stopgap (#13).
 
 ## [0.4.16] — 2026-05-06
 

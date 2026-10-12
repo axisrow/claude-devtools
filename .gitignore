@@ -3,7 +3,8 @@ node_modules/
 
 # Build output
 dist/
-dist-cli/
+# dist-cli/ is committed: the plugin ships it so skills run `node dist-cli/…`
+# without a checkout-wide pnpm install (#93); CI checks it stays fresh
 dist-electron/
 dist-standalone/
 out/

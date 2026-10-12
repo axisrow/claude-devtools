@@ -3,7 +3,7 @@
  * Answers "which sessions ran 2h+, on which model" without opening the app.
  *
  * Usage:
- *   pnpm analyze:sessions [--project <dir|encoded>] [flags]
+ *   session-inventory [--project <dir|encoded>] [flags]
  * Flags:
  *   --min-minutes N           only sessions with at least N minutes of active (API) time
  *   --min-turn-minutes N      only sessions whose longest turn ran at least N active minutes
@@ -502,7 +502,7 @@ async function main(): Promise<void> {
   if (wantsHelp(argv)) {
     console.log(
       [
-        'usage: pnpm analyze:sessions [--project <dir|encoded>] [flags]',
+        'usage: session-inventory [--project <dir|encoded>] [flags]',
         '',
         'flags:',
         '  --min-minutes N           only sessions with at least N minutes of active (API) time',

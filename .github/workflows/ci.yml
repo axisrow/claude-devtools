@@ -57,6 +57,11 @@ jobs:
       - name: Build CLI
         run: pnpm build:cli
 
+      - name: Committed dist-cli is fresh
+        # the plugin ships dist-cli/ so skills run without pnpm install (#93) —
+        # fail when a CLI change landed without rebuilding the committed bundle
+        run: git diff --exit-code dist-cli
+
       - name: Validate plugin
         # npm, not pnpm: pnpm 10 blocks the package postinstall that
         # downloads the native binary (Ignored build scripts).

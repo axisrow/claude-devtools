@@ -5,8 +5,8 @@
  * cache_write / output), waste findings, slow-subagent table. No transcript.
  *
  * Usage:
- *   pnpm analyze:session <path-to.jsonl> [flags]
- *   pnpm analyze:session --project <encoded-dir-or-name> --last [flags]
+ *   session-audit <path-to.jsonl> [flags]
+ *   session-audit --project <encoded-dir-or-name> --last [flags]
  * Flags:
  *   --rounds N                rounds table length (default 20)
  *   --turn N                  deep-dive into turn N: verdict «цикл или длинный ход», findings, rounds
@@ -1418,7 +1418,7 @@ async function main(): Promise<void> {
   if (wantsHelp(raw)) {
     console.log(
       [
-        'usage: pnpm analyze:session <file.jsonl> | --project <dir|encoded> --last [N] [flags]',
+        'usage: session-audit <file.jsonl> | --project <dir|encoded> --last [N] [flags]',
         '',
         'flags:',
         '  --rounds N                rounds table length (default 20)',
@@ -1464,9 +1464,7 @@ async function main(): Promise<void> {
     }
   }
   if (!sessionFile || !fs.existsSync(sessionFile)) {
-    console.error(
-      'usage: pnpm analyze:session <file.jsonl>  |  pnpm analyze:session --project <dir> --last'
-    );
+    console.error('usage: session-audit <file.jsonl>  |  session-audit --project <dir> --last');
     process.exitCode = 1;
     return;
   }
