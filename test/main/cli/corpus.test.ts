@@ -11,7 +11,8 @@ import * as path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { buildLedger, computeFindings } from '../../../src/cli/analyzeSession';
+import { buildLedger, computeFindings, getRetryCopyMessageIds } from '../../../src/cli/analyzeSession';
+import { bashStem, normalizeCallKey } from '../../../src/shared/utils/callKey';
 import {
   buildSnapshot,
   checkInvariants,
@@ -81,6 +82,16 @@ describe('corpus mini fixtures (CI stand-in for the real corpus)', () => {
     console.log(
       'DEBUG rounds:',
       JSON.stringify(ledger.rounds.map((r) => ({ i: r.index, tools: r.tools, copy: !!r.isRetryCopy })))
+    );
+    const retry = getRetryCopyMessageIds(messages);
+    const callKeys = messages
+      .filter((m) => m.type === 'assistant' && !m.isSidechain)
+      .flatMap((m) =>
+        m.toolCalls.map((c) => bashStem(normalizeCallKey(c.name, c.input as Record<string, unknown>)))
+      );
+    console.log(
+      'DEBUG walk:',
+      JSON.stringify({ copies: [...retry].length, callKeys })
     );
     expect(types).toContain('loop_streak');
     expect(types).toContain('failed_call');
