@@ -17,8 +17,10 @@ import {
   filterLedgerByDate,
   normalizeCallKey,
   parseArgs,
+  roundCostUsd,
   turnActiveMinutes,
 } from '../../../src/cli/analyzeSession';
+import type { RoundRow } from '../../../src/cli/analyzeSession';
 import { mapWithConcurrency, scanSessionFile } from '../../../src/cli/sessionInventory';
 import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
 import type { ParsedMessage } from '../../../src/main/types';
@@ -416,6 +418,125 @@ describe('billing scheme', () => {
   });
 });
 
+describe('pricing (#72) — rates hand-written from Anthropic published prices 2026-10-12', () => {
+  const round = (model: string, o: Partial<RoundRow> = {}): RoundRow => ({
+    index: 1,
+    timestamp: new Date('2026-10-12T10:00:00Z'),
+    turnIndex: 1,
+    model,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    contextSize: 0,
+    contextDelta: 0,
+    thinkingTokens: 0,
+    tools: [],
+    ...o,
+  });
+
+  // rows: model, input, output, cacheRead, cacheWrite5m, cacheWrite1h ($/MTok);
+  // numbers from platform.claude.com/pricing, NOT derived from the app's table
+  it.each([
+    ['claude-opus-4-8', 5, 25, 0.5, 6.25, 10],
+    ['claude-opus-5', 5, 25, 0.5, 6.25, 10],
+    ['claude-opus-5-5', 4, 20, 0.2, 5, 8],
+    ['claude-sonnet-4-5', 3, 15, 0.3, 3.75, 6],
+    ['claude-sonnet-5', 2, 10, 0.2, 2.5, 4],
+    ['claude-sonnet-5-5', 2, 10, 0.2, 2.5, 4],
+    ['claude-haiku-4-5', 1, 5, 0.1, 1.25, 2],
+    // haiku 5.5: 1M input is a >100K long prompt, so that cell bills at the
+    // published 0.50 long-prompt rate; the base tier (0.10/0.50) is pinned
+    // by the tier test below
+    ['claude-haiku-5-5', 0.5, 0.5, 0.01, 0.125, 0.2],
+    ['claude-fable-5', 10, 50, 0.25, 12.5, 20],
+    ['claude-fable-5-1', 10, 50, 0.25, 12.5, 20],
+    ['claude-opus-4-1', 15, 75, 1.5, 18.75, 30], // legacy opus ≤4.1
+    // dated 4.0 id parses with minor=null — must stay legacy, not 4.5+ rates
+    ['claude-opus-4-20250514', 15, 75, 1.5, 18.75, 30],
+    ['glm-5.3-flash', 0.075, 0.25, 0.015, 0.075, 0.075], // router: write = input rate
+  ])(
+    '%s bills 1M tokens of each kind at the published rate',
+    (model, input, output, cr, cw5m, cw1h) => {
+      expect(roundCostUsd(round(model, { inputTokens: 1e6 }))).toBeCloseTo(input, 8);
+      expect(roundCostUsd(round(model, { outputTokens: 1e6 }))).toBeCloseTo(output, 8);
+      expect(roundCostUsd(round(model, { cacheReadTokens: 1e6 }))).toBeCloseTo(cr, 8);
+      // no TTL breakdown → the whole write is billed at the 5m rate
+      expect(roundCostUsd(round(model, { cacheCreationTokens: 1e6 }))).toBeCloseTo(cw5m, 8);
+      expect(
+        roundCostUsd(round(model, { cacheCreationTokens: 1e6, cacheWrite5mTokens: 1e6 }))
+      ).toBeCloseTo(cw5m, 8);
+      expect(
+        roundCostUsd(
+          round(model, { cacheCreationTokens: 1e6, cacheWrite5mTokens: 0, cacheWrite1hTokens: 1e6 })
+        )
+      ).toBeCloseTo(cw1h, 8);
+    }
+  );
+
+  it('bills a mixed 5m/1h cache-write round at both rates (opus 5.5)', () => {
+    // 1M in @4 + 600k write @5 (5m) + 400k write @8 (1h) + 50k out @20 = 11.2
+    const cost = roundCostUsd(
+      round('claude-opus-5-5', {
+        inputTokens: 1e6,
+        cacheCreationTokens: 1e6,
+        cacheWrite5mTokens: 600_000,
+        cacheWrite1hTokens: 400_000,
+        outputTokens: 50_000,
+      })
+    );
+    expect(cost).toBeCloseTo(11.2, 8);
+  });
+
+  it('haiku 5.5 switches to the published long-prompt tier above 100K prompt tokens', () => {
+    // 150k in @0.50 + 10k out @2.50
+    const long = roundCostUsd(
+      round('claude-haiku-5-5', { inputTokens: 150_000, outputTokens: 10_000 })
+    );
+    expect(long).toBeCloseTo(0.075 + 0.025, 10);
+    // 90k fresh + 20k cache-read = 110k prompt → long tier (cr @0.01)
+    const viaCache = roundCostUsd(
+      round('claude-haiku-5-5', {
+        inputTokens: 90_000,
+        cacheReadTokens: 20_000,
+        outputTokens: 10_000,
+      })
+    );
+    expect(viaCache).toBeCloseTo(0.045 + 0.025 + 0.0002, 10);
+    // exactly 100K stays on the base tier
+    const short = roundCostUsd(
+      round('claude-haiku-5-5', { inputTokens: 100_000, outputTokens: 10_000 })
+    );
+    expect(short).toBeCloseTo(0.01 + 0.005, 10);
+  });
+
+  it('buildLedger carries the usage cache-write TTL split; without it the whole write is 5m', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({
+        type: 'assistant',
+        model: 'claude-opus-5-5',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 10,
+          cache_creation_input_tokens: 1000,
+          cache_creation: { ephemeral_5m_input_tokens: 600, ephemeral_1h_input_tokens: 400 },
+        },
+      }),
+      makeMsg({
+        type: 'assistant',
+        model: 'claude-opus-5-5',
+        usage: { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 1000 },
+      }),
+    ];
+    const ledger = buildLedger(messages);
+    expect(ledger.rounds[0].cacheWrite5mTokens).toBe(600);
+    expect(ledger.rounds[0].cacheWrite1hTokens).toBe(400);
+    // r0: 100*4 + 600*5 + 400*8 + 10*20 = 6800; r1 (no split, all 5m): 100*4 + 1000*5 + 10*20 = 5600
+    expect(ledger.totals.costUsd).toBeCloseTo(0.0124, 10);
+  });
+});
+
 describe('unified flag grammar', () => {
   it('parses --since/--until as local day bounds (dash and compact forms)', () => {
     const opts = parseArgs(['--since', '2026-09-01', '--until', '20260920', 'x.jsonl']);
@@ -502,8 +623,8 @@ describe('filterLedgerByDate and breakdownFromRounds', () => {
       new Date(2026, 8, 15),
       new Date(2026, 8, 30, 23, 59, 59, 999)
     );
-    // kept: glm (50*0.075 + 5*0.25) + sonnet (30*3 + 2*15) → 125 / 1e6
-    expect(filtered.totals.costUsd).toBeCloseTo(0.000125, 10);
+    // kept: glm (50*0.075 + 5*0.25) + sonnet-5 (30*2 + 2*10) → 85 / 1e6
+    expect(filtered.totals.costUsd).toBeCloseTo(0.000085, 10);
     expect(filtered.totals.costPartial).toBe(false);
   });
 
@@ -517,8 +638,8 @@ describe('filterLedgerByDate and breakdownFromRounds', () => {
     expect(rows).toHaveLength(2);
     const sonnet = rows.find((r) => r.model === 'claude-sonnet-5');
     expect(sonnet?.billedTokens).toBe(100 + 1000 + 10 + 30 + 2);
-    // (100*3 + 10*15 + 1000*0.3) + (30*3 + 2*15) = 750 + 120 per 1e6
-    expect(sonnet?.costUsd).toBeCloseTo(0.00087, 10);
+    // (100*2 + 10*10 + 1000*0.2) + (30*2 + 2*10) = 500 + 80 per 1e6
+    expect(sonnet?.costUsd).toBeCloseTo(0.00058, 10);
     // glm: (50*0.075 + 5*0.25) / 1e6
     expect(rows.find((r) => r.model === 'glm-5.3-flash')?.costUsd).toBeCloseTo(0.000005, 10);
   });
