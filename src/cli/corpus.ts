@@ -250,8 +250,12 @@ interface ComputedSession {
   snapshot: SessionSnapshot;
 }
 
-async function computeSession(file: string): Promise<ComputedSession> {
-  const sessionId = path.basename(file, '.jsonl');
+async function computeSession(file: string, corpusDir: string): Promise<ComputedSession> {
+  // hash the path RELATIVE to CORPUS_DIR, not the bare basename: a nested tree
+  // (project dirs, subagent sidechains) can hold same-named files in different
+  // folders — a basename hash would collide and abort the whole run. For a
+  // flat curated corpus relPath == basename, so hashes stay as before.
+  const sessionId = path.relative(corpusDir, file);
   const messages = await parseJsonlFile(file);
   const ledger = buildLedger(messages);
   const findings = computeFindings(messages, ledger);
@@ -264,7 +268,7 @@ async function computeCorpus(corpusDir: string): Promise<ComputedSession[]> {
     throw new Error(`no .jsonl sessions found in CORPUS_DIR: ${corpusDir}`);
   }
   const out: ComputedSession[] = [];
-  for (const file of files) out.push(await computeSession(file));
+  for (const file of files) out.push(await computeSession(file, corpusDir));
   // a hash collision would silently merge two sessions in the snapshot dir
   const byHash = new Map<string, string>();
   for (const s of out) {
