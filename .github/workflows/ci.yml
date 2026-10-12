@@ -14,6 +14,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check branch is up to date with main
+        # Issue #105 (#67 merged from a stale branch): fail when the PR branch
+        # is missing commits from main. Evaluated at push/PR time only — main
+        # moving afterwards needs branch protection to re-block the merge.
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          if [ "$(git merge-base HEAD origin/main)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::Branch is behind main — merge or rebase main into this branch."
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
