@@ -19,8 +19,8 @@ Other flags: `--breakdown` (per-model table), `--min-severity medium|high`, `--s
 ## Read the ledger
 
 - TOKENS: `cache_read (reread)` is the whole context re-billed every round; `reread share` near 100% is normal for long sessions — the lever is shorter turns and subagents, not the cache.
-- BY TURN: growing `context` column = parent context getting fat; jumps usually trace to the tools listed on that row.
-- ROUNDS: `delta` is per-round context change; `+30k` in one round means one big tool result landed in context.
+- BY TURN: growing `context` column = parent context getting fat. A jump between two rounds traces to what landed between the requests — the earlier round's tool results and any injected user/meta text — not to the tools called on the later row.
+- ROUNDS: `delta` of round N = what arrived after round N−1's calls (their tool results + injected user/meta text). A `context_spike` finding names the round whose calls produced the growth, and separates tool results from injected text (skill body, attachment, user message).
 - `est. cost (partial …)` = some rounds are unpriced models; costs are estimates from a built-in price table, `--no-cost` for pure token counts.
 
 ## Findings and what to recommend
