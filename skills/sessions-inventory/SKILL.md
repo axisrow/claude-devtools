@@ -1,12 +1,12 @@
 ---
 name: sessions-inventory
 description: List Claude Code sessions across all projects with duration, models, token totals, and billing scheme (first-party Anthropic vs router vs no cache). Use when the user asks which sessions exist, which ran longest or used the most tokens, or wants an overview table of sessions.
-allowed-tools: Bash(pnpm analyze:sessions:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/dist-cli/session-inventory.js:*)
 ---
 
 # Sessions inventory
 
-Runs the inventory CLI from a claude-devtools checkout (plugin root = repo root). If `pnpm analyze:sessions` fails with "no such script", cd to this plugin's checkout first and run `pnpm install` once. Those two steps are outside the `allowed-tools` prefix, so a permission prompt there is expected — approve it, it is not a failure.
+Runs the inventory CLI bundled with this plugin — `${CLAUDE_PLUGIN_ROOT}/dist-cli/session-inventory.js`. The binary is self-contained (executable, no install or build step needed); call it directly by that path, shown in full in the examples so the skill's own allowed-tools rule matches.
 
 ## Filters
 
