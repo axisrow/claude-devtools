@@ -4448,7 +4448,7 @@ const WASTE_TYPE_PRIORITY = [
   "cycle_motif"
   // repeating motif rounds
 ];
-function allocateWaste(findings) {
+function allocateWaste(findings, withSources = false) {
   const remaining = /* @__PURE__ */ new Map();
   const ownerUsdRate = /* @__PURE__ */ new Map();
   const ownerEqRate = /* @__PURE__ */ new Map();
@@ -4457,6 +4457,18 @@ function allocateWaste(findings) {
     let allocated = f.free ?? 0;
     let usd = f.free !== void 0 ? f.freeUsd : 0;
     let eq = f.free !== void 0 ? f.freeInputEq : 0;
+    const byRound = /* @__PURE__ */ new Map();
+    const record = (round, tokens, usdPart) => {
+      const slot = byRound.get(round) ?? { tokens: 0, usd: 0, priced: true };
+      slot.tokens += tokens;
+      if (slot.priced && usdPart !== void 0) slot.usd += usdPart;
+      else slot.priced = false;
+      byRound.set(round, slot);
+    };
+    if (withSources && (f.free ?? 0) > 0 && f.claims?.length) {
+      const on = f.claims[0].billedOn ?? 0;
+      record(on, f.free, f.freeUsd);
+    }
     for (const claim of f.claims ?? []) {
       if (!remaining.has(claim.owner)) {
         remaining.set(claim.owner, claim.cap);
@@ -4470,10 +4482,21 @@ function allocateWaste(findings) {
       allocated += take;
       usd = ownerPriced.get(claim.owner) && usd !== void 0 ? usd + take * (ownerUsdRate.get(claim.owner) ?? 0) : void 0;
       eq = ownerPriced.get(claim.owner) && eq !== void 0 ? eq + take * (ownerEqRate.get(claim.owner) ?? 0) : void 0;
+      if (withSources) {
+        const priced = ownerPriced.get(claim.owner) ?? false;
+        record(
+          claim.billedOn ?? 0,
+          take,
+          priced ? take * (ownerUsdRate.get(claim.owner) ?? 0) : void 0
+        );
+      }
     }
     f.tokensWasted = allocated;
     if (usd !== void 0 && usd > 0) f.wastedUsd = usd;
     if (eq !== void 0 && eq > 0) f.tokensWastedInputEq = eq;
+    if (withSources && byRound.size > 0) {
+      f.sources = [...byRound.entries()].sort((a, b) => a[0] - b[0]).map(([round, s]) => ({ round, tokens: s.tokens, ...s.priced ? { usd: s.usd } : {} }));
+    }
   }
 }
 function billedThinkingTokens(msg) {
@@ -4658,7 +4681,7 @@ function buildLedger(allMessages) {
     }
     if (msg.isSidechain) continue;
     if (msg.type !== "assistant") {
-      for (const r of msg.toolResults) gapToolTok += estimateTokens(resultText(r.content));
+      for (const r of msg.toolResults) gapToolTok += estimateResultTokens(r.content);
       gapTextTok += estimateTokens(injectedText(msg.content));
       continue;
     }
@@ -4722,6 +4745,19 @@ function buildLedger(allMessages) {
 function resultText(content) {
   return typeof content === "string" ? content : JSON.stringify(content);
 }
+const IMAGE_RESULT_TOKENS = 1600;
+function estimateResultTokens(content) {
+  if (typeof content === "string") return estimateTokens(content);
+  let images = 0;
+  const textOnly = content.filter((b) => {
+    if (b && typeof b === "object" && b.type === "image") {
+      images += 1;
+      return false;
+    }
+    return true;
+  });
+  return estimateTokens(JSON.stringify(textOnly)) + images * IMAGE_RESULT_TOKENS;
+}
 function injectedText(content) {
   if (typeof content === "string") return content;
   let text = "";
@@ -4784,6 +4820,11 @@ function residencyPricer(ledger) {
       if (!p || after === null) return void 0;
       return rates(p.cacheWrite5m + after, p.input);
     },
+    resultBillingRound(ts) {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return void 0;
+      return rounds[k + 1]?.index;
+    },
     roundRates(r) {
       const p = priceForRound(r);
       if (!p || r.contextSize === 0) return void 0;
@@ -4810,7 +4851,7 @@ function residencyPricer(ledger) {
     }
   };
 }
-function computeFindings(messages, ledger, since, until) {
+function computeFindings(messages, ledger, since, until, withSources = false) {
   const findings = [];
   const th = WASTE_THRESHOLDS;
   const pricer = residencyPricer(ledger);
@@ -4849,6 +4890,7 @@ function computeFindings(messages, ledger, since, until) {
           owner: `result:${m.id}`,
           want: m.tok,
           cap: m.tok,
+          billedOn: m.billedOn,
           ...m.rates ?? {}
         }))
       });
@@ -4864,14 +4906,16 @@ function computeFindings(messages, ledger, since, until) {
       const key = bashStem(normalizeCallKey(call.name, call.input));
       const result = results.get(call.id);
       const text = result ? resultText(result.content) : "";
-      const resultTok = estimateTokens(text);
+      const resultTok = result ? estimateResultTokens(result.content) : 0;
       if (streak && streakKey === key) {
         streak.count += 1;
         streak.tokens += resultTok;
+        const memberRates = pricer.resultRates(msg.timestamp.getTime());
         streak.members.push({
           id: call.id,
           tok: resultTok,
-          rates: pricer.resultRates(msg.timestamp.getTime())
+          billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
+          ...memberRates ? { rates: memberRates } : {}
         });
         if (result?.isError) streak.errors += 1;
         streak.end = msg.timestamp;
@@ -4912,6 +4956,7 @@ function computeFindings(messages, ledger, since, until) {
                 owner: `result:${call.id}`,
                 want: resultTok,
                 cap: resultTok,
+                billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
                 ...rr ?? {}
               }
             ]
@@ -4931,6 +4976,7 @@ function computeFindings(messages, ledger, since, until) {
               owner: `result:${call.id}`,
               want: resultTok,
               cap: resultTok,
+              billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
               ...pricer.resultRates(msg.timestamp.getTime()) ?? {}
             }
           ]
@@ -4943,7 +4989,8 @@ function computeFindings(messages, ledger, since, until) {
         prev.repeats.push({
           id: call.id,
           tok: resultTok,
-          rates: pricer.resultRates(msg.timestamp.getTime())
+          billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
+          ...pricer.resultRates(msg.timestamp.getTime()) ?? {}
         });
       } else {
         seen.set(key, { count: 1, tokens: resultTok, first: resultTok, repeats: [] });
@@ -4965,7 +5012,9 @@ function computeFindings(messages, ledger, since, until) {
           owner: `result:${rp.id}`,
           want: rp.tok,
           cap: rp.tok,
-          ...rp.rates ?? {}
+          billedOn: rp.billedOn,
+          usdRate: rp.usdRate,
+          inputEqRate: rp.inputEqRate
         }))
       });
     }
@@ -5005,6 +5054,7 @@ function computeFindings(messages, ledger, since, until) {
             owner: `round:${r.index}`,
             want: r.contextSize,
             cap: r.contextSize,
+            billedOn: r.index,
             ...pricer.premiumRates(r) ?? {}
           }
         ]
@@ -5075,6 +5125,7 @@ function computeFindings(messages, ledger, since, until) {
           owner: `round:${r.index}`,
           want: r.contextSize,
           cap: r.contextSize,
+          billedOn: r.index,
           ...pricer.roundRates(r) ?? {}
         }))
       });
@@ -5097,6 +5148,7 @@ function computeFindings(messages, ledger, since, until) {
             owner: `round:${r.index}`,
             want: r.contextSize,
             cap: r.contextSize,
+            billedOn: r.index,
             ...pricer.roundRates(r) ?? {}
           }))
         });
@@ -5124,7 +5176,7 @@ function computeFindings(messages, ledger, since, until) {
   findings.sort(
     (a, b) => prio(a) - prio(b) || order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted
   );
-  allocateWaste(findings);
+  allocateWaste(findings, withSources);
   return findings.map(
     ({ free: _free, claims: _claims, freeUsd: _freeUsd, freeInputEq: _freeInputEq, ...finding }) => finding
   );
@@ -5154,6 +5206,34 @@ function sessionWasteTotals(findings, ledger) {
 function short(s, n) {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length <= n ? flat : `${flat.slice(0, n - 1)}…`;
+}
+function listToolResults(messages, ledger) {
+  const results = /* @__PURE__ */ new Map();
+  for (const msg of messages) {
+    if (msg.isSidechain) continue;
+    for (const r of msg.toolResults) {
+      results.set(r.toolUseId, { content: r.content, isError: r.isError });
+    }
+  }
+  const retryCopies = getRetryCopyMessageIds(messages);
+  const pricer = residencyPricer(ledger);
+  const out = [];
+  for (const msg of messages) {
+    if (msg.isSidechain) continue;
+    if (retryCopies.has(msg.uuid)) continue;
+    for (const call of msg.toolCalls) {
+      const result = results.get(call.id);
+      if (!result) continue;
+      const tokens = estimateResultTokens(result.content);
+      if (tokens <= 0) continue;
+      out.push({
+        id: call.id,
+        tokens,
+        usdRate: pricer.resultRates(msg.timestamp.getTime())?.usdRate
+      });
+    }
+  }
+  return out;
 }
 const CYCLE = { minLen: 3, maxLen: 5, minRepeats: 3 };
 const MUTATING_TOOLS = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -5185,7 +5265,7 @@ function detectCycleFindings(messages, ledger, results, pricer = residencyPricer
         toolName: c.name,
         key: bashStem(normalizeCallKey(c.name, c.input)),
         sig: res ? resultSignature(text) : "",
-        tok: res ? estimateTokens(text) : 0
+        tok: res ? estimateResultTokens(res.content) : 0
       };
     })
   }));
@@ -5226,6 +5306,7 @@ function detectCycleFindings(messages, ledger, results, pricer = residencyPricer
               owner: `round:${r.roundIndex}`,
               want: r.contextSize,
               cap: r.contextSize,
+              billedOn: r.roundIndex,
               ...pricer.roundRatesByIndex(r.roundIndex) ?? {}
             }))
           });
@@ -5246,7 +5327,8 @@ function detectCycleFindings(messages, ledger, results, pricer = residencyPricer
           sig: c.sig,
           ts: r.timestamp,
           tok: c.tok,
-          rates: pricer.resultRates(r.timestamp.getTime())
+          ...pricer.resultRates(r.timestamp.getTime()) ?? {},
+          billedOn: pricer.resultBillingRound(r.timestamp.getTime())
         };
         if (list) list.push(entry);
         else byKey.set(c.key, [entry]);
@@ -5274,7 +5356,9 @@ function detectCycleFindings(messages, ledger, results, pricer = residencyPricer
           owner: `result:${e.id}`,
           want: e.tok,
           cap: e.tok,
-          ...e.rates ?? {}
+          billedOn: e.billedOn,
+          usdRate: e.usdRate,
+          inputEqRate: e.inputEqRate
         }))
       });
     }
@@ -5728,6 +5812,7 @@ export {
   isDirectRun as i,
   isQuietTick,
   lastDaysSince as l,
+  listToolResults,
   normalizeDriveLetter as n,
   normalizeCallKey,
   parseDayBound as p,
