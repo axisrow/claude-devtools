@@ -28,13 +28,13 @@ const user = (n: number, text: string): Record<string, unknown> => ({
   isMeta: false,
   message: { content: text },
 });
-const meta = (n: number, id: string, result: string): Record<string, unknown> => ({
+const meta = (n: number, id: string, result: string, isError = false): Record<string, unknown> => ({
   type: 'user',
   uuid: `u${n}`,
   timestamp: T,
   isMeta: true,
   message: {
-    content: [{ type: 'tool_result', tool_use_id: id, content: result }],
+    content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: isError }],
   },
 });
 const ai = (
@@ -42,14 +42,15 @@ const ai = (
   id: string,
   input: number,
   output: number,
-  calls: { id: string; command: string }[] = []
+  calls: { id: string; command: string }[] = [],
+  model = 'm1'
 ): Record<string, unknown> => ({
   type: 'assistant',
   uuid: `a${n}`,
   timestamp: T,
   message: {
     id,
-    model: 'm1',
+    model,
     usage: {
       input_tokens: input,
       cache_read_input_tokens: 0,
@@ -250,5 +251,51 @@ describe('session:sums', () => {
       match: true,
       mismatches: [],
     });
+  });
+
+  it('waste block: non-overlapping waste tokens, $ and share of session cost (#84)', async () => {
+    // priced model + one failing call: waste = args + error result
+    const file = await writeSession([
+      user(1, 'go'),
+      ai(2, 'm1', 100, 10, [{ id: 'c1', command: 'boom' }], 'claude-sonnet-5'),
+      meta(3, 'c1', 'Error: kaput', true),
+      ai(4, 'm2', 200, 10, [], 'claude-sonnet-5'),
+    ]);
+    const messages = await parseJsonlFile(file);
+    const ledger = buildLedger(messages);
+    const findings = computeFindings(messages, ledger);
+    const raw = (await readFile(file, 'utf8')).split('\n');
+    const sums = buildSums(ledger, findings, hookSpentByTurn(raw), raw);
+    const waste = sums.waste as {
+      tokensWasted: number;
+      wastedUsd?: number;
+      wasteUsdPartial: boolean;
+      wasteShare?: number;
+    };
+    const wasteUsdSum = findings.reduce((s, f) => s + (f.wastedUsd ?? 0), 0);
+    expect(waste.tokensWasted).toBe(findings.reduce((s, f) => s + f.tokensWasted, 0));
+    expect(waste.tokensWasted).toBeGreaterThan(0);
+    expect(waste.wasteUsdPartial).toBe(false);
+    expect(waste.wastedUsd).toBeCloseTo(wasteUsdSum, 12);
+    expect(wasteUsdSum).toBeGreaterThan(0);
+    // exact share of the priced session cost
+    expect(waste.wasteShare).toBeCloseTo(wasteUsdSum / ledger.totals.costUsd!, 12);
+  });
+
+  it('waste block is partial when the waste is unpriced (#84)', async () => {
+    const sums = await sumsFor([
+      user(1, 'go'),
+      ai(2, 'm1', 100, 10, [{ id: 'c1', command: 'boom' }]), // model m1 — no price row
+      meta(3, 'c1', 'Error: kaput', true),
+      ai(4, 'm2', 200, 10),
+    ]);
+    const waste = sums.waste as {
+      tokensWasted: number;
+      wastedUsd?: number;
+      wasteUsdPartial: boolean;
+    };
+    expect(waste.tokensWasted).toBeGreaterThan(0);
+    expect(waste.wastedUsd).toBeUndefined();
+    expect(waste.wasteUsdPartial).toBe(true);
   });
 });

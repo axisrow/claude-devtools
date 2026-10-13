@@ -4426,27 +4426,66 @@ const REJECTION_PATTERNS = [
   "The user doesn't want to proceed with this tool use",
   "[Request interrupted by user"
 ];
+const WASTE_TYPE_PRIORITY = [
+  // result:<toolUseId> — the call's own output tokens
+  "failed_call",
+  // an error result is waste with certainty
+  "loop_streak",
+  // back-to-back identical repeats
+  "duplicate_call",
+  // repeats after intervening work
+  "probe_no_progress",
+  // same-result re-asks
+  "oversized_output",
+  // weakest claim — the data may be legitimately needed
+  // round:<index> — the round's whole context
+  "cache_dead",
+  // the round billed entirely as fresh input
+  "stall_streak",
+  // calls with no context growth
+  "wait_loop",
+  // idle quiet ticks
+  "cycle_motif"
+  // repeating motif rounds
+];
 function allocateWaste(findings) {
   const remaining = /* @__PURE__ */ new Map();
+  const ownerUsdRate = /* @__PURE__ */ new Map();
+  const ownerEqRate = /* @__PURE__ */ new Map();
+  const ownerPriced = /* @__PURE__ */ new Map();
   for (const f of findings) {
     let allocated = f.free ?? 0;
+    let usd = f.free !== void 0 ? f.freeUsd : 0;
+    let eq = f.free !== void 0 ? f.freeInputEq : 0;
     for (const claim of f.claims ?? []) {
-      if (!remaining.has(claim.owner)) remaining.set(claim.owner, claim.cap);
+      if (!remaining.has(claim.owner)) {
+        remaining.set(claim.owner, claim.cap);
+        ownerUsdRate.set(claim.owner, claim.usdRate ?? 0);
+        ownerEqRate.set(claim.owner, claim.inputEqRate ?? 0);
+        ownerPriced.set(claim.owner, claim.usdRate !== void 0);
+      }
       const left = remaining.get(claim.owner) ?? 0;
       const take = Math.min(claim.want, left);
       remaining.set(claim.owner, left - take);
       allocated += take;
+      usd = ownerPriced.get(claim.owner) && usd !== void 0 ? usd + take * (ownerUsdRate.get(claim.owner) ?? 0) : void 0;
+      eq = ownerPriced.get(claim.owner) && eq !== void 0 ? eq + take * (ownerEqRate.get(claim.owner) ?? 0) : void 0;
     }
     f.tokensWasted = allocated;
+    if (usd !== void 0 && usd > 0) f.wastedUsd = usd;
+    if (eq !== void 0 && eq > 0) f.tokensWastedInputEq = eq;
   }
 }
-function thinkingTokensOf(msg) {
-  if (!Array.isArray(msg.content)) return 0;
-  let chars = 0;
-  for (const block of msg.content) {
-    if (block.type === "thinking") chars += (block.thinking ?? "").length;
+function billedThinkingTokens(msg) {
+  const output = msg.usage?.output_tokens ?? 0;
+  let visibleChars = 0;
+  if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (block.type === "text") visibleChars += block.text.length;
+    }
   }
-  return Math.ceil(chars / 4);
+  for (const call of msg.toolCalls) visibleChars += JSON.stringify(call.input).length;
+  return Math.max(0, output - Math.ceil(visibleChars / 4));
 }
 function turnActiveMinutes(rounds) {
   let ms = 0;
@@ -4632,7 +4671,7 @@ function buildLedger(allMessages) {
     const output = u.output_tokens ?? 0;
     const ttlSplit = cacheWrite > 0 ? u.cache_creation : void 0;
     const contextSize = input + cacheRead + cacheWrite;
-    const think = thinkingTokensOf(msg);
+    const think = billedThinkingTokens(msg);
     const model = msg.model ?? "unknown";
     const tools = msg.toolCalls.map((tc) => tc.name);
     const isRetryCopy = retryCopies.has(msg.uuid);
@@ -4709,9 +4748,72 @@ function contextSpikeSummary(prev, r) {
   const cause = sources.length > 0 ? sources.join(" + ") : `${roundTag}'s own output (no tool result or injection recorded)`;
   return `context +${formatTokensCompact(r.contextDelta)} after ${cause} ${span}`;
 }
+function residencyPricer(ledger) {
+  const rounds = ledger.rounds;
+  const readAfter = [];
+  if (rounds.length > 0) readAfter[rounds.length - 1] = 0;
+  for (let k = rounds.length - 2; k >= 0; k--) {
+    const next = rounds[k + 1];
+    if (next.contextDelta < 0) {
+      readAfter[k] = 0;
+      continue;
+    }
+    const tail = readAfter[k + 1];
+    const p = next.contextSize > 0 ? priceForRound(next) : null;
+    readAfter[k] = p && tail !== null ? p.cacheRead + tail : next.contextSize === 0 ? tail : null;
+  }
+  let cursor = 0;
+  const appearingRoundOf = (ts) => {
+    while (cursor + 1 < rounds.length && rounds[cursor + 1].timestamp.getTime() <= ts) {
+      cursor += 1;
+    }
+    return rounds.length > 0 && rounds[cursor].timestamp.getTime() <= ts ? cursor : -1;
+  };
+  const rates = (perMTok, inputPerMTok) => ({
+    usdRate: perMTok / 1e6,
+    inputEqRate: perMTok / inputPerMTok
+  });
+  return {
+    resultRates(ts) {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return void 0;
+      const next = rounds[k + 1];
+      if (!next) return { usdRate: 0, inputEqRate: 0 };
+      const p = priceForRound(next);
+      const after = readAfter[k + 1];
+      if (!p || after === null) return void 0;
+      return rates(p.cacheWrite5m + after, p.input);
+    },
+    roundRates(r) {
+      const p = priceForRound(r);
+      if (!p || r.contextSize === 0) return void 0;
+      const cw5 = r.cacheWrite5mTokens ?? r.cacheCreationTokens;
+      const cw1 = r.cacheWrite1hTokens ?? 0;
+      const perMTok = r.inputTokens * p.input + r.cacheReadTokens * p.cacheRead + cw5 * p.cacheWrite5m + cw1 * p.cacheWrite1h;
+      return rates(perMTok / r.contextSize, p.input);
+    },
+    roundRatesByIndex(index) {
+      const r = rounds[index - 1];
+      return r ? this.roundRates(r) : void 0;
+    },
+    premiumRates(r) {
+      const p = priceForRound(r);
+      if (!p) return void 0;
+      return rates(p.input - p.cacheRead, p.input);
+    },
+    inputRates(ts) {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return void 0;
+      const p = priceForRound(rounds[k]);
+      if (!p) return void 0;
+      return rates(p.input, p.input);
+    }
+  };
+}
 function computeFindings(messages, ledger, since, until) {
   const findings = [];
   const th = WASTE_THRESHOLDS;
+  const pricer = residencyPricer(ledger);
   const results = /* @__PURE__ */ new Map();
   for (const msg of messages) {
     if (msg.isSidechain) continue;
@@ -4737,11 +4839,18 @@ function computeFindings(messages, ledger, since, until) {
       const env = streak.errors === streak.count;
       findings.push({
         type: "loop_streak",
+        kind: "waste",
         severity: streak.count >= 5 ? "high" : "medium",
         tokensWasted: streak.tokens,
         turnIndex: streak.turn,
+        basis: "estimated",
         summary: `${short(streakKey, 60)} — x${streak.count} back-to-back (${env ? "env loop — same failure each time" : "no-op loop"}) ${hhmm(streak.start)}–${hhmm(streak.end)}`,
-        claims: streak.members.map((m) => ({ owner: `result:${m.id}`, want: m.tok, cap: m.tok }))
+        claims: streak.members.map((m) => ({
+          owner: `result:${m.id}`,
+          want: m.tok,
+          cap: m.tok,
+          ...m.rates ?? {}
+        }))
       });
     }
     streak = null;
@@ -4759,7 +4868,11 @@ function computeFindings(messages, ledger, since, until) {
       if (streak && streakKey === key) {
         streak.count += 1;
         streak.tokens += resultTok;
-        streak.members.push({ id: call.id, tok: resultTok });
+        streak.members.push({
+          id: call.id,
+          tok: resultTok,
+          rates: pricer.resultRates(msg.timestamp.getTime())
+        });
         if (result?.isError) streak.errors += 1;
         streak.end = msg.timestamp;
       } else {
@@ -4779,32 +4892,59 @@ function computeFindings(messages, ledger, since, until) {
         const rejected = REJECTION_PATTERNS.some((p) => text.includes(p));
         if (!rejected) {
           const inputTok = estimateTokens(JSON.stringify(call.input));
+          const ir = pricer.inputRates(msg.timestamp.getTime());
+          const rr = pricer.resultRates(msg.timestamp.getTime());
           findings.push({
             type: "failed_call",
+            kind: "waste",
             severity: "medium",
             tokensWasted: inputTok + resultTok,
+            basis: "estimated",
             summary: `${call.name} failed: ${short(text, 80)}`,
             // the call's own args are uncontested; the result competes with
-            // oversized/duplicate/streak/probe claims on the same toolUseId
+            // oversized/duplicate/streak/probe claims on the same toolUseId —
+            // the claim stays unconditional (unpriced drops only the rates),
+            // otherwise the overlapped findings' raw booking would shift
             free: inputTok,
-            claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }]
+            ...ir ? { freeUsd: inputTok * (ir.usdRate ?? 0), freeInputEq: inputTok } : {},
+            claims: [
+              {
+                owner: `result:${call.id}`,
+                want: resultTok,
+                cap: resultTok,
+                ...rr ?? {}
+              }
+            ]
           });
         }
       }
       if (resultTok > th.oversizedOutputTokens) {
         findings.push({
           type: "oversized_output",
+          kind: "waste",
           severity: "medium",
           tokensWasted: resultTok,
+          basis: "estimated",
           summary: `${call.name} returned ~${formatTokensCompact(resultTok)} tok: ${short(call.name === "Bash" ? asText(call.input.command) : JSON.stringify(call.input), 70)}`,
-          claims: [{ owner: `result:${call.id}`, want: resultTok, cap: resultTok }]
+          claims: [
+            {
+              owner: `result:${call.id}`,
+              want: resultTok,
+              cap: resultTok,
+              ...pricer.resultRates(msg.timestamp.getTime()) ?? {}
+            }
+          ]
         });
       }
       const prev = seen.get(key);
       if (prev) {
         prev.count += 1;
         prev.tokens += resultTok;
-        prev.repeats.push({ id: call.id, tok: resultTok });
+        prev.repeats.push({
+          id: call.id,
+          tok: resultTok,
+          rates: pricer.resultRates(msg.timestamp.getTime())
+        });
       } else {
         seen.set(key, { count: 1, tokens: resultTok, first: resultTok, repeats: [] });
       }
@@ -4816,10 +4956,17 @@ function computeFindings(messages, ledger, since, until) {
       const reread = tokens - first;
       findings.push({
         type: "duplicate_call",
+        kind: "waste",
         severity: "medium",
         tokensWasted: reread,
+        basis: "estimated",
         summary: `${short(key, 90)} — called ${count}x (~${formatTokensCompact(reread)} tok of results re-read)`,
-        claims: repeats.map((rp) => ({ owner: `result:${rp.id}`, want: rp.tok, cap: rp.tok }))
+        claims: repeats.map((rp) => ({
+          owner: `result:${rp.id}`,
+          want: rp.tok,
+          cap: rp.tok,
+          ...rp.rates ?? {}
+        }))
       });
     }
   }
@@ -4832,21 +4979,35 @@ function computeFindings(messages, ledger, since, until) {
       const prev = ledger.rounds[j];
       findings.push({
         type: "context_spike",
+        // #84: an observation — a big growth is often legitimate (a needed
+        // large file); recording the delta as loss would inflate the waste
+        kind: "observation",
         severity: "high",
-        tokensWasted: r.contextDelta,
+        // the summary carries the delta, sources and span; nothing is booked
+        tokensWasted: 0,
         turnIndex: r.turnIndex,
-        summary: contextSpikeSummary(prev, r),
-        claims: [{ owner: `round:${r.index}`, want: r.contextDelta, cap: r.contextSize }]
+        basis: "measured",
+        summary: contextSpikeSummary(prev, r)
       });
     }
     if (r.contextSize > th.cacheDeadContextTokens && r.cacheReadTokens === 0 && r.cacheCreationTokens === 0) {
       findings.push({
         type: "cache_dead",
+        kind: "waste",
         severity: "high",
         tokensWasted: r.contextSize,
         turnIndex: r.turnIndex,
+        basis: "measured",
         summary: `no prompt caching: ${formatTokensCompact(r.contextSize)} tok billed as fresh input (model ${r.model})`,
-        claims: [{ owner: `round:${r.index}`, want: r.contextSize, cap: r.contextSize }]
+        // #82: the dollars book only the fresh-input premium over a cache read
+        claims: [
+          {
+            owner: `round:${r.index}`,
+            want: r.contextSize,
+            cap: r.contextSize,
+            ...pricer.premiumRates(r) ?? {}
+          }
+        ]
       });
     }
   }
@@ -4855,14 +5016,29 @@ function computeFindings(messages, ledger, since, until) {
     const rs = byTurn.get(turn.index) ?? [];
     const think = rs.reduce((s, r) => s + r.thinkingTokens, 0);
     if (think > th.thinkingHeavyTokens) {
+      let usd = 0;
+      let eq = 0;
+      for (const r of rs) {
+        const p = priceForRound(r);
+        if (!p) {
+          usd = void 0;
+          eq = void 0;
+          break;
+        }
+        usd += r.thinkingTokens * p.output / 1e6;
+        eq += r.thinkingTokens * (p.output / p.input);
+      }
       findings.push({
         type: "thinking_heavy",
+        kind: "waste",
         severity: "low",
         tokensWasted: think,
         turnIndex: turn.index,
+        basis: "estimated",
         summary: `thinking ~${formatTokensCompact(think)} tok in turn ${turn.index}`,
-        free: think
-        // chars/4 estimate — no competing claimant books thinking
+        free: think,
+        // estimate — no competing claimant books thinking
+        ...usd !== void 0 && eq !== void 0 ? { freeUsd: usd, freeInputEq: eq } : {}
       });
     }
     if (turn.activeMinutes >= th.longTurnActiveMinutes) {
@@ -4870,7 +5046,10 @@ function computeFindings(messages, ledger, since, until) {
       const top = [...countTools(rs)].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, c]) => `${n} ${c}`).join(", ");
       findings.push({
         type: "long_turn",
+        kind: "observation",
+        // #84: explicit — same semantics as before
         severity: "high",
+        basis: "measured",
         // observation, not waste — unlike other findings this books no redundant
         // tokens (the summary carries the activity numbers), so consumers summing
         // tokensWasted don't count a healthy turn's whole billing as waste
@@ -4886,14 +5065,17 @@ function computeFindings(messages, ledger, since, until) {
       const wasted = ticks.reduce((s, r) => s + r.contextSize, 0);
       findings.push({
         type: "wait_loop",
+        kind: "waste",
         severity: ticks.length >= 20 ? "high" : "medium",
         tokensWasted: wasted,
         turnIndex: turn.index,
+        basis: "measured",
         summary: `wait-loop: ${ticks.length} quiet rounds re-read ~${formatTokensCompact(wasted)} tok (≤300 tok of output each)`,
         claims: ticks.map((r) => ({
           owner: `round:${r.index}`,
           want: r.contextSize,
-          cap: r.contextSize
+          cap: r.contextSize,
+          ...pricer.roundRates(r) ?? {}
         }))
       });
     }
@@ -4905,14 +5087,17 @@ function computeFindings(messages, ledger, since, until) {
         const stallWasted = stallRounds.reduce((s, r) => s + r.contextSize, 0);
         findings.push({
           type: "stall_streak",
+          kind: "waste",
           severity: stallRounds.length >= 5 ? "high" : "medium",
           tokensWasted: stallWasted,
           turnIndex: turn.index,
+          basis: "measured",
           summary: `stall: ${stallRounds.length} rounds with no context growth re-read ~${formatTokensCompact(stallWasted)} tok (${short(stallStart.tools.join(", ") || "tool calls", 40)}) ${hhmm(stallStart.timestamp)}–${hhmm(stallEnd.timestamp)}`,
           claims: stallRounds.map((r) => ({
             owner: `round:${r.index}`,
             want: r.contextSize,
-            cap: r.contextSize
+            cap: r.contextSize,
+            ...pricer.roundRates(r) ?? {}
           }))
         });
       }
@@ -4932,9 +5117,39 @@ function computeFindings(messages, ledger, since, until) {
   }
   const order = { high: 0, medium: 1, low: 2 };
   findings.push(...detectCycleFindings(messages, ledger, results));
-  findings.sort((a, b) => order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted);
+  const prio = (f) => {
+    const i = WASTE_TYPE_PRIORITY.indexOf(f.type);
+    return i === -1 ? WASTE_TYPE_PRIORITY.length : i;
+  };
+  findings.sort(
+    (a, b) => prio(a) - prio(b) || order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted
+  );
   allocateWaste(findings);
-  return findings.map(({ free: _free, claims: _claims, ...finding }) => finding);
+  return findings.map(
+    ({ free: _free, claims: _claims, freeUsd: _freeUsd, freeInputEq: _freeInputEq, ...finding }) => finding
+  );
+}
+function sessionWasteTotals(findings, ledger) {
+  let tokensWasted = 0;
+  let usd = 0;
+  let priced = false;
+  let partial = false;
+  for (const f of findings) {
+    if (f.kind !== "waste") continue;
+    tokensWasted += f.tokensWasted;
+    if (f.tokensWasted > 0 && f.wastedUsd === void 0) partial = true;
+    if (f.wastedUsd !== void 0) {
+      usd += f.wastedUsd;
+      priced = true;
+    }
+  }
+  const cost = ledger.totals.costUsd;
+  return {
+    tokensWasted,
+    ...priced ? { wastedUsd: usd } : {},
+    wasteUsdPartial: partial,
+    ...priced && cost !== void 0 && cost > 0 ? { wasteShare: usd / cost } : {}
+  };
 }
 function short(s, n) {
   const flat = s.replace(/\s+/g, " ").trim();
@@ -4949,7 +5164,7 @@ function resultSignature(text) {
     "<id>"
   );
 }
-function detectCycleFindings(messages, ledger, results) {
+function detectCycleFindings(messages, ledger, results, pricer = residencyPricer(ledger)) {
   const findings = [];
   const retryCopies = getRetryCopyMessageIds(messages);
   const msgs = deduplicateByRequestId(messages).filter(
@@ -5001,14 +5216,17 @@ function detectCycleFindings(messages, ledger, results) {
           const wasted = rs.slice(i + L, i + reps * L).reduce((s, r) => s + r.contextSize, 0);
           findings.push({
             type: "cycle_motif",
+            kind: "waste",
             severity: reps >= 4 ? "high" : "medium",
             tokensWasted: wasted,
             turnIndex,
+            basis: "measured",
             summary: `cycle: ${motif} — x${reps} repeats re-read ~${formatTokensCompact(wasted)} tok ${hhmm(rs[i].timestamp)}–${hhmm(rs[i + reps * L - 1].timestamp)}`,
             claims: rs.slice(i + L, i + reps * L).map((r) => ({
               owner: `round:${r.roundIndex}`,
               want: r.contextSize,
-              cap: r.contextSize
+              cap: r.contextSize,
+              ...pricer.roundRatesByIndex(r.roundIndex) ?? {}
             }))
           });
           i += reps * L;
@@ -5023,7 +5241,13 @@ function detectCycleFindings(messages, ledger, results) {
       for (const c of r.calls) {
         if (!c.sig || MUTATING_TOOLS.has(c.toolName)) continue;
         const list = byKey.get(c.key);
-        const entry = { id: c.id, sig: c.sig, ts: r.timestamp, tok: c.tok };
+        const entry = {
+          id: c.id,
+          sig: c.sig,
+          ts: r.timestamp,
+          tok: c.tok,
+          rates: pricer.resultRates(r.timestamp.getTime())
+        };
         if (list) list.push(entry);
         else byKey.set(c.key, [entry]);
       }
@@ -5040,11 +5264,18 @@ function detectCycleFindings(messages, ledger, results) {
       const repeats = list.slice(best.start + 1, best.end + 1);
       findings.push({
         type: "probe_no_progress",
+        kind: "waste",
         severity: "medium",
         tokensWasted: repeats.reduce((s, e) => s + e.tok, 0),
         turnIndex,
+        basis: "estimated",
         summary: `probe no progress: ${short(key, 60)} — same result x${best.len}: ${short(list[best.start].sig, 70)}`,
-        claims: repeats.map((e) => ({ owner: `result:${e.id}`, want: e.tok, cap: e.tok }))
+        claims: repeats.map((e) => ({
+          owner: `result:${e.id}`,
+          want: e.tok,
+          cap: e.tok,
+          ...e.rates ?? {}
+        }))
       });
     }
   }
@@ -5253,6 +5484,13 @@ function printReport(file, ledger, findings, subagents, opts) {
   if (t.costUsd !== void 0 && !opts.noCost) {
     const partial = t.costPartial ? " (partial — unpriced models excluded)" : "";
     console.log("est. cost: $" + t.costUsd.toFixed(2) + partial);
+    const wt = sessionWasteTotals(findings, ledger);
+    let wasteLine = `waste (non-overlapping): ${fmt(wt.tokensWasted)} tok`;
+    if (wt.wasteShare !== void 0) {
+      const partialW = wt.wasteUsdPartial ? " (partial — unpriced waste excluded)" : "";
+      wasteLine += `  ~$${wt.wastedUsd.toFixed(4)} of $${t.costUsd.toFixed(2)} (${(wt.wasteShare * 100).toFixed(1)}%)${partialW}`;
+    }
+    console.log(wasteLine);
   }
   console.log();
   console.log("=== TOKENS (billed) ===");
@@ -5262,7 +5500,7 @@ function printReport(file, ledger, findings, subagents, opts) {
   );
   console.log(`cache_write (new)    : ${fmt(t.cacheCreationTokens)}`);
   console.log(`output               : ${fmt(t.outputTokens)}`);
-  console.log(`thinking (estimate)  : ~${fmt(t.thinkingTokens)}`);
+  console.log(`thinking (billed est.) : ~${fmt(t.thinkingTokens)}`);
   console.log(`TOTAL                : ${fmt(t.billedTokens)}`);
   console.log(`reread share         : ${Math.round(t.rereadShare * 100)}%`);
   console.log();
@@ -5334,7 +5572,9 @@ function printReport(file, ledger, findings, subagents, opts) {
   } else {
     for (const f of visible) {
       const turnTag = f.turnIndex === void 0 ? "" : ", turn " + String(f.turnIndex);
-      console.log(`[${f.type}${turnTag}] ${f.summary}`);
+      const usdTag = !opts.noCost && f.wastedUsd !== void 0 ? ` ~$${f.wastedUsd.toFixed(4)}` : "";
+      const estTag = f.basis === "estimated" ? " (est)" : "";
+      console.log(`[${f.type}${turnTag}]${usdTag}${estTag} ${f.summary}`);
     }
   }
   console.log();
@@ -5433,6 +5673,9 @@ async function main() {
     }
     const ledgerOut = opts.noCost ? { ...ledger, totals: totalsOut } : ledger;
     const breakdown = opts.breakdown ? breakdownFromRounds(ledger.rounds, !opts.noCost) : void 0;
+    const findingsOut = opts.noCost ? findings.map(({ wastedUsd: _usd, tokensWastedInputEq: _eq, ...f }) => f) : findings;
+    const wasteOut = sessionWasteTotals(findings, ledger);
+    const wasteBlock = opts.noCost ? { tokensWasted: wasteOut.tokensWasted } : wasteOut;
     console.log(
       JSON.stringify(
         {
@@ -5440,7 +5683,8 @@ async function main() {
           projectId,
           sessionId,
           ledger: ledgerOut,
-          findings,
+          findings: findingsOut,
+          waste: wasteBlock,
           subagents: subagentSummaries,
           ...breakdown ? { breakdown } : {}
         },
@@ -5461,6 +5705,7 @@ if (isDirectRun(import.meta.url)) {
 export {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
+  WASTE_TYPE_PRIORITY,
   inDateRange as a,
   translateWslMountPath as b,
   bashStem,
@@ -5492,6 +5737,7 @@ export {
   pickNewestSessionFile,
   resolveProjectDir,
   roundCostUsd,
+  sessionWasteTotals,
   short,
   splitSessionPath,
   takeFlagValue as t,

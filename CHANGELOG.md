@@ -15,12 +15,14 @@ Development continues in this fork — see the [Upstream sync policy](README.md#
 ### Fork (since 0.1.0-fork.1)
 
 **Added**
+- Session waste rollup (#84): one non-overlapping waste number per session — findings' token claims allocated so no token is booked twice, `context_spike`/`long_turn` excluded as observations — with its dollar amount and share of the session cost (`waste (non-overlapping): N tok ~$X of $Y (Z%)`, `--json` `waste:` block, `session:sums`).
 - Loop diagnostics: `long_turn`, `loop_streak`, `stall_streak`, `wait_loop`, `cycle_motif` findings plus `probe_no_progress`, and the `--turn N` deep-dive with «цикл или длинный ход» verdicts (cycle-churning / cycle-progressing / long-turn / normal).
 - Claude Code plugin ships self-contained `dist-cli/` binaries committed in-repo — skills run `node dist-cli/…` with no checkout-wide `pnpm install` (#93).
 - Version-aware pricing with explicit cache rates; session `costUsd` from the shared pricing table (#72, #73).
 - Regression corpus with numeric-only snapshots and ledger invariants (#79).
 
 **Changed**
+- Waste attribution reworked (#84): findings book their tokens through documented type priority (`failed_call` > `loop_streak` > `duplicate_call` > `probe_no_progress` > `oversized_output` for per-call sources; `cache_dead` > `stall_streak` > `wait_loop` > `cycle_motif` for per-round sources) instead of severity+size — the same call fitting several types books once, in the top-priority category; `context_spike` is an observation now and books 0 tokens; findings carry an explicit `kind: waste | observation`.
 - CLI usage/help names the binaries (`session-audit`, `session-inventory`) instead of `pnpm analyze:*` scripts (#93).
 - Skills run the bundled binaries via `node`, with turn/inventory flags documented (#92); inventory gained `--min-turn-minutes` / `--min-streak` filters.
 

@@ -23,6 +23,7 @@ import {
   computeFindings,
   type Finding,
   type SessionLedger,
+  sessionWasteTotals,
   splitSessionPath,
   turnVerdict,
 } from './analyzeSession';
@@ -196,6 +197,8 @@ export function buildSums(
       cycleTurns: turns.filter((tn) => tn.cycles.verdict.startsWith('cycle-')).length,
       shareOfSession: sessionBilled > 0 ? cycleWasted / sessionBilled : 0,
     },
+    // #84: non-overlapping session waste + its share of the priced cost
+    waste: sessionWasteTotals(findings, ledger),
   };
 }
 

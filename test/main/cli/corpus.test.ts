@@ -272,8 +272,10 @@ describe('checkInvariants (#79 acceptance: checked per session)', () => {
     const ledger = ledgerWithTotals({});
     const finding: Finding = {
       type: 'duplicate_call',
+      kind: 'waste',
       severity: 'medium',
       tokensWasted: -5,
+      basis: 'estimated',
       summary: 'x',
     };
     expect(checkInvariants(ledger, [finding]).map((v) => v.invariant)).toContain(
@@ -285,13 +287,39 @@ describe('checkInvariants (#79 acceptance: checked per session)', () => {
     const ledger = ledgerWithTotals({});
     const finding: Finding = {
       type: 'cache_dead',
+      kind: 'waste',
       severity: 'high',
       tokensWasted: ledger.totals.billedTokens + 1,
+      basis: 'measured',
       summary: 'x',
     };
     expect(checkInvariants(ledger, [finding]).map((v) => v.invariant)).toContain(
       'wasted-le-billed'
     );
+  });
+
+  it('wasted $ above the session cost is caught; partial waste skips the $ check (#84)', () => {
+    // only costUsd is overridden — the $ invariant compares waste $ to cost $;
+    // token levels stay whatever the ledger built (0 tokens keep wasted-le-billed quiet)
+    const ledger = ledgerWithTotals({ costUsd: 0.01 });
+    const waste = (usd: number | undefined, tokens = 0): Finding => ({
+      type: 'failed_call',
+      kind: 'waste',
+      severity: 'medium',
+      tokensWasted: tokens,
+      ...(usd !== undefined ? { wastedUsd: usd } : {}),
+      basis: 'estimated',
+      summary: 'x',
+    });
+    // under the cost — clean
+    expect(checkInvariants(ledger, [waste(0.005)])).toEqual([]);
+    // over the cost — the $ invariant trips
+    expect(checkInvariants(ledger, [waste(0.02)]).map((v) => v.invariant)).toContain(
+      'wasted-usd-le-cost'
+    );
+    // an unpriced waste finding makes the sum partial → $ check skipped
+    const mixed = checkInvariants(ledger, [waste(0.02), waste(undefined, 50)]);
+    expect(mixed.map((v) => v.invariant)).not.toContain('wasted-usd-le-cost');
   });
 });
 

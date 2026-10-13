@@ -142,6 +142,9 @@ export function buildSampleDoc(
   const entries: { type: FindingType; item: SampleItem }[] = [];
   for (const s of sessions) {
     s.findings.forEach((f, i) => {
+      // #84: observations are not waste claims — labeling them "not waste"
+      // would measure the definition, not detection quality
+      if (f.kind !== 'waste') return;
       entries.push({
         type: f.type,
         item: {

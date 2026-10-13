@@ -24,7 +24,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
-import { buildLedger, computeFindings } from './analyzeSession';
+import { buildLedger, computeFindings, sessionWasteTotals } from './analyzeSession';
 import { isDirectRun } from './args';
 
 import type { Finding, SessionLedger } from './analyzeSession';
@@ -151,7 +151,11 @@ export function buildSnapshot(
 // =============================================================================
 
 export interface InvariantViolation {
-  invariant: 'rounds-sum-equals-total' | 'tokensWasted-non-negative' | 'wasted-le-billed';
+  invariant:
+    | 'rounds-sum-equals-total'
+    | 'tokensWasted-non-negative'
+    | 'wasted-le-billed'
+    | 'wasted-usd-le-cost';
   detail: string;
 }
 
@@ -197,6 +201,18 @@ export function checkInvariants(ledger: SessionLedger, findings: Finding[]): Inv
       invariant: 'wasted-le-billed',
       detail: `findings wasted ${wasted} > billed ${t.billedTokens}`,
     });
+  }
+  // #84: non-overlapping waste priced at the shared table cannot exceed the
+  // session's cost — the claimed tokens' rates are exactly what those rounds
+  // billed. Checked only when the waste is fully priced (no partial sums).
+  const wt = sessionWasteTotals(findings, ledger);
+  if (wt.wastedUsd !== undefined && !wt.wasteUsdPartial && t.costUsd !== undefined) {
+    if (wt.wastedUsd > t.costUsd + 1e-6) {
+      out.push({
+        invariant: 'wasted-usd-le-cost',
+        detail: `findings wasted $${wt.wastedUsd} > session cost $${t.costUsd}`,
+      });
+    }
   }
   return out;
 }
