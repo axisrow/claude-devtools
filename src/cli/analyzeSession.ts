@@ -117,6 +117,8 @@ export type FindingType =
 
 export interface Finding {
   type: FindingType;
+  /** #84: 'waste' books redundant tokens; 'observation' reports a signal and books nothing */
+  kind: 'waste' | 'observation';
   severity: 'low' | 'medium' | 'high';
   tokensWasted: number;
   /** waste priced at the shared table with cache residency (#82) — absent when a needed round is unpriced or nothing was booked */
@@ -153,11 +155,33 @@ type FindingCandidate = Finding & {
   freeInputEq?: number;
 };
 
+// #84 non-overlapping attribution: claims on the same token source are served
+// top-down in this documented TYPE order (waste certainty, most specific
+// first); a finding gets only the unclaimed remainder and stays visible with
+// 0 when fully overlapped. The old severity+size order made the winner depend
+// on raw amounts; the type order is fixed. result:<id> owners (a call's own
+// output) come first, then round:<index> owners (a round's whole context).
+// Observations (context_spike, long_turn) claim nothing and sort last.
+export const WASTE_TYPE_PRIORITY: FindingType[] = [
+  // result:<toolUseId> — the call's own output tokens
+  'failed_call', // an error result is waste with certainty
+  'loop_streak', // back-to-back identical repeats
+  'duplicate_call', // repeats after intervening work
+  'probe_no_progress', // same-result re-asks
+  'oversized_output', // weakest claim — the data may be legitimately needed
+  // round:<index> — the round's whole context
+  'cache_dead', // the round billed entirely as fresh input
+  'stall_streak', // calls with no context growth
+  'wait_loop', // idle quiet ticks
+  'cycle_motif', // repeating motif rounds
+];
+
 // each token source books at most once: claims are served in the sorted order
-// (severity, then raw size), a finding gets only the unclaimed remainder and
-// stays visible with 0 when fully overlapped. Dollars (#82) follow the served
-// tokens at the owner's per-token rate; an owner with no rate (unpriced) or a
-// finding with an unpriced free part books no dollars at all.
+// (type priority, then severity, then raw size), a finding gets only the
+// unclaimed remainder and stays visible with 0 when fully overlapped. Dollars
+// (#82) follow the served tokens at the owner's per-token rate; an owner with
+// no rate (unpriced) or a finding with an unpriced free part books no dollars
+// at all.
 function allocateWaste(findings: FindingCandidate[]): void {
   const remaining = new Map<string, number>();
   const ownerUsdRate = new Map<string, number>();
@@ -791,6 +815,7 @@ export function computeFindings(
       const env = streak.errors === streak.count;
       findings.push({
         type: 'loop_streak',
+        kind: 'waste',
         severity: streak.count >= 5 ? 'high' : 'medium',
         tokensWasted: streak.tokens,
         turnIndex: streak.turn,
@@ -853,6 +878,7 @@ export function computeFindings(
           const rr = pricer.resultRates(msg.timestamp.getTime());
           findings.push({
             type: 'failed_call',
+            kind: 'waste',
             severity: 'medium',
             tokensWasted: inputTok + resultTok,
             basis: 'estimated',
@@ -877,6 +903,7 @@ export function computeFindings(
       if (resultTok > th.oversizedOutputTokens) {
         findings.push({
           type: 'oversized_output',
+          kind: 'waste',
           severity: 'medium',
           tokensWasted: resultTok,
           basis: 'estimated',
@@ -912,6 +939,7 @@ export function computeFindings(
       const reread = tokens - first; // repeats only — the first read was legitimate
       findings.push({
         type: 'duplicate_call',
+        kind: 'waste',
         severity: 'medium',
         tokensWasted: reread,
         basis: 'estimated',
@@ -938,19 +966,15 @@ export function computeFindings(
       const prev = ledger.rounds[j];
       findings.push({
         type: 'context_spike',
+        // #84: an observation — a big growth is often legitimate (a needed
+        // large file); recording the delta as loss would inflate the waste
+        kind: 'observation',
         severity: 'high',
-        tokensWasted: r.contextDelta,
+        // the summary carries the delta, sources and span; nothing is booked
+        tokensWasted: 0,
         turnIndex: r.turnIndex,
         basis: 'measured',
         summary: contextSpikeSummary(prev, r),
-        claims: [
-          {
-            owner: `round:${r.index}`,
-            want: r.contextDelta,
-            cap: r.contextSize,
-            ...(pricer.roundRates(r) ?? {}),
-          },
-        ],
       });
     }
     if (
@@ -960,6 +984,7 @@ export function computeFindings(
     ) {
       findings.push({
         type: 'cache_dead',
+        kind: 'waste',
         severity: 'high',
         tokensWasted: r.contextSize,
         turnIndex: r.turnIndex,
@@ -998,6 +1023,7 @@ export function computeFindings(
       }
       findings.push({
         type: 'thinking_heavy',
+        kind: 'waste',
         severity: 'low',
         tokensWasted: think,
         turnIndex: turn.index,
@@ -1016,6 +1042,7 @@ export function computeFindings(
         .join(', ');
       findings.push({
         type: 'long_turn',
+        kind: 'observation', // #84: explicit — same semantics as before
         severity: 'high',
         basis: 'measured',
         // observation, not waste — unlike other findings this books no redundant
@@ -1036,6 +1063,7 @@ export function computeFindings(
       const wasted = ticks.reduce((s, r) => s + r.contextSize, 0);
       findings.push({
         type: 'wait_loop',
+        kind: 'waste',
         severity: ticks.length >= 20 ? 'high' : 'medium',
         tokensWasted: wasted,
         turnIndex: turn.index,
@@ -1062,6 +1090,7 @@ export function computeFindings(
         const stallWasted = stallRounds.reduce((s, r) => s + r.contextSize, 0);
         findings.push({
           type: 'stall_streak',
+          kind: 'waste',
           severity: stallRounds.length >= 5 ? 'high' : 'medium',
           tokensWasted: stallWasted,
           turnIndex: turn.index,
@@ -1093,14 +1122,64 @@ export function computeFindings(
 
   const order = { high: 0, medium: 1, low: 2 } as const;
   findings.push(...detectCycleFindings(messages, ledger, results));
-  // high severity first, then the bigger raw claim — the allocation pass below
-  // serves claims in exactly this order, so the direction is load-bearing
-  findings.sort((a, b) => order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted);
+  // #84: the documented type priority decides which overlapping finding keeps
+  // the tokens — the allocation pass below serves claims in exactly this
+  // order, so the direction is load-bearing; observations book nothing and
+  // sort last for display
+  const prio = (f: FindingCandidate): number => {
+    const i = WASTE_TYPE_PRIORITY.indexOf(f.type);
+    return i === -1 ? WASTE_TYPE_PRIORITY.length : i;
+  };
+  findings.sort(
+    (a, b) =>
+      prio(a) - prio(b) || order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted
+  );
   allocateWaste(findings);
   return findings.map(
     ({ free: _free, claims: _claims, freeUsd: _freeUsd, freeInputEq: _freeInputEq, ...finding }) =>
       finding
   );
+}
+
+// =============================================================================
+// Session waste totals (#84) — one trustworthy «how much of it was waste»
+// =============================================================================
+
+export interface SessionWasteTotals {
+  /** non-overlapping waste tokens: Σ tokensWasted over kind 'waste' findings */
+  tokensWasted: number;
+  /** Σ wastedUsd over priced waste findings; absent when nothing was priced */
+  wastedUsd?: number;
+  /** some waste tokens found no price row — wastedUsd is a lower bound */
+  wasteUsdPartial: boolean;
+  /** wastedUsd / session cost (#84); absent when either side is unknown */
+  wasteShare?: number;
+}
+
+/** Non-overlapping session waste: observations are excluded by kind, the
+ * non-overlapping guarantee comes from the claim allocation. Consumers:
+ * analyze:session (text + --json) and session:sums — one helper, no drift. */
+export function sessionWasteTotals(findings: Finding[], ledger: SessionLedger): SessionWasteTotals {
+  let tokensWasted = 0;
+  let usd = 0;
+  let priced = false;
+  let partial = false;
+  for (const f of findings) {
+    if (f.kind !== 'waste') continue;
+    tokensWasted += f.tokensWasted;
+    if (f.tokensWasted > 0 && f.wastedUsd === undefined) partial = true;
+    if (f.wastedUsd !== undefined) {
+      usd += f.wastedUsd;
+      priced = true;
+    }
+  }
+  const cost = ledger.totals.costUsd;
+  return {
+    tokensWasted,
+    ...(priced ? { wastedUsd: usd } : {}),
+    wasteUsdPartial: partial,
+    ...(priced && cost !== undefined && cost > 0 ? { wasteShare: usd / cost } : {}),
+  };
 }
 
 export function short(s: string, n: number): string {
@@ -1229,6 +1308,7 @@ export function detectCycleFindings(
           const wasted = rs.slice(i + L, i + reps * L).reduce((s, r) => s + r.contextSize, 0);
           findings.push({
             type: 'cycle_motif',
+            kind: 'waste',
             severity: reps >= 4 ? 'high' : 'medium',
             tokensWasted: wasted,
             turnIndex,
@@ -1282,6 +1362,7 @@ export function detectCycleFindings(
       const repeats = list.slice(best.start + 1, best.end + 1);
       findings.push({
         type: 'probe_no_progress',
+        kind: 'waste',
         severity: 'medium',
         tokensWasted: repeats.reduce((s, e) => s + e.tok, 0),
         turnIndex,
@@ -1580,6 +1661,15 @@ function printReport(
   if (t.costUsd !== undefined && !opts.noCost) {
     const partial = t.costPartial ? ' (partial — unpriced models excluded)' : '';
     console.log('est. cost: $' + t.costUsd.toFixed(2) + partial);
+    // #84: the session's one waste number — non-overlapping by allocation,
+    // observations excluded by kind
+    const wt = sessionWasteTotals(findings, ledger);
+    let wasteLine = `waste (non-overlapping): ${fmt(wt.tokensWasted)} tok`;
+    if (wt.wasteShare !== undefined) {
+      const partialW = wt.wasteUsdPartial ? ' (partial — unpriced waste excluded)' : '';
+      wasteLine += `  ~$${wt.wastedUsd!.toFixed(4)} of $${t.costUsd.toFixed(2)} (${(wt.wasteShare * 100).toFixed(1)}%)${partialW}`;
+    }
+    console.log(wasteLine);
   }
   console.log();
   console.log('=== TOKENS (billed) ===');
@@ -1779,6 +1869,10 @@ async function main(): Promise<void> {
     const findingsOut = opts.noCost
       ? findings.map(({ wastedUsd: _usd, tokensWastedInputEq: _eq, ...f }) => f)
       : findings;
+    // #84 session waste — observations excluded, allocation-guaranteed
+    // non-overlap; --no-cost keeps tokens only
+    const wasteOut = sessionWasteTotals(findings, ledger);
+    const wasteBlock = opts.noCost ? { tokensWasted: wasteOut.tokensWasted } : wasteOut;
     console.log(
       JSON.stringify(
         {
@@ -1787,6 +1881,7 @@ async function main(): Promise<void> {
           sessionId,
           ledger: ledgerOut,
           findings: findingsOut,
+          waste: wasteBlock,
           subagents: subagentSummaries,
           ...(breakdown ? { breakdown } : {}),
         },

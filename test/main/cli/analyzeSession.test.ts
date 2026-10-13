@@ -265,10 +265,13 @@ describe('computeFindings', () => {
     // only the two in-window 'pytest -q' calls count — the Sep 1 call is out of scope
     const dup = findings.find((f) => f.type === 'duplicate_call');
     expect(dup).toBeDefined();
-    // window scoping still holds (dup claims only the in-window repeat), but its
-    // result tokens are booked by probe_no_progress — bigger raw claim, same
-    // severity, so allocation gives the repeats to probe (no double counting)
-    expect(dup?.tokensWasted).toBe(0);
+    // window scoping still holds (dup claims only the in-window repeat). #84:
+    // claims are served in the documented type priority — duplicate_call
+    // outranks probe_no_progress, so dup books its repeat and probe keeps the
+    // still-unclaimed one (no double counting, same total as before)
+    expect(dup?.tokensWasted).toBe(estimateTokens('all passed'));
+    const probe = findings.find((f) => f.type === 'probe_no_progress');
+    expect(probe?.tokensWasted).toBe(estimateTokens('all passed'));
     // 'boom' fails inside the window, its result lands after --until and still resolves
     expect(findings.filter((f) => f.type === 'failed_call')).toHaveLength(1);
   });

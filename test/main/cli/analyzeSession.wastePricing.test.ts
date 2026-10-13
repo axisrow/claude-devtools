@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildLedger, computeFindings } from '../../../src/cli/analyzeSession';
+import { buildLedger, computeFindings, sessionWasteTotals } from '../../../src/cli/analyzeSession';
 import type { Finding, FindingType } from '../../../src/cli/analyzeSession';
 import { estimateTokens } from '../../../src/shared/utils/tokenFormatting';
 import type { ParsedMessage } from '../../../src/main/types';
@@ -78,32 +78,33 @@ describe('billed thinking (#83)', () => {
   });
 });
 
+// dup session: 5 rounds; round 2 Reads the same file twice (200-tok results)
+const dupSession = (lastCtxRead: number) => [
+  makeMsg({ type: 'user', content: 'go' }),
+  makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 0, 0, 10) }),
+  makeMsg({
+    type: 'assistant',
+    model: SONNET,
+    usage: usage(100, 100, 0, 20),
+    toolCalls: [
+      { id: 't1', name: 'Read', input: { file_path: '/w82.ts' }, isTask: false },
+      { id: 't2', name: 'Read', input: { file_path: '/w82.ts' }, isTask: false },
+    ],
+  }),
+  makeMsg({
+    type: 'user',
+    isMeta: true,
+    toolResults: [
+      { toolUseId: 't1', content: 'a'.repeat(800), isError: false },
+      { toolUseId: 't2', content: 'b'.repeat(800), isError: false },
+    ],
+  }),
+  makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 500, 0, 20) }),
+  makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 500, 0, 21) }),
+  makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, lastCtxRead, 0, 22) }),
+];
+
 describe('waste in dollars with cache residency (#82)', () => {
-  // dup session: 5 rounds; round 2 Reads the same file twice (200-tok results)
-  const dupSession = (lastCtxRead: number) => [
-    makeMsg({ type: 'user', content: 'go' }),
-    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 0, 0, 10) }),
-    makeMsg({
-      type: 'assistant',
-      model: SONNET,
-      usage: usage(100, 100, 0, 20),
-      toolCalls: [
-        { id: 't1', name: 'Read', input: { file_path: '/w82.ts' }, isTask: false },
-        { id: 't2', name: 'Read', input: { file_path: '/w82.ts' }, isTask: false },
-      ],
-    }),
-    makeMsg({
-      type: 'user',
-      isMeta: true,
-      toolResults: [
-        { toolUseId: 't1', content: 'a'.repeat(800), isError: false },
-        { toolUseId: 't2', content: 'b'.repeat(800), isError: false },
-      ],
-    }),
-    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 500, 0, 20) }),
-    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 500, 0, 21) }),
-    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, lastCtxRead, 0, 22) }),
-  ];
   const dupOf = (findings: Finding[]): Finding =>
     findings.find((f) => f.type === 'duplicate_call')!;
 
@@ -256,5 +257,62 @@ describe('waste in dollars with cache residency (#82)', () => {
     expect(byType('thinking_heavy')?.basis).toBe('estimated');
     expect(byType('cache_dead')?.basis).toBe('measured');
     expect(byType('context_spike')?.basis).toBe('measured');
+    expect(byType('context_spike')?.kind).toBe('observation'); // #84
+  });
+});
+
+describe('waste vs observation split and session totals (#84)', () => {
+  it('observations carry no dollar fields even on priced models', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: SONNET, usage: usage(1000, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: SONNET, usage: usage(45_000, 0, 0, 1) }), // +44k spike
+    ];
+    const f = computeFindings(messages, buildLedger(messages)).find(
+      (x) => x.type === 'context_spike'
+    );
+    expect(f?.kind).toBe('observation');
+    expect(f?.tokensWasted).toBe(0);
+    expect(f?.wastedUsd).toBeUndefined();
+    expect(f?.tokensWastedInputEq).toBeUndefined();
+  });
+
+  it('sessionWasteTotals: waste findings only, wasteShare = wastedUsd / costUsd', () => {
+    const messages = dupSession(500); // known from above: dup books the only waste
+    const ledger = buildLedger(messages);
+    const findings = computeFindings(messages, ledger);
+    const dup = findings.find((f) => f.type === 'duplicate_call')!;
+    const wt = sessionWasteTotals(findings, ledger);
+    expect(wt.tokensWasted).toBe(dup.tokensWasted);
+    expect(wt.wastedUsd).toBeCloseTo(dup.wastedUsd!, 12);
+    expect(wt.wasteUsdPartial).toBe(false);
+    expect(wt.wasteShare).toBeCloseTo(dup.wastedUsd! / ledger.totals.costUsd!, 12);
+  });
+
+  it('observations do not enter the session waste totals', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: SONNET, usage: usage(1000, 0, 0, 1) }),
+      makeMsg({ type: 'assistant', model: SONNET, usage: usage(45_000, 0, 0, 1) }), // spike + cache_dead
+    ];
+    const ledger = buildLedger(messages);
+    const findings = computeFindings(messages, ledger);
+    const dead = findings.find((f) => f.type === 'cache_dead')!;
+    const wt = sessionWasteTotals(findings, ledger);
+    expect(wt.tokensWasted).toBe(dead.tokensWasted); // the spike (0) is excluded
+    expect(wt.wastedUsd).toBeCloseTo(dead.wastedUsd!, 12);
+  });
+
+  it('unpriced waste marks the totals partial, no share without $', () => {
+    const messages = [
+      makeMsg({ type: 'user', content: 'go' }),
+      makeMsg({ type: 'assistant', model: 'm1', usage: usage(30_000, 0, 0, 100) }), // cache_dead
+    ];
+    const ledger = buildLedger(messages);
+    const wt = sessionWasteTotals(computeFindings(messages, ledger), ledger);
+    expect(wt.tokensWasted).toBe(30_000);
+    expect(wt.wastedUsd).toBeUndefined();
+    expect(wt.wasteUsdPartial).toBe(true);
+    expect(wt.wasteShare).toBeUndefined();
   });
 });

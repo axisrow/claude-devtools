@@ -43,7 +43,7 @@ Churning beats progressing: same-result probes inside a cycle mean it is stuck e
 | duplicate_call | same tool+input called repeatedly, results re-read each time | add a deny rule for the culprit command in Claude Code settings; state the result in the prompt instead of re-reading |
 | failed_call | tool errored (normal user rejections excluded) | fix the invocation; repeated failures of one command → deny rule |
 | oversized_output | one tool result over ~8k tok | narrower flags on the command; write to a file and Read slices |
-| context_spike | context jumped +30k in one round | move that work into a subagent so the parent only sees the summary |
+| context_spike | observation, not waste: context jumped +30k in one round (tokensWasted is 0) | move that work into a subagent so the parent only sees the summary |
 | cache_dead | whole context billed as fresh input (no cache reads/writes) | check the provider/router setup — first-party Anthropic API should never look like this |
 | thinking_heavy | >8k billed thinking tok in one turn — estimated as output_tokens minus visible output, since the raw chain of thought is never returned (#83) | split the long turn, scope the task tighter |
 | long_turn | observation, not waste: the turn ran ≥45 active minutes (tokensWasted is 0; the summary names the top tools) | usually fine — scope or split the task only when the turn also churns |
@@ -55,5 +55,7 @@ Churning beats progressing: same-result probes inside a cycle mean it is stuck e
 | !SLOW (SUBAGENTS table) | subagent ran past the threshold | split its prompt; pass less context in |
 
 Findings print `~$X` when the waste is priced at the shared table with cache residency (a result stays in context and is re-read every round until compaction — the $ includes those re-reads; cache_dead counts only the fresh-input premium), and `(est)` when the amount rides on chars/4 sizes rather than API counters (#82). `--json` carries `wastedUsd`, `tokensWastedInputEq` and `basis: measured | estimated` per finding; `--no-cost` omits the dollar figures everywhere, findings included.
+
+The session prints one waste line — `waste (non-overlapping): N tok ~$X of $Y (Z%)` — the findings' claims allocated so no token is booked twice (#84), observations (`context_spike`, `long_turn`) excluded; `Z` is the waste's share of the session cost. `--json` carries the same block under `waste` as `{ tokensWasted, wastedUsd?, wasteShare?, wasteUsdPartial }` (`session:sums` reports it too); `--no-cost` leaves only `tokensWasted`.
 
 Finish with the numbers: total billed tokens, reread share, top findings by wasted tokens, and a concrete fix for each. The CLI observes, it does not prevent — prevention is deny rules in Claude Code settings.

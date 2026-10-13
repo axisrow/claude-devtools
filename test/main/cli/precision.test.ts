@@ -18,7 +18,7 @@ import {
   wilsonInterval,
 } from '../../../src/cli/precision';
 
-import type { FindingType } from '../../../src/cli/analyzeSession';
+import type { Finding, FindingType } from '../../../src/cli/analyzeSession';
 import type { Label, SampleItem, TypePrecision } from '../../../src/cli/precision';
 
 const FIXTURES_DIR = path.resolve(process.cwd(), 'test/fixtures/corpus');
@@ -159,6 +159,45 @@ describe('precisionReport (#81: unsure excluded, NOISY <70%)', () => {
 
   it('empty doc → no rows, no crash', () => {
     expect(precisionReport({ seed: 1, perType: 10, items: [] })).toEqual([]);
+  });
+});
+
+describe('buildSampleDoc skips observations (#84)', () => {
+  const session = (findings: Finding[]) =>
+    ({
+      snapshot: { session: 'abcd1234abcd1234' },
+      ledger: { rounds: [] },
+      findings,
+    }) as never;
+
+  it('observation findings are not sampling candidates — they are not waste claims', () => {
+    const doc = buildSampleDoc(
+      [
+        session([
+          {
+            type: 'context_spike',
+            kind: 'observation',
+            severity: 'high',
+            tokensWasted: 0,
+            basis: 'measured',
+            summary: 'spike',
+          },
+        ]),
+        session([
+          {
+            type: 'duplicate_call',
+            kind: 'waste',
+            severity: 'medium',
+            tokensWasted: 10,
+            basis: 'estimated',
+            summary: 'dup',
+          },
+        ]),
+      ],
+      5,
+      79
+    );
+    expect(doc.items.map((i) => i.type)).toEqual(['duplicate_call']);
   });
 });
 
