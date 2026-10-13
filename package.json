@@ -61,6 +61,7 @@
     "waste:recall": "tsx src/cli/injectWaste.ts",
     "corpus:sample": "tsx src/cli/precision.ts sample",
     "corpus:report": "tsx src/cli/precision.ts report",
+    "corpus:baseline": "tsx src/cli/baseline.ts",
     "standalone:build": "electron-vite build && vite build --config vite.standalone.config.ts",
     "standalone:start": "node dist-standalone/index.cjs"
   },

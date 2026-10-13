@@ -316,3 +316,47 @@ describe('waste vs observation split and session totals (#84)', () => {
     expect(wt.wasteShare).toBeUndefined();
   });
 });
+
+describe('image results bill as vision tokens, not base64 chars/4', () => {
+  // a 64k-char base64 screenshot used to estimate ~16k tokens (100x the real
+  // cost) and tripped wasted-usd-le-cost on a real corpus session
+  const imageSession = (resultContent: unknown) => [
+    makeMsg({ type: 'user', content: 'go' }),
+    makeMsg({
+      type: 'assistant',
+      model: SONNET,
+      usage: usage(100, 0, 0, 10),
+      toolCalls: [{ id: 't1', name: 'Read', input: { file_path: '/shot.png' }, isTask: false }],
+    }),
+    makeMsg({
+      type: 'user',
+      isMeta: true,
+      toolResults: [{ toolUseId: 't1', content: resultContent, isError: false }],
+    }),
+    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 1000, 0, 20) }),
+    makeMsg({ type: 'assistant', model: SONNET, usage: usage(100, 1000, 0, 21) }),
+  ];
+
+  it('an image result never trips oversized_output — the vision budget (≤1601 tok) sits under the 8k threshold', () => {
+    const content = [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(512_000) },
+      },
+    ];
+    const ledger = buildLedger(imageSession(content));
+    const oversized = computeFindings(imageSession(content), ledger).find(
+      (x) => x.type === 'oversized_output'
+    );
+    // before the fix the base64 alone estimated ~128k tokens and fired the rule
+    expect(oversized).toBeUndefined();
+  });
+
+  it('text-only results keep the exact pre-image estimate', () => {
+    const ledger = buildLedger(imageSession('x'.repeat(40_000)));
+    const f = computeFindings(imageSession('x'.repeat(40_000)), ledger).find(
+      (x) => x.type === 'oversized_output'
+    );
+    expect(f?.tokensWasted).toBe(estimateTokens('x'.repeat(40_000)));
+  });
+});
