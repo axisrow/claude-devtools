@@ -15,6 +15,7 @@ Development continues in this fork — see the [Upstream sync policy](README.md#
 ### Fork (since 0.1.0-fork.1)
 
 **Added**
+- `spend:compare` (#86): before/after spend comparison over the regression corpus — `--before`/`--after` date periods or session-hash lists; per-turn cost USD, inputSide tokens, wasteShare, and per finding type its frequency and tokensWasted per turn; medians, seeded bootstrap 95% CI of the median difference and two-sided Mann–Whitney p; per-dominant-model breakdown with model-mix, overlapping-period and small-sample warnings. Prints aggregates only.
 - Session waste rollup (#84): one non-overlapping waste number per session — findings' token claims allocated so no token is booked twice, `context_spike`/`long_turn` excluded as observations — with its dollar amount and share of the session cost (`waste (non-overlapping): N tok ~$X of $Y (Z%)`, `--json` `waste:` block, `session:sums`).
 - Loop diagnostics: `long_turn`, `loop_streak`, `stall_streak`, `wait_loop`, `cycle_motif` findings plus `probe_no_progress`, and the `--turn N` deep-dive with «цикл или длинный ход» verdicts (cycle-churning / cycle-progressing / long-turn / normal).
 - Claude Code plugin ships self-contained `dist-cli/` binaries committed in-repo — skills run `node dist-cli/…` with no checkout-wide `pnpm install` (#93).
