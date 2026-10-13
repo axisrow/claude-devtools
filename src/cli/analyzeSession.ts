@@ -129,6 +129,18 @@ export interface Finding {
   basis: 'measured' | 'estimated';
   turnIndex?: number;
   summary: string;
+  /** #85 per-round attribution, only when computeFindings runs with withSources:
+   * the ledger round whose billing carried the served tokens (round claims:
+   * the round itself; result claims: the first round that bills the result;
+   * round 0 = never billed — session ended first). thinking_heavy has no
+   * claims → no sources (its $ spans the whole turn). */
+  sources?: FindingSource[];
+}
+
+export interface FindingSource {
+  round: number;
+  tokens: number;
+  usd?: number;
 }
 
 // one booking request against a token source: `round:<index>` caps at the
@@ -143,6 +155,8 @@ interface Claim {
   usdRate?: number;
   /** input-token equivalents per claimed token (#82) */
   inputEqRate?: number;
+  /** 1-based ledger round that first bills the claimed tokens (#85 sources) */
+  billedOn?: number;
 }
 
 // internal shape during computeFindings: `tokensWasted` holds the RAW amount
@@ -182,7 +196,7 @@ export const WASTE_TYPE_PRIORITY: FindingType[] = [
 // (#82) follow the served tokens at the owner's per-token rate; an owner with
 // no rate (unpriced) or a finding with an unpriced free part books no dollars
 // at all.
-function allocateWaste(findings: FindingCandidate[]): void {
+function allocateWaste(findings: FindingCandidate[], withSources = false): void {
   const remaining = new Map<string, number>();
   const ownerUsdRate = new Map<string, number>();
   const ownerEqRate = new Map<string, number>();
@@ -193,6 +207,21 @@ function allocateWaste(findings: FindingCandidate[]): void {
     // claims-only findings start at 0 — their claims decide the pricing
     let usd = f.free !== undefined ? f.freeUsd : 0;
     let eq = f.free !== undefined ? f.freeInputEq : 0;
+    // #85: served amounts per billed-on round; the free part rides along on the
+    // first claim's round (it bills next to it), claim-less findings (thinking)
+    // get none — the baseline CLI distributes them over the turn
+    const byRound = new Map<number, { tokens: number; usd: number; priced: boolean }>();
+    const record = (round: number, tokens: number, usdPart: number | undefined): void => {
+      const slot = byRound.get(round) ?? { tokens: 0, usd: 0, priced: true };
+      slot.tokens += tokens;
+      if (slot.priced && usdPart !== undefined) slot.usd += usdPart;
+      else slot.priced = false;
+      byRound.set(round, slot);
+    };
+    if (withSources && (f.free ?? 0) > 0 && f.claims?.length) {
+      const on = f.claims[0].billedOn ?? 0;
+      record(on, f.free!, f.freeUsd);
+    }
     for (const claim of f.claims ?? []) {
       if (!remaining.has(claim.owner)) {
         remaining.set(claim.owner, claim.cap);
@@ -214,10 +243,23 @@ function allocateWaste(findings: FindingCandidate[]): void {
         ownerPriced.get(claim.owner) && eq !== undefined
           ? eq + take * (ownerEqRate.get(claim.owner) ?? 0)
           : undefined;
+      if (withSources) {
+        const priced = ownerPriced.get(claim.owner) ?? false;
+        record(
+          claim.billedOn ?? 0,
+          take,
+          priced ? take * (ownerUsdRate.get(claim.owner) ?? 0) : undefined
+        );
+      }
     }
     f.tokensWasted = allocated;
     if (usd !== undefined && usd > 0) f.wastedUsd = usd;
     if (eq !== undefined && eq > 0) f.tokensWastedInputEq = eq;
+    if (withSources && byRound.size > 0) {
+      f.sources = [...byRound.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([round, s]) => ({ round, tokens: s.tokens, ...(s.priced ? { usd: s.usd } : {}) }));
+    }
   }
 }
 
@@ -229,7 +271,7 @@ interface StreakState {
   turn?: number;
   start: Date;
   end: Date;
-  members: { id: string; tok: number; rates?: TokenRates }[];
+  members: { id: string; tok: number; rates?: TokenRates; billedOn?: number }[];
 }
 
 export interface RoundRow {
@@ -542,7 +584,7 @@ export function buildLedger(allMessages: ParsedMessage[]): SessionLedger {
     if (msg.isSidechain) continue; // subagent context — never lands in the parent's gap
     if (msg.type !== 'assistant') {
       // user/meta carrier between rounds: tool results + injected text
-      for (const r of msg.toolResults) gapToolTok += estimateTokens(resultText(r.content));
+      for (const r of msg.toolResults) gapToolTok += estimateResultTokens(r.content);
       gapTextTok += estimateTokens(injectedText(msg.content));
       continue;
     }
@@ -621,6 +663,28 @@ function resultText(content: string | unknown[]): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }
 
+// An image result bills as vision tokens, not chars/4 of its base64 payload —
+// Anthropic resizes images into a ~1.6k-token vision budget (pricing page:
+// (w·h)/750 after resize). Counting the base64 string priced one screenshot at
+// 155k "tokens" (~$0.18) and tripped wasted-usd-le-cost on a real session.
+// ponytail: fixed budget; decode w/h from the payload headers if the ≤2x error matters
+const IMAGE_RESULT_TOKENS = 1600;
+
+/** result size in tokens: identical to estimateTokens(resultText(...)) for
+ * text-only results; each image block swaps its base64 payload for the vision budget */
+function estimateResultTokens(content: string | unknown[]): number {
+  if (typeof content === 'string') return estimateTokens(content);
+  let images = 0;
+  const textOnly = content.filter((b) => {
+    if (b && typeof b === 'object' && (b as { type?: string }).type === 'image') {
+      images += 1;
+      return false;
+    }
+    return true;
+  });
+  return estimateTokens(JSON.stringify(textOnly)) + images * IMAGE_RESULT_TOKENS;
+}
+
 // text payload of a user message: string content or text blocks only —
 // tool_result blocks are counted via toolResults, so counting the whole
 // array here would double them (#89)
@@ -673,6 +737,9 @@ interface TokenRates {
 interface ResidencyPricer {
   /** result content of a call made at `ts`: write at its round + one cache read per later round */
   resultRates: (ts: number) => TokenRates | undefined;
+  /** #85: 1-based ledger round that first bills content appearing at `ts` (the
+   * write lands on the NEXT request); undefined — session ended, never billed */
+  resultBillingRound: (ts: number) => number | undefined;
   /** a whole round's context at its actual input-side billing mix */
   roundRates: (r: RoundRow) => TokenRates | undefined;
   /** round lookup by 1-based ledger index (cycle findings carry roundIndex) */
@@ -733,6 +800,11 @@ function residencyPricer(ledger: SessionLedger): ResidencyPricer {
       if (!p || after === null) return undefined;
       return rates(p.cacheWrite5m + after, p.input);
     },
+    resultBillingRound(ts: number): number | undefined {
+      const k = appearingRoundOf(ts);
+      if (k < 0) return undefined;
+      return rounds[k + 1]?.index; // the write lands on the request AFTER the appearing round
+    },
     roundRates(r: RoundRow): TokenRates | undefined {
       const p = priceForRound(r);
       if (!p || r.contextSize === 0) return undefined;
@@ -768,7 +840,10 @@ export function computeFindings(
   messages: ParsedMessage[],
   ledger: SessionLedger,
   since?: Date,
-  until?: Date
+  until?: Date,
+  // #85: attach per-round sources to waste findings (baseline CLI only —
+  // snapshots, --json and tests keep the #84 shape without the extra field)
+  withSources = false
 ): Finding[] {
   const findings: FindingCandidate[] = [];
   const th = WASTE_THRESHOLDS;
@@ -792,7 +867,7 @@ export function computeFindings(
       count: number;
       tokens: number;
       first: number;
-      repeats: { id: string; tok: number; rates?: TokenRates }[];
+      repeats: ({ id: string; tok: number; billedOn?: number } & TokenRates)[];
     }
   >();
 
@@ -825,6 +900,7 @@ export function computeFindings(
           owner: `result:${m.id}`,
           want: m.tok,
           cap: m.tok,
+          billedOn: m.billedOn,
           ...(m.rates ?? {}),
         })),
       });
@@ -843,16 +919,18 @@ export function computeFindings(
       const key = bashStem(normalizeCallKey(call.name, call.input));
       const result = results.get(call.id);
       const text = result ? resultText(result.content) : '';
-      const resultTok = estimateTokens(text);
+      const resultTok = result ? estimateResultTokens(result.content) : 0;
 
       if (streak && streakKey === key) {
         streak.count += 1;
         streak.tokens += resultTok;
         // repeats only — the first call was legitimate, its result is not waste
+        const memberRates = pricer.resultRates(msg.timestamp.getTime());
         streak.members.push({
           id: call.id,
           tok: resultTok,
-          rates: pricer.resultRates(msg.timestamp.getTime()),
+          billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
+          ...(memberRates ? { rates: memberRates } : {}),
         });
         if (result?.isError) streak.errors += 1;
         streak.end = msg.timestamp;
@@ -894,6 +972,7 @@ export function computeFindings(
                 owner: `result:${call.id}`,
                 want: resultTok,
                 cap: resultTok,
+                billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
                 ...(rr ?? {}),
               },
             ],
@@ -913,6 +992,7 @@ export function computeFindings(
               owner: `result:${call.id}`,
               want: resultTok,
               cap: resultTok,
+              billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
               ...(pricer.resultRates(msg.timestamp.getTime()) ?? {}),
             },
           ],
@@ -926,7 +1006,8 @@ export function computeFindings(
         prev.repeats.push({
           id: call.id,
           tok: resultTok,
-          rates: pricer.resultRates(msg.timestamp.getTime()),
+          billedOn: pricer.resultBillingRound(msg.timestamp.getTime()),
+          ...(pricer.resultRates(msg.timestamp.getTime()) ?? {}),
         });
       } else {
         seen.set(key, { count: 1, tokens: resultTok, first: resultTok, repeats: [] });
@@ -948,7 +1029,9 @@ export function computeFindings(
           owner: `result:${rp.id}`,
           want: rp.tok,
           cap: rp.tok,
-          ...(rp.rates ?? {}),
+          billedOn: rp.billedOn,
+          usdRate: rp.usdRate,
+          inputEqRate: rp.inputEqRate,
         })),
       });
     }
@@ -996,6 +1079,7 @@ export function computeFindings(
             owner: `round:${r.index}`,
             want: r.contextSize,
             cap: r.contextSize,
+            billedOn: r.index,
             ...(pricer.premiumRates(r) ?? {}),
           },
         ],
@@ -1073,6 +1157,7 @@ export function computeFindings(
           owner: `round:${r.index}`,
           want: r.contextSize,
           cap: r.contextSize,
+          billedOn: r.index,
           ...(pricer.roundRates(r) ?? {}),
         })),
       });
@@ -1100,6 +1185,7 @@ export function computeFindings(
             owner: `round:${r.index}`,
             want: r.contextSize,
             cap: r.contextSize,
+            billedOn: r.index,
             ...(pricer.roundRates(r) ?? {}),
           })),
         });
@@ -1134,7 +1220,7 @@ export function computeFindings(
     (a, b) =>
       prio(a) - prio(b) || order[a.severity] - order[b.severity] || b.tokensWasted - a.tokensWasted
   );
-  allocateWaste(findings);
+  allocateWaste(findings, withSources);
   return findings.map(
     ({ free: _free, claims: _claims, freeUsd: _freeUsd, freeInputEq: _freeInputEq, ...finding }) =>
       finding
@@ -1185,6 +1271,48 @@ export function sessionWasteTotals(findings: Finding[], ledger: SessionLedger): 
 export function short(s: string, n: number): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   return flat.length <= n ? flat : `${flat.slice(0, n - 1)}…`;
+}
+
+// =============================================================================
+// Tool-result inventory (#85) — the naive "largest results" baseline walks the
+// same sources as the detector (dedup, no sidechains, no retry copies)
+// =============================================================================
+
+export interface ToolResultRow {
+  id: string;
+  /** estimated result tokens (chars/4), same sizing as the findings' claims */
+  tokens: number;
+  /** $ per token at the result's residency (#82); 0 = never billed again */
+  usdRate?: number;
+}
+
+export function listToolResults(messages: ParsedMessage[], ledger: SessionLedger): ToolResultRow[] {
+  const results = new Map<string, { content: string | unknown[]; isError: boolean }>();
+  for (const msg of messages) {
+    if (msg.isSidechain) continue;
+    for (const r of msg.toolResults) {
+      results.set(r.toolUseId, { content: r.content, isError: r.isError });
+    }
+  }
+  const retryCopies = getRetryCopyMessageIds(messages);
+  const pricer = residencyPricer(ledger);
+  const out: ToolResultRow[] = [];
+  for (const msg of messages) {
+    if (msg.isSidechain) continue;
+    if (retryCopies.has(msg.uuid)) continue;
+    for (const call of msg.toolCalls) {
+      const result = results.get(call.id);
+      if (!result) continue;
+      const tokens = estimateResultTokens(result.content);
+      if (tokens <= 0) continue;
+      out.push({
+        id: call.id,
+        tokens,
+        usdRate: pricer.resultRates(msg.timestamp.getTime())?.usdRate,
+      });
+    }
+  }
+  return out;
 }
 
 // =============================================================================
@@ -1266,7 +1394,7 @@ export function detectCycleFindings(
         toolName: c.name,
         key: bashStem(normalizeCallKey(c.name, c.input)),
         sig: res ? resultSignature(text) : '',
-        tok: res ? estimateTokens(text) : 0,
+        tok: res ? estimateResultTokens(res.content) : 0,
       };
     }),
   }));
@@ -1318,6 +1446,7 @@ export function detectCycleFindings(
               owner: `round:${r.roundIndex}`,
               want: r.contextSize,
               cap: r.contextSize,
+              billedOn: r.roundIndex,
               ...(pricer.roundRatesByIndex(r.roundIndex) ?? {}),
             })),
           });
@@ -1333,7 +1462,13 @@ export function detectCycleFindings(
     // line — the loop re-asked its question without learning anything
     const byKey = new Map<
       string,
-      { id: string; sig: string; ts: Date; tok: number; rates?: TokenRates }[]
+      ({
+        id: string;
+        sig: string;
+        ts: Date;
+        tok: number;
+        billedOn?: number;
+      } & TokenRates)[]
     >();
     for (const r of rs) {
       for (const c of r.calls) {
@@ -1344,7 +1479,8 @@ export function detectCycleFindings(
           sig: c.sig,
           ts: r.timestamp,
           tok: c.tok,
-          rates: pricer.resultRates(r.timestamp.getTime()),
+          ...(pricer.resultRates(r.timestamp.getTime()) ?? {}),
+          billedOn: pricer.resultBillingRound(r.timestamp.getTime()),
         };
         if (list) list.push(entry);
         else byKey.set(c.key, [entry]);
@@ -1372,7 +1508,9 @@ export function detectCycleFindings(
           owner: `result:${e.id}`,
           want: e.tok,
           cap: e.tok,
-          ...(e.rates ?? {}),
+          billedOn: e.billedOn,
+          usdRate: e.usdRate,
+          inputEqRate: e.inputEqRate,
         })),
       });
     }
