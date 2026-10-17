@@ -9,6 +9,7 @@ dist-electron/
 dist-standalone/
 out/
 release/
+release.noindex/
 coverage/
 
 # IDE

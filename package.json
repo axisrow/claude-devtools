@@ -136,7 +136,7 @@
     "appId": "com.claudecode.context",
     "productName": "claude-devtools",
     "directories": {
-      "output": "release"
+      "output": "release.noindex"
     },
     "files": [
       "out/renderer/**",
