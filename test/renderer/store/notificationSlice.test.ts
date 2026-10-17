@@ -742,6 +742,7 @@ describe('notificationSlice', () => {
         notifications: [mk('a', 3), mk('b', 2)] as never[],
         notificationsTotal: 4,
         notificationsHasMore: true,
+        notificationsCursor: 2,
       });
 
       mockAPI.notifications.get.mockResolvedValueOnce({
@@ -765,6 +766,43 @@ describe('notificationSlice', () => {
       store.setState({ notificationsHasMore: false });
       await store.getState().fetchMoreNotifications();
       expect(mockAPI.notifications.get).not.toHaveBeenCalled();
+    });
+
+    it('fetchMoreNotifications keeps the offset pinned to the page boundary across onNew prepends', async () => {
+      const mk = (id: string, ts: number) => ({ id, message: 'msg', isRead: true, timestamp: ts });
+      // two pages consumed (cursor 4); a live event prepends ABOVE the
+      // paginated prefix — local length (5) must not leak into the offset
+      store.setState({
+        notifications: [mk('n0', 9), mk('a', 3), mk('b', 2), mk('c', 1)] as never[],
+        notificationsTotal: 6,
+        notificationsHasMore: true,
+        notificationsCursor: 4,
+      });
+
+      mockAPI.notifications.get.mockResolvedValueOnce({
+        notifications: [mk('d', 0.5), mk('e', 0)],
+        total: 6,
+        totalCount: 6,
+        unreadCount: 0,
+        hasMore: false,
+      });
+
+      await store.getState().fetchMoreNotifications();
+
+      // offset 4 = cursor (main-numbering boundary), not 5 = notifications.length
+      expect(mockAPI.notifications.get).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 4 })
+      );
+      // nothing skipped: n0 stays, page items append after the loaded prefix
+      expect(store.getState().notifications.map((n) => n.id)).toEqual([
+        'n0',
+        'a',
+        'b',
+        'c',
+        'd',
+        'e',
+      ]);
+      expect(store.getState().notificationsCursor).toBe(6);
     });
   });
 });

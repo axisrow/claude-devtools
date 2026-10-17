@@ -776,6 +776,26 @@ export class FileWatcher extends EventEmitter {
         // Re-stat after full parse to capture bytes written during the parse
         const postParseStats = await this.fsProvider.stat(filePath);
         processedSize = postParseStats.size;
+        // Seed the budget mirror with the in-progress turn: live must count
+        // the FULL turn like the hook does — a turn running at discovery
+        // would otherwise cross later than the hook denies AND at a different
+        // point than the startup replay (different toolUseId → dedup misses
+        // → a second bell for one turn). The seed's own incident is dropped:
+        // its crossing predates discovery, the startup replay owns history.
+        const seedCfg = ConfigManager.getInstance().getConfig().notifications.turnBudget;
+        const seedEligible = !subagentId && !path.basename(filePath).startsWith('agent-');
+        if (seedEligible && seedCfg.enabled && seedCfg.maxInputTokensPerTurn > 0) {
+          let turnStart = 0;
+          for (let i = 0; i < messages.length; i++) {
+            if (isTurnBoundary(messages[i])) turnStart = i;
+          }
+          // incident deliberately unused — priming the bucket is the point
+          this.turnBudgetDetector.feed(
+            filePath,
+            messages.slice(turnStart),
+            seedCfg.maxInputTokensPerTurn
+          );
+        }
       }
 
       // If no new lines, skip processing

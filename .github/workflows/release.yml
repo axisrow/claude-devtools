@@ -113,7 +113,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           BAD=()
-          for f in release/*.dmg release/*.zip; do
+          for f in release.noindex/*.dmg release.noindex/*.zip; do
             base=$(basename "$f")
             case "$base" in
               *blockmap*|*-arm64.dmg|*-arm64.zip|*-arm64-mac.zip|*-x64.dmg|*-x64.zip|*-x64-mac.zip)
@@ -129,12 +129,12 @@ jobs:
             exit 1
           fi
           echo "OK: all macOS artifacts have arch suffix"
-          ls -la release/ | grep -E '\.(dmg|zip)$' || true
+          ls -la release.noindex/ | grep -E '\.(dmg|zip)$' || true
 
       - name: Verify latest-mac.yml lists BOTH arm64 and x64
         run: |
           set -euo pipefail
-          YML=release/latest-mac.yml
+          YML=release.noindex/latest-mac.yml
           test -f "$YML" || { echo "::error::missing $YML — electron-updater cannot route auto-updates"; exit 1; }
           echo "--- latest-mac.yml ---"
           cat "$YML"
@@ -149,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for dmg in release/*-arm64.dmg release/*-x64.dmg; do
+          for dmg in release.noindex/*-arm64.dmg release.noindex/*-x64.dmg; do
             [ -e "$dmg" ] || continue
             expected=$([[ "$dmg" == *"-arm64.dmg" ]] && echo arm64 || echo x86_64)
             mount=$(hdiutil attach "$dmg" -nobrowse -readonly | tail -1 | awk '{print $NF}')

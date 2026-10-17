@@ -29,6 +29,11 @@ export interface NotificationSlice {
   notificationsTotal: number;
   /** More pages available beyond `notifications` */
   notificationsHasMore: boolean;
+  /** Main-side offset of the paginated prefix: how many items the fetched
+   * pages consumed. NOT notifications.length — live onNew arrivals prepend
+   * above the paginated prefix and would inflate the offset into a permanent
+   * boundary hole. */
+  notificationsCursor: number;
 
   // Actions
   fetchNotifications: () => Promise<void>;
@@ -56,6 +61,7 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
   notificationsError: null,
   notificationsTotal: 0,
   notificationsHasMore: false,
+  notificationsCursor: 0,
 
   // Fetch the first page of notifications from the main process
   fetchNotifications: async () => {
@@ -75,6 +81,7 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
         unreadCount,
         notificationsTotal: result.totalCount,
         notificationsHasMore: result.hasMore,
+        notificationsCursor: notifications.length,
         notificationsLoading: false,
       });
     } catch (error) {
@@ -88,13 +95,18 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
 
   // Append the next page (infinite scroll); no-op while a fetch is in flight
   fetchMoreNotifications: async () => {
-    const { notificationsLoading, notificationsHasMore, notifications } = get();
+    // offset is the paginated cursor, NOT notifications.length: live onNew
+    // arrivals prepend ABOVE the paginated prefix — the local length grows
+    // past the main-numbering boundary and the overshoot would skip items at
+    // the page boundary forever (known-set hides dups, not holes)
+    const { notificationsLoading, notificationsHasMore, notifications, notificationsCursor } =
+      get();
     if (notificationsLoading || !notificationsHasMore) return;
     set({ notificationsLoading: true, notificationsError: null });
     try {
       const result = await api.notifications.get({
         limit: NOTIFICATIONS_FETCH_LIMIT,
-        offset: notifications.length,
+        offset: notificationsCursor,
       });
       const known = new Set(notifications.map((n) => n.id));
       const fresh = (result.notifications || []).filter((n) => !known.has(n.id));
@@ -102,6 +114,10 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
         notifications: [...state.notifications, ...fresh],
         notificationsTotal: result.totalCount,
         notificationsHasMore: result.hasMore,
+        // advance by the raw page length in main numbering; an onNew prepend
+        // between fetches makes the next page re-read the overlap as dups,
+        // which the known-set absorbs
+        notificationsCursor: notificationsCursor + (result.notifications || []).length,
         notificationsLoading: false,
       }));
     } catch (error) {

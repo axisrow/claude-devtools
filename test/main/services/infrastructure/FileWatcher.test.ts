@@ -1329,5 +1329,67 @@ describe('FileWatcher', () => {
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
+
+    it('seeds the live bucket with the in-progress turn — live and replay cross at the same point', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-budget-seed-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+
+      // turn in progress at discovery: 6M already spent pre-launch
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(30)) + toolUseLineAt('a1', 't1', 6_000_000, iso(5)),
+        'utf8'
+      );
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const live = (): Promise<void> =>
+        (
+          watcher as unknown as {
+            detectErrorsInSessionFile: (p: string, s: string, f: string) => Promise<void>;
+          }
+        ).detectErrorsInSessionFile('proj', 'session-1', filePath);
+
+      await live(); // discovery — bucket seeded with the 6M spent pre-launch, silent
+
+      // +6M crosses: the bell must count the FULL turn (12M), not post-launch only
+      fs.appendFileSync(filePath, toolUseLineAt('a2', 't2', 6_000_000, iso(1)), 'utf8');
+      await live();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const [liveError] = vi.mocked(notificationManager.addError).mock.calls[0];
+      expect(liveError.toolUseId).toBe('t2');
+      expect(liveError.message).toContain('12.0M at crossing');
+
+      // the startup replay derives the SAME crossing from the same turn —
+      // equal toolUseId is what keeps the heal window free of double bells
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(2);
+      const [replayError, replayOpts] = vi.mocked(notificationManager.addError).mock.calls[1];
+      expect(replayError.toolUseId).toBe('t2');
+      expect(replayOpts).toEqual({ silent: true });
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      mockConfig.notifications.turnBudget = { enabled: false, maxInputTokensPerTurn: 0 };
+    });
   });
 });
