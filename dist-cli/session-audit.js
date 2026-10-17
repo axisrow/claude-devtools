@@ -4,7 +4,8 @@ import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
 import * as crypto from "crypto";
-import { pathToFileURL } from "url";
+import { i as isDirectRun, w as wantsHelp, t as takeFlagValue, p as parseDayBound, l as lastDaysSince, a as inDateRange } from "./args.js";
+import "url";
 class LocalFileSystemProvider {
   constructor() {
     this.type = "local";
@@ -4360,41 +4361,6 @@ function estimateTokens(text) {
   }
   return Math.ceil(text.length / 4);
 }
-function takeFlagValue(argv, i) {
-  const hasArg = i + 1 < argv.length;
-  const isValue = hasArg && !argv[i + 1].startsWith("--");
-  return isValue ? { value: argv[i + 1], next: i + 2 } : { value: "", next: i + 1 };
-}
-function isDirectRun(selfUrl) {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  try {
-    return selfUrl === pathToFileURL(fs.realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-}
-const wantsHelp = (argv) => argv.includes("--help") || argv.includes("-h");
-function parseDayBound(s, endOfDay) {
-  const m = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(s.trim());
-  if (!m) return null;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const date = new Date(y, mo - 1, d);
-  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) return null;
-  if (endOfDay) date.setHours(23, 59, 59, 999);
-  return date;
-}
-function lastDaysSince(days) {
-  const d = /* @__PURE__ */ new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - (days - 1));
-  return d;
-}
-function inDateRange(ts, since, until) {
-  if (since && ts < since) return false;
-  if (until && ts > until) return false;
-  return true;
-}
 function detectBillingScheme(rounds) {
   let sawWrite = false;
   let sawRead = false;
@@ -5790,32 +5756,27 @@ export {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
   WASTE_TYPE_PRIORITY,
-  inDateRange as a,
-  translateWslMountPath as b,
+  billedRequestKey$1 as b,
   bashStem,
   billingFromFlags,
   breakdownFromRounds,
   buildLedger,
-  isTurnNumberLine as c,
   computeFindings,
   contextSpikeSummary,
   decodePath as d,
   detectBillingScheme,
   detectCycleFindings,
   dur,
-  billedRequestKey$1 as e,
+  extractSessionId as e,
   formatTokensCompact as f,
   filterLedgerByDate,
   getProjectsBasePath as g,
   getRetryCopyMessageIds,
-  extractSessionId as h,
-  isDirectRun as i,
+  isTurnNumberLine as i,
   isQuietTick,
-  lastDaysSince as l,
   listToolResults,
   normalizeDriveLetter as n,
   normalizeCallKey,
-  parseDayBound as p,
   pad,
   padL,
   parseArgs,
@@ -5825,9 +5786,8 @@ export {
   sessionWasteTotals,
   short,
   splitSessionPath,
-  takeFlagValue as t,
+  translateWslMountPath as t,
   totalsFromRounds,
   turnActiveMinutes,
-  turnVerdict,
-  wantsHelp as w
+  turnVerdict
 };

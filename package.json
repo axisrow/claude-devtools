@@ -19,7 +19,8 @@
   "main": "dist-electron/main/index.cjs",
   "bin": {
     "session-audit": "dist-cli/session-audit.js",
-    "session-inventory": "dist-cli/session-inventory.js"
+    "session-inventory": "dist-cli/session-inventory.js",
+    "bell-stats": "dist-cli/bell-stats.js"
   },
   "files": [
     "dist-cli"
