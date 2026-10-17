@@ -153,6 +153,7 @@
     },
     "mac": {
       "category": "public.app-category.developer-tools",
+      "timestamp": null,
       "target": [
         "dmg",
         "zip"
