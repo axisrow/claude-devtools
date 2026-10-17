@@ -71,7 +71,7 @@ export interface GetNotificationsResult {
 // =============================================================================
 
 /** Maximum number of notifications to store */
-const MAX_NOTIFICATIONS = 100;
+const MAX_NOTIFICATIONS = 1000;
 
 /** Throttle window in milliseconds (5 seconds) */
 const THROTTLE_MS = 5000;

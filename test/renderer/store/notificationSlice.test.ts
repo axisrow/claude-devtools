@@ -707,9 +707,64 @@ describe('notificationSlice', () => {
 
         // After fix: selectedSessionId is updated to 'session-target'
         expect(store.getState().selectedSessionId).toBe('session-target');
-        // Since 'session-target' is not in sessions array, nothing will be highlighted
+        // Since 'session-target' is not in sessions list, nothing will be highlighted
         // (session-1 is in the array but doesn't match selectedSessionId anymore)
       });
+    });
+  });
+
+  describe('pagination', () => {
+    it('fetchNotifications stores total and hasMore from the first page', async () => {
+      const page = Array.from({ length: 5 }, (_, i) => ({
+        id: `n${i}`,
+        message: 'msg',
+        isRead: true,
+        timestamp: Date.now() - i,
+      }));
+      mockAPI.notifications.get.mockResolvedValue({
+        notifications: page,
+        total: 9,
+        totalCount: 9,
+        unreadCount: 0,
+        hasMore: true,
+      });
+
+      await store.getState().fetchNotifications();
+
+      expect(store.getState().notificationsTotal).toBe(9);
+      expect(store.getState().notificationsHasMore).toBe(true);
+      expect(store.getState().notifications).toHaveLength(5);
+    });
+
+    it('fetchMoreNotifications appends the next page and updates hasMore', async () => {
+      const mk = (id: string, ts: number) => ({ id, message: 'msg', isRead: true, timestamp: ts });
+      store.setState({
+        notifications: [mk('a', 3), mk('b', 2)] as never[],
+        notificationsTotal: 4,
+        notificationsHasMore: true,
+      });
+
+      mockAPI.notifications.get.mockResolvedValueOnce({
+        notifications: [mk('c', 1), mk('d', 0)],
+        total: 4,
+        totalCount: 4,
+        unreadCount: 0,
+        hasMore: false,
+      });
+
+      await store.getState().fetchMoreNotifications();
+
+      expect(mockAPI.notifications.get).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 2 })
+      );
+      expect(store.getState().notifications.map((n) => n.id)).toEqual(['a', 'b', 'c', 'd']);
+      expect(store.getState().notificationsHasMore).toBe(false);
+    });
+
+    it('fetchMoreNotifications is a no-op when hasMore is false', async () => {
+      store.setState({ notificationsHasMore: false });
+      await store.getState().fetchMoreNotifications();
+      expect(mockAPI.notifications.get).not.toHaveBeenCalled();
     });
   });
 });

@@ -144,7 +144,7 @@ export function initializeNotificationListeners(): () => void {
           if (state.notifications.some((n) => n.id === notification.id)) {
             return {};
           }
-          return { notifications: [notification, ...state.notifications].slice(0, 200) };
+          return { notifications: [notification, ...state.notifications].slice(0, 1000) };
         });
       }
     });

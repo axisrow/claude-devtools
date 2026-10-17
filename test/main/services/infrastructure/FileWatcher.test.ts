@@ -1152,14 +1152,14 @@ describe('FileWatcher', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it('stays silent for messages older than the cursor even if they cross the budget', async () => {
+    it('backfills a turn_budget crossing in the heal band just behind the cursor', async () => {
       vi.useRealTimers();
       useRealExistsSync();
       mockConfig.notifications.loopDetection.enabled = false;
       mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
       vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
 
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-old-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-heal-'));
       const projectsDir = path.join(tempDir, 'projects');
       const projectDir = path.join(projectsDir, 'proj');
       fs.mkdirSync(projectDir, { recursive: true });
@@ -1168,12 +1168,60 @@ describe('FileWatcher', () => {
       const now = Date.now();
       const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
 
-      // whole turn predates the cursor (2h ago) — window filter must drop it
+      // turn fully inside the heal band (cursor 60m ago, band reaches to 120m):
+      // the crossing happened while the app was open but was missed live —
+      // the startup replay must heal it instead of trusting the cursor
       fs.writeFileSync(
         filePath,
         userLine('u1', iso(120)) +
           toolUseLineAt('a1', 't1', 6_000_000, iso(115)) +
           toolUseLineAt('a2', 't2', 6_000_000, iso(105)),
+        'utf8'
+      );
+
+      fs.writeFileSync(CURSOR_PATH, JSON.stringify({ scannedUntil: now - 60 * 60_000 }), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      await (
+        watcher as unknown as { runStartupCatchUpScan: () => Promise<void> }
+      ).runStartupCatchUpScan();
+
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const [error, opts] = vi.mocked(notificationManager.addError).mock.calls[0];
+      expect(error.source).toBe('turn_budget');
+      expect(opts).toEqual({ silent: true });
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('stays silent for crossings older than the heal window', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      mockConfig.notifications.loopDetection.enabled = false;
+      mockConfig.notifications.turnBudget = { enabled: true, maxInputTokensPerTurn: 10_000_000 };
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-startup-ancient-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'proj');
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      const now = Date.now();
+      const iso = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString();
+
+      // whole turn 4–5h ago, cursor 1h ago, heal band reaches to 2h ago —
+      // the crossing predates the band and stays dropped
+      fs.writeFileSync(
+        filePath,
+        userLine('u1', iso(300)) +
+          toolUseLineAt('a1', 't1', 6_000_000, iso(290)) +
+          toolUseLineAt('a2', 't2', 6_000_000, iso(280)),
         'utf8'
       );
 
