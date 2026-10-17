@@ -41,7 +41,10 @@ export const NotificationsView = (): React.JSX.Element => {
   const {
     notifications,
     unreadCount,
+    notificationsTotal,
+    notificationsHasMore,
     fetchNotifications,
+    fetchMoreNotifications,
     markNotificationRead,
     markAllNotificationsRead,
     deleteNotification,
@@ -51,7 +54,10 @@ export const NotificationsView = (): React.JSX.Element => {
     useShallow((s) => ({
       notifications: s.notifications,
       unreadCount: s.unreadCount,
+      notificationsTotal: s.notificationsTotal,
+      notificationsHasMore: s.notificationsHasMore,
       fetchNotifications: s.fetchNotifications,
+      fetchMoreNotifications: s.fetchMoreNotifications,
       markNotificationRead: s.markNotificationRead,
       markAllNotificationsRead: s.markAllNotificationsRead,
       deleteNotification: s.deleteNotification,
@@ -150,6 +156,16 @@ export const NotificationsView = (): React.JSX.Element => {
     overscan: OVERSCAN,
   });
 
+  // Infinite scroll: near the end of the loaded pages, fetch the next one.
+  // ponytail: last-rendered-index trigger, not a scroll-position listener —
+  // the virtualizer already re-renders on every scroll, this rides on that.
+  const lastRowIndex = rowVirtualizer.getVirtualItems().at(-1)?.index ?? -1;
+  useEffect(() => {
+    if (notificationsHasMore && lastRowIndex >= sortedNotifications.length - 10) {
+      void fetchMoreNotifications();
+    }
+  }, [notificationsHasMore, lastRowIndex, sortedNotifications.length, fetchMoreNotifications]);
+
   // Scroll to top when filter changes
   useEffect(() => {
     rowVirtualizer.scrollToIndex(0);
@@ -244,7 +260,7 @@ export const NotificationsView = (): React.JSX.Element => {
                     : `${filteredNotifications.length} in filter`
                   : unreadCount > 0
                     ? `${unreadCount} unread`
-                    : `${notifications.length} total`}
+                    : `${notificationsTotal || notifications.length} total`}
               </span>
             )}
           </div>

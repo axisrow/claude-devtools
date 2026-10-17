@@ -58,6 +58,13 @@ const CATCH_UP_INTERVAL_MS = 30_000;
 const CATCH_UP_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 /** Throttle for runtime cursor writes (crash gap bounded to this window) */
 const CATCHUP_CURSOR_WRITE_MS = 120_000;
+/** Startup replay re-scans this far behind the cursor for turn-budget
+ * crossings (heal window): live watching can miss a file (discovery raced,
+ * watcher restart) while the tick keeps advancing the cursor past it — the
+ * next launch re-collects the band. Non-loop dedup (toolUseId) makes the
+ * re-scan free of double bells; loop/stall keep the exact cursor because
+ * their dedup exempts them and would re-fire. */
+const CATCHUP_RESCAN_MS = 60 * 60 * 1000; // 1 hour
 
 interface AppendedParseResult {
   messages: ParsedMessage[];
@@ -769,6 +776,26 @@ export class FileWatcher extends EventEmitter {
         // Re-stat after full parse to capture bytes written during the parse
         const postParseStats = await this.fsProvider.stat(filePath);
         processedSize = postParseStats.size;
+        // Seed the budget mirror with the in-progress turn: live must count
+        // the FULL turn like the hook does — a turn running at discovery
+        // would otherwise cross later than the hook denies AND at a different
+        // point than the startup replay (different toolUseId → dedup misses
+        // → a second bell for one turn). The seed's own incident is dropped:
+        // its crossing predates discovery, the startup replay owns history.
+        const seedCfg = ConfigManager.getInstance().getConfig().notifications.turnBudget;
+        const seedEligible = !subagentId && !path.basename(filePath).startsWith('agent-');
+        if (seedEligible && seedCfg.enabled && seedCfg.maxInputTokensPerTurn > 0) {
+          let turnStart = 0;
+          for (let i = 0; i < messages.length; i++) {
+            if (isTurnBoundary(messages[i])) turnStart = i;
+          }
+          // incident deliberately unused — priming the bucket is the point
+          this.turnBudgetDetector.feed(
+            filePath,
+            messages.slice(turnStart),
+            seedCfg.maxInputTokensPerTurn
+          );
+        }
       }
 
       // If no new lines, skip processing
@@ -1313,13 +1340,16 @@ export class FileWatcher extends EventEmitter {
       incident: LoopIncident | TurnBudgetIncident,
       file: { fullPath: string; projectId: string; sessionId: string },
       messages: ParsedMessage[],
-      lineNumberBase: number
+      lineNumberBase: number,
+      // turn_budget uses the heal window (see CATCHUP_RESCAN_MS): incidents
+      // just behind the cursor may have been missed live, not yet notified
+      cutoff: number = scannedUntil
     ): void => {
       const tokens = 'tokens' in incident ? incident.tokens : incident.spent;
       if (tokens < MIN_NOTIFICATION_TOKENS) return;
       const timestamp = messages[incident.batchIndex]?.timestamp ?? new Date(scanStartedAt);
-      // pre-cursor incidents were already notified by the previous run
-      if (timestamp.getTime() <= scannedUntil) return;
+      // pre-cutoff incidents were already notified by the previous run
+      if (timestamp.getTime() <= cutoff) return;
       incidents.push({
         timestamp: timestamp.getTime(),
         error: detectorIncidentToError({
@@ -1342,25 +1372,33 @@ export class FileWatcher extends EventEmitter {
       return;
     }
 
+    // Heal window: budget crossings just behind the cursor may have been
+    // missed live (discovery raced the file, watcher restart) — the cursor
+    // only certifies what the tick scanned, not what the detectors saw.
+    const rescanFrom = Math.max(scannedUntil - CATCHUP_RESCAN_MS, 0);
+
     for (const file of sessionFiles) {
       // One unreadable file must not abort the replay for all the others.
       try {
         const stats = await this.fsProvider.stat(file.fullPath);
-        if (stats.mtimeMs <= scannedUntil) continue;
+        if (stats.mtimeMs <= rescanFrom) continue;
 
         // ponytail: full-file replay per window file — fine while windows
         // are crash/overnight sized; add a per-file byte cursor if multi-week
         // offline gaps ever make this noticeable
         const appended = await this.parseAppendedMessages(file.fullPath, 0);
 
-        // Anchor the window at the last turn boundary at-or-before the cursor:
-        // the turn in progress at app close must be counted from its start, or
-        // the budget undercounts and the crossing is missed. Post-launch
-        // messages are excluded — the live watcher owns them.
+        // Anchor the window at the last turn boundary at-or-before the heal
+        // window start: the turn in progress at app close must be counted
+        // from its start, or the budget undercounts and the crossing is
+        // missed. Post-launch messages are excluded — the live watcher owns
+        // them; loop/stall incidents from the heal band are dropped in
+        // collectIncident (their dedup exempts them, a re-fire would be a
+        // double bell).
         let startIdx = 0;
         for (let i = 0; i < appended.messages.length; i++) {
           const msg = appended.messages[i];
-          if (isTurnBoundary(msg) && msg.timestamp.getTime() <= scannedUntil) {
+          if (isTurnBoundary(msg) && msg.timestamp.getTime() <= rescanFrom) {
             startIdx = i;
           }
         }
@@ -1394,7 +1432,7 @@ export class FileWatcher extends EventEmitter {
               chunk,
               budgetCfg.maxInputTokensPerTurn
             );
-            if (budget) collectIncident('turn_budget', budget, file, chunk, chunkBase);
+            if (budget) collectIncident('turn_budget', budget, file, chunk, chunkBase, rescanFrom);
           }
         }
       } catch (err) {
