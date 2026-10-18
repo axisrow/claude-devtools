@@ -35,7 +35,11 @@ interface SettingsHandlers {
   // Notification handlers
   handleNotificationToggle: (key: keyof AppConfig['notifications'], value: boolean) => void;
   handleLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
-  handleTurnBudgetChange: (value: { enabled: boolean; maxInputTokensPerTurn: number }) => void;
+  handleTurnBudgetChange: (value: {
+    enabled: boolean;
+    maxInputTokensPerTurn: number;
+    enforce?: boolean;
+  }) => void;
   handleSnooze: (minutes: number) => Promise<void>;
   handleClearSnooze: () => Promise<void>;
   handleAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -108,7 +112,7 @@ export function useSettingsHandlers({
 
   // Turn budget: nested config field, read by the PreToolUse hook directly
   const handleTurnBudgetChange = useCallback(
-    (value: { enabled: boolean; maxInputTokensPerTurn: number }) => {
+    (value: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean }) => {
       void updateConfig('notifications', { turnBudget: value });
     },
     [updateConfig]

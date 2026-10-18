@@ -103,7 +103,9 @@ export function* linesBackward(fd, size) {
   if (carry) yield carry;
 }
 
-/** Read turnBudget config; defaults when missing. */
+/** Read turnBudget config; defaults when missing.
+ * enforce gates only the blocking (deny + stop-crane); false = account and log,
+ * never block — the app's bell rings independently of this flag. */
 export function readConfig(raw) {
   try {
     const cfg = JSON.parse(raw ?? '{}');
@@ -112,9 +114,10 @@ export function readConfig(raw) {
     return {
       enabled: tb.enabled !== false,
       budget: Number.isInteger(tb.maxInputTokensPerTurn) ? tb.maxInputTokensPerTurn : DEFAULT_BUDGET,
+      enforce: tb.enforce !== false,
     };
   } catch {
-    return { enabled: true, budget: DEFAULT_BUDGET };
+    return { enabled: true, budget: DEFAULT_BUDGET, enforce: true };
   }
 }
 
@@ -214,7 +217,7 @@ export function main() {
     handleToggle(hook);
     return;
   }
-  const { enabled, budget } = readConfig(readConfigSafely());
+  const { enabled, budget, enforce } = readConfig(readConfigSafely());
   if (!enabled || isSessionOff(hook.session_id)) return;
 
   const transcript = hook.transcript_path;
@@ -229,8 +232,10 @@ export function main() {
     const size = statSync(transcript).size;
     // Keep the request deduplication set for the whole turn, not one line.
     ({ spent, boundaryFound } = analyzeTurn(linesBackward(fd, size)));
-    // only an over-budget call pays for the stop-crane's second scan
-    if (boundaryFound && spent >= budget) ignored = deliveredDenyRounds(linesBackward(fd, size));
+    // only an enforcing over-budget call pays for the stop-crane's second scan
+    if (boundaryFound && enforce && spent >= budget) {
+      ignored = deliveredDenyRounds(linesBackward(fd, size));
+    }
   } catch {
     // fail-open
   } finally {
@@ -244,6 +249,12 @@ export function main() {
     return;
   }
   if (spent >= budget) {
+    if (!enforce) {
+      // bell/block decoupling: account in the log, block nothing — the app's
+      // bell rings from the transcript on its own
+      logDecision(hook.session_id, spent, budget, false, 'deny');
+      return;
+    }
     if (ignored > CRANE_GRACE_ROUNDS) {
       logDecision(hook.session_id, spent, budget, true, 'crane');
       crane(spent, budget);

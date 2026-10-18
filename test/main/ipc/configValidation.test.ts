@@ -149,4 +149,16 @@ describe('configValidation', () => {
       });
     }
   });
+
+  it('preserves turnBudget.enforce through validation (bell/block decoupling)', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000, enforce: false },
+    });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.data).toEqual({
+        turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000, enforce: false },
+      });
+    }
+  });
 });

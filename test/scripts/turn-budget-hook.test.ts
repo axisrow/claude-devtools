@@ -209,13 +209,19 @@ describe('turn-budget-hook deliveredDenyRounds (stop-crane, #142)', () => {
 });
 
 /** Temp HOME with a turn-budget config — the hook reads ~/.claude through HOME. */
-function makeHome(budget: number): string {
+function makeHome(budget: number, opts: { enforce?: boolean } = {}): string {
   const home = mkdtempSync(join(tmpdir(), 'turn-budget-hook-'));
   mkdirSync(join(home, '.claude'));
   writeFileSync(
     join(home, '.claude', 'claude-devtools-config.json'),
     JSON.stringify({
-      notifications: { turnBudget: { enabled: true, maxInputTokensPerTurn: budget } },
+      notifications: {
+        turnBudget: {
+          enabled: true,
+          maxInputTokensPerTurn: budget,
+          ...(opts.enforce === undefined ? {} : { enforce: opts.enforce }),
+        },
+      },
     })
   );
   return home;
@@ -244,8 +250,12 @@ function spawnHook(home: string, lines: string[]): string {
   return result.stdout;
 }
 
-function withHome(budget: number, fn: (home: string) => void): void {
-  const home = makeHome(budget);
+function withHome(
+  budget: number,
+  fn: (home: string) => void,
+  opts: { enforce?: boolean } = {}
+): void {
+  const home = makeHome(budget, opts);
   try {
     fn(home);
   } finally {
@@ -307,6 +317,40 @@ describe('turn-budget-hook stop-crane entry point (#142)', () => {
       writeFileSync(join(home, '.claude', 'claude-devtools-turnbudget-off', 'test'), '');
       expect(spawnHook(home, ignoredDeny)).toBe('');
     });
+  });
+});
+
+describe('turnBudget.enforce — blocking off, accounting on', () => {
+  it('enforce:false: no output at all, but the deny row lands in the log as denied=false', () => {
+    withHome(
+      1_000,
+      (home) => {
+        expect(spawnHook(home, [USER_LINE, usageLine({ id: 'm1' })])).toBe('');
+        expect(readLog(home)).toContain('kind=deny session=test');
+        expect(readLog(home)).toContain('denied=false');
+      },
+      { enforce: false }
+    );
+  });
+
+  it('enforce:false: ignored denies never escalate to the crane', () => {
+    const ignoredDeny = [
+      USER_LINE,
+      usageLine({ id: 'm1' }),
+      denyLine('t1'),
+      usageLine({ id: 'm2' }),
+      denyLine('t2'),
+      usageLine({ id: 'm3' }),
+    ];
+    withHome(
+      1_000,
+      (home) => {
+        expect(spawnHook(home, ignoredDeny)).toBe('');
+        expect(readLog(home)).toContain('kind=deny');
+        expect(readLog(home)).not.toContain('kind=crane');
+      },
+      { enforce: false }
+    );
   });
 });
 

@@ -43,7 +43,7 @@ export interface SafeConfig {
     includeSubagentErrors: boolean;
     triggers: AppConfig['notifications']['triggers'];
     loopDetection: { enabled: boolean; cycleThreshold: number };
-    turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
+    turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
   };
   display: {
     showTimestamps: boolean;
@@ -179,6 +179,7 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
           enabled: displayConfig?.notifications?.turnBudget?.enabled ?? true,
           maxInputTokensPerTurn:
             displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? 8_000_000,
+          enforce: displayConfig?.notifications?.turnBudget?.enforce ?? true,
         },
       },
       display: {

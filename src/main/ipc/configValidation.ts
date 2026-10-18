@@ -210,9 +210,10 @@ function validateNotificationsSection(
         if (!isPlainObject(value)) {
           return { valid: false, error: 'notifications.turnBudget must be an object' };
         }
-        const { enabled, maxInputTokensPerTurn } = value as {
+        const { enabled, maxInputTokensPerTurn, enforce } = value as {
           enabled?: unknown;
           maxInputTokensPerTurn?: unknown;
+          enforce?: unknown;
         };
         if (typeof enabled !== 'boolean') {
           return { valid: false, error: 'notifications.turnBudget.enabled must be a boolean' };
@@ -227,7 +228,15 @@ function validateNotificationsSection(
             error: 'notifications.turnBudget.maxInputTokensPerTurn must be an integer >= 100000',
           };
         }
-        result.turnBudget = { enabled, maxInputTokensPerTurn };
+        if (enforce !== undefined && typeof enforce !== 'boolean') {
+          return { valid: false, error: 'notifications.turnBudget.enforce must be a boolean' };
+        }
+        // enforce is optional (default true) — preserve it so UI saves never drop the flag
+        result.turnBudget = {
+          enabled,
+          maxInputTokensPerTurn,
+          ...(enforce === undefined ? {} : { enforce }),
+        };
         break;
       }
       default:
