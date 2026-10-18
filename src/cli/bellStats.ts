@@ -5,8 +5,8 @@
  * turn_budget: the app bell caps at 100 recent entries, the hook log keeps
  * the full deny history):
  *   1. ~/.claude/claude-devtools-notifications.json — the live bell store
- *   2. ~/.claude/claude-devtools-turnbudget.log     — hook deny history,
- *      reported as its own source `turn_budget_hook`
+ *   2. ~/.claude/claude-devtools-turnbudget.log     — hook deny + crane-stop
+ *      history, reported as sources `turn_budget_hook` / `turn_budget_crane`
  *
  * Usage: bell-stats [--type SOURCE] [--since DATE] [--until DATE] [--json]
  * Dates are local (YYYY-MM-DD or YYYYMMDD), bounds inclusive.
@@ -46,13 +46,14 @@ export interface BellStatsOptions {
   until?: Date;
 }
 
-/** One hook-log line -> entry, denies only; null for anything else. */
+/** One hook-log line -> entry, denies and crane stops; null for anything else. */
 export function parseTurnbudgetLogLine(line: string): BellEntry | null {
-  const m = /^(\S+) kind=deny /.exec(line);
+  const m = /^(\S+) kind=(deny|crane) /.exec(line);
   if (!m) return null;
   const timestamp = Date.parse(m[1]);
   if (!Number.isFinite(timestamp)) return null;
-  return { timestamp, source: 'turn_budget_hook' };
+  // crane rows are their own column: a stop is a different event than a soft deny
+  return { timestamp, source: m[2] === 'crane' ? 'turn_budget_crane' : 'turn_budget_hook' };
 }
 
 function localDateKey(ms: number): string {
@@ -159,8 +160,8 @@ async function main(): Promise<void> {
   if (wantsHelp(argv)) {
     console.log(
       'Usage: bell-stats [--type SOURCE] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]\n' +
-        'Sources: live bell (notifications.json) + hook deny history (turnbudget.log\n' +
-        'as `turn_budget_hook`). Pass --type to filter one source.'
+        'Sources: live bell (notifications.json) + hook history (turnbudget.log\n' +
+        'as `turn_budget_hook` / `turn_budget_crane`). Pass --type to filter one source.'
     );
     return;
   }

@@ -57,6 +57,16 @@ describe('parseTurnbudgetLogLine', () => {
     });
   });
 
+  it('parses a crane row into its own turn_budget_crane source (#143)', () => {
+    const e = parseTurnbudgetLogLine(
+      '2026-10-18T02:09:00.000Z kind=crane session=f3bd8441 spent=15382567 budget=15000000 denied=true'
+    );
+    expect(e).toEqual({
+      timestamp: Date.parse('2026-10-18T02:09:00.000Z'),
+      source: 'turn_budget_crane',
+    });
+  });
+
   it('skips non-deny, malformed and empty lines', () => {
     expect(
       parseTurnbudgetLogLine(

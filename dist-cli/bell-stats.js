@@ -5,11 +5,11 @@ import * as path from "path";
 import { i as isDirectRun, w as wantsHelp, t as takeFlagValue, p as parseDayBound, a as inDateRange } from "./args.js";
 import "url";
 function parseTurnbudgetLogLine(line) {
-  const m = /^(\S+) kind=deny /.exec(line);
+  const m = /^(\S+) kind=(deny|crane) /.exec(line);
   if (!m) return null;
   const timestamp = Date.parse(m[1]);
   if (!Number.isFinite(timestamp)) return null;
-  return { timestamp, source: "turn_budget_hook" };
+  return { timestamp, source: m[2] === "crane" ? "turn_budget_crane" : "turn_budget_hook" };
 }
 function localDateKey(ms) {
   const d = new Date(ms);
@@ -100,7 +100,7 @@ async function main() {
   const argv = process.argv.slice(2);
   if (wantsHelp(argv)) {
     console.log(
-      "Usage: bell-stats [--type SOURCE] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]\nSources: live bell (notifications.json) + hook deny history (turnbudget.log\nas `turn_budget_hook`). Pass --type to filter one source."
+      "Usage: bell-stats [--type SOURCE] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]\nSources: live bell (notifications.json) + hook history (turnbudget.log\nas `turn_budget_hook` / `turn_budget_crane`). Pass --type to filter one source."
     );
     return;
   }
