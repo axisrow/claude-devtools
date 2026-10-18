@@ -150,7 +150,8 @@ async function surfaceFlags(k: number): Promise<{
 
     return { panel, cli, inventory, bell };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    // Windows closes the readers' file handles asynchronously — retry like the jsonl tests
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 
