@@ -129,9 +129,11 @@ const DENY_MARKER = 'Turn input budget exhausted';
 // "PreToolUse:<Tool> hook error: <permissionDecisionReason>", is_error: true —
 // anchored, so a failed command that merely prints the marker is no deny
 const DENY_RESULT_RE = new RegExp(`^PreToolUse:\\S+ hook error: ${DENY_MARKER}`);
-// ponytail: calibration knob, not config — ignored deny rounds tolerated
-// before the stop (0 = stop at the first tool call after a seen deny)
-const CRANE_GRACE_ROUNDS = 0;
+// ponytail: calibration knob, not config — ignored deny rounds tolerated before
+// the stop. 1: one last call after a deny is a wrap-up, not a loop (replay v2,
+// 2026-10-18: 18 of 23 stops at 0 only cut the run's own final report);
+// revisit with fresh deny history
+const CRANE_GRACE_ROUNDS = 1;
 
 /** A budget deny written back by Claude Code: an errored main-chain
  * tool_result in DENY_RESULT_RE form (a Read/grep of this file is no error). */

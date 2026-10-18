@@ -257,10 +257,31 @@ const readLog = (home: string): string =>
   readFileSync(join(home, '.claude', 'claude-devtools-turnbudget.log'), 'utf8');
 
 describe('turn-budget-hook stop-crane entry point (#142)', () => {
-  // over budget (1000): the model got a deny on m1 and still calls a tool in m2
-  const ignoredDeny = [USER_LINE, usageLine({ id: 'm1' }), denyLine('t1'), usageLine({ id: 'm2' })];
+  // over budget (1000): denies came back on m1 and m2, the model still calls a tool in m3
+  const ignoredDeny = [
+    USER_LINE,
+    usageLine({ id: 'm1' }),
+    denyLine('t1'),
+    usageLine({ id: 'm2' }),
+    denyLine('t2'),
+    usageLine({ id: 'm3' }),
+  ];
 
-  it('stops the run with continue:false once a tool is called after a delivered deny', () => {
+  it('tolerates one last call after a deny (grace round): still the soft deny', () => {
+    withHome(1_000, (home) => {
+      const oneLastCall = [
+        USER_LINE,
+        usageLine({ id: 'm1' }),
+        denyLine('t1'),
+        usageLine({ id: 'm2' }),
+      ];
+      const out = JSON.parse(spawnHook(home, oneLastCall));
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out).not.toHaveProperty('continue');
+    });
+  });
+
+  it('stops the run with continue:false once a deny is ignored past the grace round', () => {
     withHome(1_000, (home) => {
       const out = JSON.parse(spawnHook(home, ignoredDeny));
       expect(out.continue).toBe(false);
