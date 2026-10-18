@@ -19,6 +19,7 @@ export interface AccountableMessage {
   messageId?: string;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  isSidechain?: boolean;
   content?: unknown;
   usage?: UsageLike;
   message?: { id?: string; usage?: UsageLike; content?: unknown };
@@ -58,6 +59,12 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   spent: number;
   boundaryFound: boolean;
 };
+
+/** Budget deny written back by Claude Code: errored main-chain tool_result with the hook's reason. */
+export declare function isBudgetDenyLine(m: AccountableMessage): boolean;
+
+/** Stop-crane (#142): denied rounds the model already saw in this run, back to the last real prompt. */
+export declare function deliveredDenyRounds(linesNewestFirst: Iterable<string>): number;
 
 /** Parse the notifications.turnBudget config section with defaults. */
 export declare function readConfig(raw?: string): { enabled: boolean; budget: number };

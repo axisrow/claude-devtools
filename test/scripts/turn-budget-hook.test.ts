@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // plain-node hook script — typed via scripts/turn-budget-hook.d.mts
-import { analyzeTurn } from '../../scripts/turn-budget-hook.mjs';
+import { analyzeTurn, deliveredDenyRounds } from '../../scripts/turn-budget-hook.mjs';
 
 /**
  * Turn input-budget hook: analyzeTurn() scans lines NEWEST-FIRST and sums
@@ -110,39 +110,212 @@ describe('turn-budget-hook analyzeTurn', () => {
   });
 });
 
+/** Budget deny as Claude Code writes it back (probed on CC 2.1.302): an errored
+ * tool_result "PreToolUse:<Tool> hook error: <reason>". */
+function denyLine(
+  toolUseId: string,
+  opts: { isError?: boolean; sidechain?: boolean; text?: string } = {}
+): string {
+  return JSON.stringify({
+    type: 'user',
+    ...(opts.sidechain ? { isSidechain: true } : {}),
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          is_error: opts.isError ?? true,
+          content:
+            opts.text ??
+            'PreToolUse:Bash hook error: Turn input budget exhausted: ~15M / 15M tokens re-read this turn. Finish the turn now: report results and stop.',
+        },
+      ],
+    },
+  });
+}
+
+const COMPACT_LINE = JSON.stringify({
+  type: 'user',
+  isMeta: true,
+  isCompactSummary: true,
+  message: { content: [] },
+});
+const TASK_NOTIFICATION_LINE = JSON.stringify({
+  type: 'user',
+  message: { role: 'user', content: '<task-notification>mutmut finished</task-notification>' },
+});
+const SIDECHAIN_PROMPT_LINE = JSON.stringify({
+  type: 'user',
+  isSidechain: true,
+  message: { role: 'user', content: 'subagent: scan the repo' },
+});
+
+describe('turn-budget-hook deliveredDenyRounds (stop-crane, #142)', () => {
+  // newest-first, as linesBackward yields them
+  const round = (id: string): string => usageLine({ id });
+
+  it('counts a deny the model already saw: an older round was denied, a newer one calls again', () => {
+    expect(deliveredDenyRounds([round('m2'), denyLine('t1'), round('m1'), USER_LINE])).toBe(1);
+  });
+
+  it("ignores denies newer than the newest round: its parallel siblings, the model hasn't seen them", () => {
+    // m1 below was never denied: m2's sibling deny must not be booked on it
+    expect(deliveredDenyRounds([denyLine('t2a'), round('m2'), round('m1'), USER_LINE])).toBe(0);
+    // streamed fragments of one request may interleave with a sibling's result
+    const interleaved = [round('m2'), denyLine('t2a'), round('m2'), round('m1'), USER_LINE];
+    expect(deliveredDenyRounds(interleaved)).toBe(0);
+  });
+
+  it('counts denied rounds, not deny lines', () => {
+    const lines = [
+      round('m3'),
+      denyLine('t2'),
+      round('m2'),
+      denyLine('t1b'),
+      denyLine('t1a'),
+      round('m1'),
+      USER_LINE,
+    ];
+    expect(deliveredDenyRounds(lines)).toBe(2);
+  });
+
+  it('a real prompt starts a new run: earlier denies no longer count', () => {
+    const lines = [round('m3'), USER_LINE, denyLine('t1'), round('m1'), USER_LINE];
+    expect(deliveredDenyRounds(lines)).toBe(0);
+  });
+
+  it.each([
+    ['compaction', COMPACT_LINE],
+    ['task notification', TASK_NOTIFICATION_LINE],
+    ['subagent prompt', SIDECHAIN_PROMPT_LINE],
+  ])('a %s is no prompt: the run and its deny go on', (_, line) => {
+    expect(deliveredDenyRounds([round('m2'), line, denyLine('t1'), round('m1'), USER_LINE])).toBe(
+      1
+    );
+  });
+
+  it('only errored main-chain tool_results are denies (a Read of the hook source is not)', () => {
+    const notError = [round('m2'), denyLine('t1', { isError: false }), round('m1'), USER_LINE];
+    const sidechain = [round('m2'), denyLine('t1', { sidechain: true }), round('m1'), USER_LINE];
+    // a failed command that merely prints the marker (this repo's own tests) is no deny
+    const printed = denyLine('t1', {
+      text: 'Exit code 1\nAssertionError: expected "Turn input budget exhausted: ~15M" to be false',
+    });
+    expect(deliveredDenyRounds(notError)).toBe(0);
+    expect(deliveredDenyRounds(sidechain)).toBe(0);
+    expect(deliveredDenyRounds([round('m2'), printed, round('m1'), USER_LINE])).toBe(0);
+  });
+});
+
+/** Temp HOME with a turn-budget config — the hook reads ~/.claude through HOME. */
+function makeHome(budget: number): string {
+  const home = mkdtempSync(join(tmpdir(), 'turn-budget-hook-'));
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(
+    join(home, '.claude', 'claude-devtools-config.json'),
+    JSON.stringify({
+      notifications: { turnBudget: { enabled: true, maxInputTokensPerTurn: budget } },
+    })
+  );
+  return home;
+}
+
+/** Run the hook as Claude Code does: bare node, PreToolUse JSON on stdin. */
+function spawnHook(home: string, lines: string[]): string {
+  const transcript = join(home, 'session.jsonl');
+  writeFileSync(transcript, lines.join('\n') + '\n');
+  const result = spawnSync(process.execPath, [resolve('scripts/turn-budget-hook.mjs')], {
+    cwd: home,
+    env: { ...process.env, HOME: home, USERPROFILE: home },
+    encoding: 'utf8',
+    timeout: 5_000,
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      session_id: 'test',
+      transcript_path: transcript,
+      tool_name: 'Bash',
+      tool_input: { command: 'pnpm test' },
+    }),
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe('');
+  return result.stdout;
+}
+
+function withHome(budget: number, fn: (home: string) => void): void {
+  const home = makeHome(budget);
+  try {
+    fn(home);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+const readLog = (home: string): string =>
+  readFileSync(join(home, '.claude', 'claude-devtools-turnbudget.log'), 'utf8');
+
+describe('turn-budget-hook stop-crane entry point (#142)', () => {
+  // over budget (1000): denies came back on m1 and m2, the model still calls a tool in m3
+  const ignoredDeny = [
+    USER_LINE,
+    usageLine({ id: 'm1' }),
+    denyLine('t1'),
+    usageLine({ id: 'm2' }),
+    denyLine('t2'),
+    usageLine({ id: 'm3' }),
+  ];
+
+  it('tolerates one last call after a deny (grace round): still the soft deny', () => {
+    withHome(1_000, (home) => {
+      const oneLastCall = [
+        USER_LINE,
+        usageLine({ id: 'm1' }),
+        denyLine('t1'),
+        usageLine({ id: 'm2' }),
+      ];
+      const out = JSON.parse(spawnHook(home, oneLastCall));
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out).not.toHaveProperty('continue');
+    });
+  });
+
+  it('stops the run with continue:false once a deny is ignored past the grace round', () => {
+    withHome(1_000, (home) => {
+      const out = JSON.parse(spawnHook(home, ignoredDeny));
+      expect(out.continue).toBe(false);
+      expect(out.stopReason).toContain('stop-crane');
+      // continue:false alone still runs the tool (probed on CC 2.1.302) — the deny must ride along
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(readLog(home)).toContain('kind=crane session=test');
+    });
+  });
+
+  it('keeps the first deny soft: the old deny JSON, no continue key', () => {
+    withHome(1_000, (home) => {
+      const out = JSON.parse(spawnHook(home, [USER_LINE, usageLine({ id: 'm1' })]));
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out).not.toHaveProperty('continue');
+      expect(readLog(home)).toContain('kind=deny session=test');
+    });
+  });
+
+  it('respects `budget off`: no deny, no crane', () => {
+    withHome(1_000, (home) => {
+      mkdirSync(join(home, '.claude', 'claude-devtools-turnbudget-off'));
+      writeFileSync(join(home, '.claude', 'claude-devtools-turnbudget-off', 'test'), '');
+      expect(spawnHook(home, ignoredDeny)).toBe('');
+    });
+  });
+});
+
 describe('turn-budget-hook entry point', () => {
   it.each(['requestId', 'message.id'])('bills streamed %s usage once when run by Node', (key) => {
-    const home = mkdtempSync(join(tmpdir(), 'turn-budget-hook-'));
+    const home = makeHome(15_000_000);
     try {
       const configDir = join(home, '.claude');
-      mkdirSync(configDir);
-      writeFileSync(
-        join(configDir, 'claude-devtools-config.json'),
-        JSON.stringify({
-          notifications: { turnBudget: { enabled: true, maxInputTokensPerTurn: 15_000_000 } },
-        })
-      );
-      const transcript = join(home, 'session.jsonl');
-      const runHook = (lines: string[]): string => {
-        writeFileSync(transcript, lines.join('\n') + '\n');
-        const result = spawnSync(process.execPath, [resolve('scripts/turn-budget-hook.mjs')], {
-          cwd: home,
-          env: { ...process.env, HOME: home, USERPROFILE: home },
-          encoding: 'utf8',
-          timeout: 5_000,
-          input: JSON.stringify({
-            hook_event_name: 'PreToolUse',
-            session_id: 'test',
-            transcript_path: transcript,
-            tool_name: 'Bash',
-            tool_input: { command: 'pnpm test' },
-          }),
-        });
-        expect(result.error).toBeUndefined();
-        expect(result.status).toBe(0);
-        expect(result.stderr).toBe('');
-        return result.stdout;
-      };
+      const runHook = (lines: string[]): string => spawnHook(home, lines);
       const fragments = Array.from({ length: 75 }, (_, i) =>
         [0, 1].map((fragment) =>
           usageLine({

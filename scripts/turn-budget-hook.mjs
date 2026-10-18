@@ -23,6 +23,14 @@
  * Note: Claude Code writes the transcript asynchronously, so the very last
  * round may be missing — the deny fires on the NEXT call based on rounds
  * already on disk. Acceptable undercount.
+ *
+ * Stop-crane (#142): a deny tells the model to finish the turn. When it calls
+ * a tool again in the same run anyway — a deny already came back and no real
+ * prompt arrived since (compaction, task wake-ups and subagent prompts don't
+ * end a run) — the hook denies the call and stops the run (continue:false)
+ * instead of one more soft deny. The transcript is the state: Claude Code
+ * writes every deny back as an errored tool_result. A new prompt (human or
+ * orchestrator) starts afresh.
  */
 
 import {
@@ -52,6 +60,7 @@ import {
   isRealUserLine,
   isTurnBoundary,
   isTurnNumberLine,
+  isUserChunkLine,
   lastAssistantTotalTokens,
 } from './turn-accounting.mjs';
 
@@ -110,6 +119,81 @@ export function readConfig(raw) {
 }
 
 // =============================================================================
+// Stop-crane (#142)
+// =============================================================================
+
+// the deny reason's stable head — one owner: deny() writes it, the crane reads
+// it back from the transcript
+const DENY_MARKER = 'Turn input budget exhausted';
+// how Claude Code writes a hook deny back (probed on CC 2.1.302):
+// "PreToolUse:<Tool> hook error: <permissionDecisionReason>", is_error: true —
+// anchored, so a failed command that merely prints the marker is no deny
+const DENY_RESULT_RE = new RegExp(`^PreToolUse:\\S+ hook error: ${DENY_MARKER}`);
+// ponytail: calibration knob, not config — ignored deny rounds tolerated before
+// the stop. 1: one last call after a deny is a wrap-up, not a loop (replay v2,
+// 2026-10-18: 18 of 23 stops at 0 only cut the run's own final report);
+// revisit with fresh deny history
+const CRANE_GRACE_ROUNDS = 1;
+
+/** A budget deny written back by Claude Code: an errored main-chain
+ * tool_result in DENY_RESULT_RE form (a Read/grep of this file is no error). */
+export function isBudgetDenyLine(m) {
+  if (m.type !== 'user' || m.isSidechain === true) return false;
+  const c = m.message?.content;
+  if (!Array.isArray(c)) return false;
+  return c.some((b) => {
+    if (b?.type !== 'tool_result' || b.is_error !== true) return false;
+    const text =
+      typeof b.content === 'string'
+        ? b.content
+        : Array.isArray(b.content)
+          ? b.content.map((x) => x?.text ?? '').join('\n')
+          : '';
+    return DENY_RESULT_RE.test(text);
+  });
+}
+
+/**
+ * Denied rounds the model has already seen in this run: scans newest-first
+ * back to the last real prompt. Denies newer than the newest round are its
+ * own parallel siblings — the model never saw those.
+ * ponytail: while the current round is not on disk yet, the previous round's
+ * denies read as siblings — the crane fires one round later (fail-soft).
+ */
+export function deliveredDenyRounds(linesNewestFirst) {
+  const denied = new Set();
+  let seen = false;
+  let newestKey;
+  let pending = 0;
+  for (const line of linesNewestFirst) {
+    let m;
+    try {
+      m = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    // a real prompt starts the run; compaction is no prompt (unlike the budget bucket)
+    if (m.isSidechain !== true && isUserChunkLine(m)) break;
+    if (isBudgetDenyLine(m)) {
+      pending++;
+      continue;
+    }
+    if (!isMainChainAssistantLine(m)) continue;
+    const key = billedRequestKey(m);
+    if (!seen || key === newestKey) {
+      seen = true;
+      newestKey = key;
+      pending = 0;
+      continue;
+    }
+    // denies above this older round came back before the newest round was made
+    if (pending > 0) denied.add(key);
+    pending = 0;
+  }
+  return denied.size;
+}
+
+// =============================================================================
 // Entry
 // =============================================================================
 
@@ -139,11 +223,14 @@ export function main() {
   let fd;
   let spent = 0;
   let boundaryFound = false;
+  let ignored = 0;
   try {
     fd = openSync(transcript, 'r');
     const size = statSync(transcript).size;
     // Keep the request deduplication set for the whole turn, not one line.
     ({ spent, boundaryFound } = analyzeTurn(linesBackward(fd, size)));
+    // only an over-budget call pays for the stop-crane's second scan
+    if (boundaryFound && spent >= budget) ignored = deliveredDenyRounds(linesBackward(fd, size));
   } catch {
     // fail-open
   } finally {
@@ -157,6 +244,11 @@ export function main() {
     return;
   }
   if (spent >= budget) {
+    if (ignored > CRANE_GRACE_ROUNDS) {
+      logDecision(hook.session_id, spent, budget, true, 'crane');
+      crane(spent, budget);
+      return;
+    }
     logDecision(hook.session_id, spent, budget, true, 'deny');
     deny(spent, budget);
   }
@@ -224,14 +316,30 @@ function readConfigSafely() {
   }
 }
 
+/** The soft deny: the tool does not run, the model gets the reason back. */
+function denyOutput(spent, budget) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `${DENY_MARKER}: ~${Math.round(spent / 1e6)}M / ${Math.round(budget / 1e6)}M tokens re-read this turn. Finish the turn now: report results and stop.`,
+    },
+  };
+}
+
 export function deny(spent, budget) {
+  process.stdout.write(JSON.stringify(denyOutput(spent, budget)));
+}
+
+/** Stop-crane: deny the call AND end the run. continue:false alone still runs
+ * the tool before stopping (probed on CC 2.1.302) — the deny keeps it from
+ * executing, and its write-back keeps a later wake-up in the crane. */
+function crane(spent, budget) {
   process.stdout.write(
     JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `Turn input budget exhausted: ~${Math.round(spent / 1e6)}M / ${Math.round(budget / 1e6)}M tokens re-read this turn. Finish the turn now: report results and stop.`,
-      },
+      continue: false,
+      stopReason: `Turn budget stop-crane: tools kept being called after the budget deny (~${Math.round(spent / 1e6)}M / ${Math.round(budget / 1e6)}M re-read this turn, no new prompt since). Stopped — send a new prompt to continue, or "budget off" for this session.`,
+      ...denyOutput(spent, budget),
     })
   );
 }
