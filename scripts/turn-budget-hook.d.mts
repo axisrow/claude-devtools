@@ -66,5 +66,10 @@ export declare function isBudgetDenyLine(m: AccountableMessage): boolean;
 /** Stop-crane (#142): denied rounds the model already saw in this run, back to the last real prompt. */
 export declare function deliveredDenyRounds(linesNewestFirst: Iterable<string>): number;
 
-/** Parse the notifications.turnBudget config section with defaults. */
-export declare function readConfig(raw?: string): { enabled: boolean; budget: number };
+/** Parse the notifications.turnBudget config section with defaults.
+ * enforce=false = account and log, never block (bell/block decoupling). */
+export declare function readConfig(raw?: string): {
+  enabled: boolean;
+  budget: number;
+  enforce: boolean;
+};

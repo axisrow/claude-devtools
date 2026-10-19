@@ -166,7 +166,13 @@ describe('hook readConfig', () => {
     ).toEqual({
       enabled: false,
       budget: 42,
+      enforce: true,
     });
+    expect(
+      readConfig(
+        '{"notifications":{"turnBudget":{"enabled":true,"maxInputTokensPerTurn":5,"enforce":false}}}'
+      ).enforce
+    ).toBe(false);
     expect(readConfig('{}').enabled).toBe(true);
     expect(readConfig('not json').budget).toBeGreaterThan(0);
     expect(readConfig().enabled).toBe(true);

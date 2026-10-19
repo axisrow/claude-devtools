@@ -34,7 +34,11 @@ interface NotificationsSectionProps {
     value: boolean
   ) => void;
   readonly onLoopDetectionChange: (value: { enabled: boolean; cycleThreshold: number }) => void;
-  readonly onTurnBudgetChange: (value: { enabled: boolean; maxInputTokensPerTurn: number }) => void;
+  readonly onTurnBudgetChange: (value: {
+    enabled: boolean;
+    maxInputTokensPerTurn: number;
+    enforce?: boolean;
+  }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
   readonly onAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;

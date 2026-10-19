@@ -251,8 +251,10 @@ export interface AppConfig {
     triggers: NotificationTrigger[];
     /** Live tool-call loop detection (FileWatcher) */
     loopDetection: { enabled: boolean; cycleThreshold: number };
-    /** Per-turn input-token budget enforced by the PreToolUse hook */
-    turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
+    /** Per-turn input-token budget enforced by the PreToolUse hook.
+     * enforce=false = account and log only, never block — the bell (gated by
+     * enabled) keeps ringing while the hook stays passive. Default true. */
+    turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
   };
   /** General application settings */
   general: {
