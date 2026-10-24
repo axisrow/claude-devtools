@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
-import { i as isDirectRun, w as wantsHelp, a as inDateRange, t as takeFlagValue, p as parseDayBound, l as lastDaysSince } from "./args.js";
+import { i as isDirectRun, w as wantsHelp, l as lastDaysSince, a as inDateRange, t as takeFlagValue, p as parseDayBound } from "./args.js";
 import { mapWithConcurrency } from "./session-inventory.js";
 import "crypto";
 import "url";
@@ -59,7 +59,7 @@ function parseApiErrorKey(text) {
   return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").trim().slice(0, 120);
 }
 const emptyAcc = () => ({ ...emptyToolStat(), durationsMs: [] });
-async function scanSessionToolStats(filePath) {
+async function scanSessionToolStats(filePath, minCallTs) {
   const rl = readline.createInterface({
     input: fs.createReadStream(filePath, { encoding: "utf8" }),
     crlfDelay: Infinity
@@ -100,6 +100,7 @@ async function scanSessionToolStats(filePath) {
     if (firstTs === null || ts < firstTs) firstTs = ts;
     if (lastTs === null || ts > lastTs) lastTs = ts;
     if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
+    if (minCallTs !== void 0 && ts < minCallTs) continue;
     const content = e.message?.content;
     if (e.type === "assistant" && Array.isArray(content)) {
       if (e.message?.model === "<synthetic>") {
@@ -446,6 +447,16 @@ function parseToolStatsArgs(argv) {
       }
       continue;
     }
+    if (a === "--day-window") {
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.dayWindow = parseInt(value, 10);
+        i = next;
+      } else {
+        opts.error = `--day-window expects a number of days >= 1, got '${value || "(missing)"}'`;
+        i += 1;
+      }
+      continue;
+    }
     if (a === "--sort") {
       opts.sort = value === "errors" || value === "tokens" || value === "name" ? value : "calls";
       i = next;
@@ -485,7 +496,7 @@ async function listSessionFiles(projectDir) {
   }
   return out;
 }
-async function collect(projectsRoot, projectArg) {
+async function collect(projectsRoot, projectArg, minCallTs) {
   let dirs;
   if (projectArg) {
     dirs = [projectArg];
@@ -495,7 +506,7 @@ async function collect(projectsRoot, projectArg) {
   }
   const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
   const files = fileGroups.filter((g) => g !== null).flat();
-  const scanned = await mapWithConcurrency(files, 8, scanSessionToolStats);
+  const scanned = await mapWithConcurrency(files, 8, (f) => scanSessionToolStats(f, minCallTs));
   return scanned.filter((s) => s !== null);
 }
 function sortSessions(sessions, sort) {
@@ -523,6 +534,7 @@ function printHuman(agg, sessions, opts) {
   if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
   else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
   else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
+  if (opts.dayWindow !== void 0) notes.push(`day-window: last ${opts.dayWindow} day(s)`);
   const note = notes.length > 0 ? ` (${notes.join(", ")})` : "";
   const tools = Object.entries(agg.byTool);
   const sorters = {
@@ -650,6 +662,7 @@ async function main() {
         "  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)",
         "  --until DATE              only sessions whose last activity is on/before this date",
         "  --last N                  sessions whose last activity falls in the last N calendar days",
+        "  --day-window N            call-level slice: only calls made in the last N calendar days",
         "  --sort FIELD              calls | errors | tokens | name (default calls)",
         "  --limit N                 show first N rows (default 20)",
         "  --by-day                  per-date call counts",
@@ -674,9 +687,11 @@ async function main() {
       return;
     }
   }
-  const scanned = await collect(getProjectsBasePath(), projectDir);
+  const minCallTs = opts.dayWindow !== void 0 ? lastDaysSince(opts.dayWindow).getTime() : void 0;
+  const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
+  const withCalls = minCallTs !== void 0 ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
   const hasDateFilter = opts.since !== void 0 || opts.until !== void 0;
-  const sessions = scanned.filter(
+  const sessions = withCalls.filter(
     (s) => hasDateFilter ? s.lastTs !== null && inDateRange(s.lastTs, opts.since, opts.until) : true
   );
   if (sessions.length === 0) {

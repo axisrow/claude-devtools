@@ -185,6 +185,21 @@ describe('scanSessionToolStats', () => {
     fs.writeFileSync(file, 'not json\n{"type":"user"}\n');
     await expect(scanSessionToolStats(file)).resolves.toBeNull();
   });
+
+  it('respects the call-level day-window', async () => {
+    const file = writeFixture([
+      assistantCall('tu1', 'Read', { file_path: '/a' }, '2026-10-01T10:00:00.000Z'),
+      toolResult('tu1', 'old', '2026-10-01T10:00:01.000Z'),
+      assistantCall('tu2', 'Read', { file_path: '/b' }, '2026-10-20T10:00:00.000Z'),
+      toolResult('tu2', 'new', '2026-10-20T10:00:01.000Z'),
+    ]);
+    const s = await scanSessionToolStats(file, new Date(2026, 9, 10).getTime());
+    expect(s).not.toBeNull();
+    if (!s) return;
+    // the pre-window call (and its result) is dropped entirely
+    expect(s.main.Read).toMatchObject({ calls: 1, results: 1 });
+    expect(Object.keys(s.byDay)).toEqual(['2026-10-20']);
+  });
 });
 
 // =============================================================================

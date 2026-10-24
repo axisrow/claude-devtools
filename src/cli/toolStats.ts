@@ -14,6 +14,7 @@
  *   --project <dir|encoded>  scan one project instead of all
  *   --since / --until DATE   filter by session last-activity date (YYYY-MM-DD or YYYYMMDD)
  *   --last N                 last-activity date within the last N calendar days
+ *   --day-window N           call-level slice: only calls made in the last N calendar days
  *   --sort FIELD             calls | errors | tokens | name (default calls)
  *   --limit N                show first N rows (default 20)
  *   --by-day                 per-date call counts
@@ -242,7 +243,10 @@ const emptyAcc = (): ToolAcc => ({ ...emptyToolStat(), durationsMs: [] });
 // Per-session scan (streaming — parseJsonlFile materializes and dies on 66MB files)
 // =============================================================================
 
-export async function scanSessionToolStats(filePath: string): Promise<SessionToolStats | null> {
+export async function scanSessionToolStats(
+  filePath: string,
+  minCallTs?: number
+): Promise<SessionToolStats | null> {
   const rl = readline.createInterface({
     input: fs.createReadStream(filePath, { encoding: 'utf8' }),
     crlfDelay: Infinity,
@@ -288,6 +292,9 @@ export async function scanSessionToolStats(filePath: string): Promise<SessionToo
     if (firstTs === null || ts < firstTs) firstTs = ts;
     if (lastTs === null || ts > lastTs) lastTs = ts;
     if (!cwd && e.cwd) cwd = normalizeDriveLetter(translateWslMountPath(e.cwd));
+    // day-window: a call-level slice — calls are counted by CALL timestamp;
+    // results arriving in-window for out-of-window calls are dropped
+    if (minCallTs !== undefined && ts < minCallTs) continue;
 
     const content = e.message?.content;
     if (e.type === 'assistant' && Array.isArray(content)) {
@@ -671,6 +678,8 @@ export interface ToolStatsOpts {
   projectArg?: string;
   since?: Date;
   until?: Date;
+  /** call-level slice: only calls with ts >= local midnight of (today − N + 1) */
+  dayWindow?: number;
   sort: 'calls' | 'errors' | 'tokens' | 'name';
   limit: number;
   byDay: boolean;
@@ -710,6 +719,16 @@ export function parseToolStatsArgs(argv: string[]): ToolStatsOpts {
         i = next;
       } else {
         opts.error = `--last expects a number of days >= 1, got '${value || '(missing)'}'`;
+        i += 1;
+      }
+      continue;
+    }
+    if (a === '--day-window') {
+      if (/^[1-9]\d*$/.test(value)) {
+        opts.dayWindow = parseInt(value, 10);
+        i = next;
+      } else {
+        opts.error = `--day-window expects a number of days >= 1, got '${value || '(missing)'}'`;
         i += 1;
       }
       continue;
@@ -755,7 +774,11 @@ async function listSessionFiles(projectDir: string): Promise<string[]> {
   return out;
 }
 
-async function collect(projectsRoot: string, projectArg?: string): Promise<SessionToolStats[]> {
+async function collect(
+  projectsRoot: string,
+  projectArg?: string,
+  minCallTs?: number
+): Promise<SessionToolStats[]> {
   let dirs: string[];
   if (projectArg) {
     dirs = [projectArg];
@@ -765,7 +788,7 @@ async function collect(projectsRoot: string, projectArg?: string): Promise<Sessi
   }
   const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
   const files = fileGroups.filter((g): g is string[] => g !== null).flat();
-  const scanned = await mapWithConcurrency(files, 8, scanSessionToolStats);
+  const scanned = await mapWithConcurrency(files, 8, (f) => scanSessionToolStats(f, minCallTs));
   return scanned.filter((s): s is SessionToolStats => s !== null);
 }
 
@@ -805,6 +828,7 @@ function printHuman(
   if (opts.since && opts.until) notes.push(`${ymd(opts.since)}..${ymd(opts.until)}`);
   else if (opts.since) notes.push(`since ${ymd(opts.since)}`);
   else if (opts.until) notes.push(`until ${ymd(opts.until)}`);
+  if (opts.dayWindow !== undefined) notes.push(`day-window: last ${opts.dayWindow} day(s)`);
   const note = notes.length > 0 ? ` (${notes.join(', ')})` : '';
 
   const tools = Object.entries(agg.byTool);
@@ -963,6 +987,7 @@ async function main(): Promise<void> {
         '  --since DATE              only sessions whose last activity is on/after this date (YYYY-MM-DD or YYYYMMDD)',
         '  --until DATE              only sessions whose last activity is on/before this date',
         '  --last N                  sessions whose last activity falls in the last N calendar days',
+        '  --day-window N            call-level slice: only calls made in the last N calendar days',
         '  --sort FIELD              calls | errors | tokens | name (default calls)',
         '  --limit N                 show first N rows (default 20)',
         '  --by-day                  per-date call counts',
@@ -989,10 +1014,15 @@ async function main(): Promise<void> {
     }
   }
 
-  const scanned = await collect(getProjectsBasePath(), projectDir);
+  const minCallTs =
+    opts.dayWindow !== undefined ? lastDaysSince(opts.dayWindow).getTime() : undefined;
+  const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
+  // a call-level slice has no use for sessions without in-window calls
+  const withCalls =
+    minCallTs !== undefined ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
   // heuristic: a session's date = its LAST activity (same as session-inventory)
-  const sessions = scanned.filter((s) =>
+  const sessions = withCalls.filter((s) =>
     hasDateFilter ? s.lastTs !== null && inDateRange(s.lastTs, opts.since, opts.until) : true
   );
   if (sessions.length === 0) {
