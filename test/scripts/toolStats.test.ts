@@ -121,6 +121,13 @@ describe('scanSessionToolStats', () => {
       ),
       // sidechain: 1 Bash with result
       assistantCall('tu6', 'Bash', { command: 'ls' }, '2026-10-20T10:00:05.000Z', true),
+      // main-chain Task with no result — orphan must reach taskByType too
+      assistantCall(
+        'tu7',
+        'Task',
+        { subagent_type: 'Explore', prompt: 'y' },
+        '2026-10-20T10:00:05.500Z'
+      ),
       toolResult('tu1', 'data '.repeat(20), '2026-10-20T10:00:06.000Z'),
       toolResult('tu2', 'other', '2026-10-20T10:00:07.000Z'),
       toolResult('tu4', 'boom\nExit code 1', '2026-10-20T10:00:08.000Z', true),
@@ -148,21 +155,25 @@ describe('scanSessionToolStats', () => {
 
     expect(s.main.Read).toMatchObject({ calls: 3, results: 2, errors: 0, orphanCalls: 1 });
     expect(s.main.Bash).toMatchObject({ calls: 1, results: 1, errors: 1 });
-    expect(s.main.Task).toMatchObject({ calls: 1, results: 1 });
+    expect(s.main.Task).toMatchObject({ calls: 2, results: 1, orphanCalls: 1 });
     expect(s.subagent.Bash).toMatchObject({ calls: 1, results: 1, errors: 0 });
     // sidechain calls stay out of the main-chain by-day counts
     expect(s.byDay['2026-10-20']).toEqual({
       Read: 3,
       Bash: 1,
-      Task: 1,
+      Task: 2,
     });
     expect(s.bashExitCodes).toEqual({ '0': 1, '1': 1 });
     expect(s.apiErrors.count).toBe(1);
     expect(Object.keys(s.apiErrors.byText)[0]).toContain('The response stopped arriving');
-    // Task by subagent_type gets results/errors too
-    expect(s.taskByType.Explore).toMatchObject({ calls: 1, results: 1 });
+    // Task by subagent_type gets results/errors AND orphans — same invariant
+    expect(s.taskByType.Explore).toMatchObject({ calls: 2, results: 1, orphanCalls: 1 });
     // invariant per tool
-    for (const stat of [...Object.values(s.main), ...Object.values(s.subagent)]) {
+    for (const stat of [
+      ...Object.values(s.main),
+      ...Object.values(s.subagent),
+      ...Object.values(s.taskByType),
+    ]) {
       expect(stat.calls).toBe(stat.results + stat.orphanCalls);
       expect(stat.errors).toBeLessThanOrEqual(stat.results);
     }
@@ -225,7 +236,23 @@ describe('aggregate outliers', () => {
     expect(outlier?.sessionId).toBe('s5');
     expect(outlier?.value).toBe(50);
     expect(outlier?.band.p50).toBe(3); // median of the four normal sessions
-    expect(outlier?.band.p95).toBeCloseTo(40.8, 5);
+    expect(outlier?.band.p95).toBeCloseTo(40.79999999999999, 5);
+  });
+
+  it('project outlier mean divides by sessions that used the tool, not all project sessions', () => {
+    const emptySession = { ...makeSession('p1', 's6', 10), main: {}, subagent: {} };
+    const sessions = [
+      makeSession('p1', 's1', 10),
+      makeSession('p1', 's2', 10),
+      makeSession('p1', 's3', 10),
+      makeSession('p1', 's4', 10),
+      makeSession('p1', 's5', 10),
+      emptySession,
+    ];
+    const agg = aggregate(sessions);
+    // 50 calls over 5 tool-sessions = mean 10 = the band itself — no outlier.
+    // The old all-sessions divisor (50/6 ≈ 8.3) would flag a false below-P5 row.
+    expect(agg.outliers.filter((o) => o.scope === 'project')).toHaveLength(0);
   });
 
   it('flags an api-error-heavy session and aggregates the error texts', () => {

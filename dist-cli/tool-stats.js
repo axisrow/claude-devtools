@@ -166,6 +166,7 @@ async function scanSessionToolStats(filePath) {
   if (firstTs === null) return null;
   for (const call of pending.values()) {
     accFor(call.sub ? subagent : mainTools, call.name).orphanCalls += 1;
+    if (call.taskType !== void 0) accFor(taskByType, call.taskType).orphanCalls += 1;
   }
   return {
     projectId: projectDir,
@@ -182,6 +183,14 @@ async function scanSessionToolStats(filePath) {
   };
 }
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const accForProjectTool = (m, tool) => {
+  let a = m.get(tool);
+  if (!a) {
+    a = { stat: emptyToolStat(), sessions: 0, apiErrors: 0 };
+    m.set(tool, a);
+  }
+  return a;
+};
 function aggregate(sessions) {
   const byTool = /* @__PURE__ */ new Map();
   const byProject = /* @__PURE__ */ new Map();
@@ -197,7 +206,6 @@ function aggregate(sessions) {
   const apiErrSamples = /* @__PURE__ */ new Map();
   const pooledDurations = /* @__PURE__ */ new Map();
   const projectTool = /* @__PURE__ */ new Map();
-  const projectToolSessions = /* @__PURE__ */ new Map();
   const sample = (m, tool, v) => {
     if (m.has(tool)) m.get(tool).push(v);
     else m.set(tool, [v]);
@@ -213,7 +221,7 @@ function aggregate(sessions) {
     proj.sessions += 1;
     if (s.cwd && !projectCwd.has(s.projectId)) projectCwd.set(s.projectId, s.cwd);
     const perTool = projectTool.get(s.projectId) ?? /* @__PURE__ */ new Map();
-    if (!projectTool.has(s.projectId)) projectTool.set(s.projectId, perTool);
+    projectTool.set(s.projectId, perTool);
     const toolsThisSession = /* @__PURE__ */ new Set();
     for (const map of [s.main, s.subagent]) {
       for (const [tool, stat] of Object.entries(map)) {
@@ -222,10 +230,14 @@ function aggregate(sessions) {
         proj.calls += stat.calls;
         proj.errors += stat.errors;
         proj.resultTokens += stat.resultTokens;
-        perTool.set(tool, sumToolStat(perTool.get(tool) ?? emptyToolStat(), stat));
+        const acc = accForProjectTool(perTool, tool);
+        acc.stat = sumToolStat(acc.stat, stat);
       }
     }
     for (const tool of toolsThisSession) {
+      const acc = accForProjectTool(perTool, tool);
+      acc.sessions += 1;
+      acc.apiErrors += s.apiErrors.count;
       const merged = mergeToolStat(s, tool);
       sample(callsSamples, tool, merged.calls);
       sample(errorsSamples, tool, merged.errors);
@@ -233,7 +245,6 @@ function aggregate(sessions) {
       sample(durSumSamples, tool, merged.durationMs);
       sample(apiErrSamples, tool, s.apiErrors.count);
     }
-    projectToolSessions.set(s.projectId, (projectToolSessions.get(s.projectId) ?? 0) + 1);
     for (const [day, tools] of Object.entries(s.byDay)) {
       const dayMap = byDay.get(day) ?? /* @__PURE__ */ new Map();
       byDay.set(day, dayMap);
@@ -324,17 +335,16 @@ function aggregate(sessions) {
     }
   }
   for (const [projectId, perTool] of projectTool) {
-    for (const [tool, stat] of perTool) {
+    for (const [tool, acc] of perTool) {
       const band = bands[tool];
-      const withTool = projectToolSessions.get(projectId) ?? 0;
-      if (!band || withTool === 0) continue;
+      if (!band || acc.sessions === 0) continue;
       check(
         "project",
         projectId,
         void 0,
         tool,
         "calls",
-        stat.calls / withTool,
+        acc.stat.calls / acc.sessions,
         band.callsPerSession
       );
       check(
@@ -343,7 +353,7 @@ function aggregate(sessions) {
         void 0,
         tool,
         "errors",
-        stat.errors / withTool,
+        acc.stat.errors / acc.sessions,
         band.errorsPerSession
       );
       check(
@@ -352,7 +362,7 @@ function aggregate(sessions) {
         void 0,
         tool,
         "resultTokens",
-        stat.resultTokens / withTool,
+        acc.stat.resultTokens / acc.sessions,
         band.resultTokensPerSession
       );
       check(
@@ -361,7 +371,7 @@ function aggregate(sessions) {
         void 0,
         tool,
         "durationMs",
-        stat.durationMs / withTool,
+        acc.stat.durationMs / acc.sessions,
         band.durationPerSessionMs
       );
       check(
@@ -370,7 +380,7 @@ function aggregate(sessions) {
         void 0,
         tool,
         "apiErrors",
-        apiErrOf(projectId, sessions) / withTool,
+        acc.apiErrors / acc.sessions,
         band.apiErrorsPerSession
       );
     }
@@ -397,7 +407,6 @@ function mergeToolStat(s, tool) {
   return sumToolStat(s.main[tool] ?? emptyToolStat(), s.subagent[tool] ?? emptyToolStat());
 }
 const excess = (o) => o.value > o.band.p95 ? (o.value - o.band.p95) / Math.max(o.band.p95, 1) : (o.band.p5 - o.value) / Math.max(o.band.p5, 1);
-const apiErrOf = (projectId, sessions) => sessions.reduce((sum, s) => s.projectId === projectId ? sum + s.apiErrors.count : sum, 0);
 const shortenHome = (p) => {
   const home = os.homedir();
   return p.startsWith(home) ? `~${p.slice(home.length)}` : p;

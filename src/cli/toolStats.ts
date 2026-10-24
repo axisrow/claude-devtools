@@ -368,6 +368,7 @@ export async function scanSessionToolStats(filePath: string): Promise<SessionToo
   // calls whose result never arrived
   for (const call of pending.values()) {
     accFor(call.sub ? subagent : mainTools, call.name).orphanCalls += 1;
+    if (call.taskType !== undefined) accFor(taskByType, call.taskType).orphanCalls += 1;
   }
 
   return {
@@ -392,6 +393,24 @@ const ymd = (d: Date): string =>
 // Aggregate
 // =============================================================================
 
+/** Per-project per-tool accumulator for the project outlier means. */
+interface ProjectToolAcc {
+  stat: ToolStat;
+  /** sessions in the project that used this tool — the band's sample population */
+  sessions: number;
+  /** Σ apiErrors.count over those sessions */
+  apiErrors: number;
+}
+
+const accForProjectTool = (m: Map<string, ProjectToolAcc>, tool: string): ProjectToolAcc => {
+  let a = m.get(tool);
+  if (!a) {
+    a = { stat: emptyToolStat(), sessions: 0, apiErrors: 0 };
+    m.set(tool, a);
+  }
+  return a;
+};
+
 export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
   const byTool = new Map<string, ToolStat>();
   const byProject = new Map<
@@ -411,8 +430,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
   const apiErrSamples = new Map<string, number[]>();
   const pooledDurations = new Map<string, number[]>();
   // per-project per-tool sums for the project outlier means
-  const projectTool = new Map<string, Map<string, ToolStat>>();
-  const projectToolSessions = new Map<string, number>();
+  const projectTool = new Map<string, Map<string, ProjectToolAcc>>();
 
   const sample = (m: Map<string, number[]>, tool: string, v: number): void => {
     if (m.has(tool)) m.get(tool)!.push(v);
@@ -430,8 +448,8 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
     proj.sessions += 1;
     if (s.cwd && !projectCwd.has(s.projectId)) projectCwd.set(s.projectId, s.cwd);
 
-    const perTool = projectTool.get(s.projectId) ?? new Map<string, ToolStat>();
-    if (!projectTool.has(s.projectId)) projectTool.set(s.projectId, perTool);
+    const perTool = projectTool.get(s.projectId) ?? new Map<string, ProjectToolAcc>();
+    projectTool.set(s.projectId, perTool);
     const toolsThisSession = new Set<string>();
 
     for (const map of [s.main, s.subagent]) {
@@ -441,10 +459,16 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
         proj.calls += stat.calls;
         proj.errors += stat.errors;
         proj.resultTokens += stat.resultTokens;
-        perTool.set(tool, sumToolStat(perTool.get(tool) ?? emptyToolStat(), stat));
+        const acc = accForProjectTool(perTool, tool);
+        acc.stat = sumToolStat(acc.stat, stat);
       }
     }
     for (const tool of toolsThisSession) {
+      // the band's sample population is sessions that used the tool — the
+      // project mean must divide by the same population, not all sessions
+      const acc = accForProjectTool(perTool, tool);
+      acc.sessions += 1;
+      acc.apiErrors += s.apiErrors.count;
       const merged = mergeToolStat(s, tool);
       sample(callsSamples, tool, merged.calls);
       sample(errorsSamples, tool, merged.errors);
@@ -452,7 +476,6 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
       sample(durSumSamples, tool, merged.durationMs);
       sample(apiErrSamples, tool, s.apiErrors.count);
     }
-    projectToolSessions.set(s.projectId, (projectToolSessions.get(s.projectId) ?? 0) + 1);
 
     for (const [day, tools] of Object.entries(s.byDay)) {
       const dayMap = byDay.get(day) ?? new Map<string, number>();
@@ -555,17 +578,16 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
   }
   // project outliers compare the project's per-session mean against the same band
   for (const [projectId, perTool] of projectTool) {
-    for (const [tool, stat] of perTool) {
+    for (const [tool, acc] of perTool) {
       const band = bands[tool];
-      const withTool = projectToolSessions.get(projectId) ?? 0;
-      if (!band || withTool === 0) continue;
+      if (!band || acc.sessions === 0) continue;
       check(
         'project',
         projectId,
         undefined,
         tool,
         'calls',
-        stat.calls / withTool,
+        acc.stat.calls / acc.sessions,
         band.callsPerSession
       );
       check(
@@ -574,7 +596,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
         undefined,
         tool,
         'errors',
-        stat.errors / withTool,
+        acc.stat.errors / acc.sessions,
         band.errorsPerSession
       );
       check(
@@ -583,7 +605,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
         undefined,
         tool,
         'resultTokens',
-        stat.resultTokens / withTool,
+        acc.stat.resultTokens / acc.sessions,
         band.resultTokensPerSession
       );
       check(
@@ -592,7 +614,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
         undefined,
         tool,
         'durationMs',
-        stat.durationMs / withTool,
+        acc.stat.durationMs / acc.sessions,
         band.durationPerSessionMs
       );
       check(
@@ -601,7 +623,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
         undefined,
         tool,
         'apiErrors',
-        apiErrOf(projectId, sessions) / withTool,
+        acc.apiErrors / acc.sessions,
         band.apiErrorsPerSession
       );
     }
@@ -635,10 +657,6 @@ const excess = (o: OutlierRow): number =>
   o.value > o.band.p95
     ? (o.value - o.band.p95) / Math.max(o.band.p95, 1)
     : (o.band.p5 - o.value) / Math.max(o.band.p5, 1);
-
-// apiErrors are a session-level metric; the project mean sums its sessions
-const apiErrOf = (projectId: string, sessions: SessionToolStats[]): number =>
-  sessions.reduce((sum, s) => (s.projectId === projectId ? sum + s.apiErrors.count : sum), 0);
 
 // =============================================================================
 // CLI plumbing
