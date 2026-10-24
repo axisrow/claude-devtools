@@ -4361,6 +4361,15 @@ function estimateTokens(text) {
   }
   return Math.ceil(text.length / 4);
 }
+function estimateContentTokens(content) {
+  if (!content) {
+    return 0;
+  }
+  if (typeof content === "string") {
+    return estimateTokens(content);
+  }
+  return estimateTokens(JSON.stringify(content));
+}
 function detectBillingScheme(rounds) {
   let sawWrite = false;
   let sawRead = false;
@@ -5756,6 +5765,7 @@ export {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
   WASTE_TYPE_PRIORITY,
+  extractSessionId as a,
   billedRequestKey$1 as b,
   bashStem,
   billingFromFlags,
@@ -5767,7 +5777,7 @@ export {
   detectBillingScheme,
   detectCycleFindings,
   dur,
-  extractSessionId as e,
+  estimateContentTokens as e,
   formatTokensCompact as f,
   filterLedgerByDate,
   getProjectsBasePath as g,
