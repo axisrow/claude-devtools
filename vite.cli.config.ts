@@ -80,6 +80,7 @@ export default defineConfig({
         'session-audit': resolve(__dirname, 'src/cli/analyzeSession.ts'),
         'session-inventory': resolve(__dirname, 'src/cli/sessionInventory.ts'),
         'bell-stats': resolve(__dirname, 'src/cli/bellStats.ts'),
+        'tool-stats': resolve(__dirname, 'src/cli/toolStats.ts'),
       },
       output: {
         format: 'es',

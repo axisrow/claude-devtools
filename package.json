@@ -20,7 +20,8 @@
   "bin": {
     "session-audit": "dist-cli/session-audit.js",
     "session-inventory": "dist-cli/session-inventory.js",
-    "bell-stats": "dist-cli/bell-stats.js"
+    "bell-stats": "dist-cli/bell-stats.js",
+    "tool-stats": "dist-cli/tool-stats.js"
   },
   "files": [
     "dist-cli"
