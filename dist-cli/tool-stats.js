@@ -56,7 +56,7 @@ function resultText(content) {
 function parseApiErrorKey(text) {
   const t = text.trim();
   if (!t.startsWith(API_ERROR_PREFIX)) return null;
-  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").replace(/\{[\s\S]*$/, "{…}").replace(/[0-9a-f]{16,}/gi, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<ts>").trim().slice(0, 120);
+  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").replace(/\{[\s\S]*$/, "{…}").replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>").trim().slice(0, 120);
 }
 function mergeApiErrors(target, source) {
   target.count += source.count;
@@ -64,6 +64,7 @@ function mergeApiErrors(target, source) {
     target.byText[k] = (target.byText[k] ?? 0) + n;
   }
 }
+const sessionKey = (s) => `${s.projectId}/${s.sessionId}`;
 const emptyAcc = () => ({ ...emptyToolStat(), durationsMs: [] });
 async function scanSessionToolStats(filePath, minCallTs, basePath = getProjectsBasePath()) {
   const rl = readline.createInterface({
@@ -278,7 +279,7 @@ function aggregate(sessions) {
   const bands = {};
   for (const [tool, calls] of callsSamples) {
     if (calls.length < MIN_SESSIONS_FOR_OUTLIERS) continue;
-    const p = (m) => percentiles(m.get(tool) ?? []);
+    const p = (m) => percentiles(m.get(tool) ?? []) ?? { p5: 0, p50: 0, p95: 0 };
     bands[tool] = {
       callsPerSession: p(callsSamples),
       errorsPerSession: p(errorsSamples),
@@ -495,7 +496,10 @@ async function listJsonlFiles(dir, depth) {
   let es;
   try {
     es = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error(`(skipped ${dir}: ${String(err)})`);
+    }
     return out;
   }
   for (const e of es) {
@@ -531,21 +535,22 @@ async function collect(projectsRoot, projectArg, minCallTs) {
   const groups = fileGroups.filter(
     (g) => g !== null
   );
+  const scanBase = projectArg ? path.dirname(path.resolve(projectArg)) : projectsRoot;
   const files = groups.flatMap((g) => g.sessionFiles);
   const scanned = await mapWithConcurrency(
     files,
     8,
-    (f) => scanSessionToolStats(f, minCallTs, projectsRoot)
+    (f) => scanSessionToolStats(f, minCallTs, scanBase)
   );
   const sessions = scanned.filter((s) => s !== null);
   const subScanned = await mapWithConcurrency(
     groups.flatMap((g) => g.subagentFiles),
     8,
-    (f) => scanSessionToolStats(f, minCallTs, projectsRoot).then(
-      (s) => s && { id: `${s.projectId}/${s.sessionId}`, apiErrors: s.apiErrors }
+    (f) => scanSessionToolStats(f, minCallTs, scanBase).then(
+      (s) => s && { id: sessionKey(s), apiErrors: s.apiErrors }
     )
   );
-  const bySession = new Map(sessions.map((s) => [`${s.projectId}/${s.sessionId}`, s]));
+  const bySession = new Map(sessions.map((s) => [sessionKey(s), s]));
   for (const sub of subScanned) {
     const parent = sub && bySession.get(sub.id);
     if (parent) mergeApiErrors(parent.apiErrors, sub.apiErrors);
@@ -735,7 +740,7 @@ async function main() {
   }
   const minCallTs = opts.dayWindow !== void 0 ? lastDaysSince(opts.dayWindow).getTime() : void 0;
   const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
-  const withCalls = minCallTs !== void 0 ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
+  const withCalls = minCallTs !== void 0 ? scanned.filter((s) => mergeAll(s).calls > 0 || s.apiErrors.count > 0) : scanned;
   const hasDateFilter = opts.since !== void 0 || opts.until !== void 0;
   const sessions = withCalls.filter(
     (s) => hasDateFilter ? s.lastTs !== null && inDateRange(s.lastTs, opts.since, opts.until) : true

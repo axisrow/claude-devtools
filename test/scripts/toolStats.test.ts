@@ -80,6 +80,15 @@ describe('parseApiErrorKey', () => {
     expect(parseApiErrorKey('API Error: paused at 2026-10-05T13:42:54.892Z')).toBe(
       'paused at <ts>'
     );
+    // dashed uuid request ids and UTC offsets collapse too
+    expect(
+      parseApiErrorKey(
+        'API Error: 500 Internal error (request id: 97c0d0c6-a4ae-4057-9ecf-00e7452311b9)'
+      )
+    ).toBe('500 Internal error (request id: <id>)');
+    expect(parseApiErrorKey('API Error: 429 limited at 2026-11-02T13:57:10.601+01:00')).toBe(
+      '429 limited at <ts>'
+    );
   });
 });
 
@@ -132,9 +141,18 @@ describe('collect', () => {
         path.join(saDir, 'agent-abc.jsonl'),
         syntheticApiError('2026-10-20T11:00:00.000Z') + '\n'
       );
+      // workflow transcript also carries tool calls — they must NOT leak into parent
       fs.writeFileSync(
         path.join(wfDir, 'agent-def.jsonl'),
-        syntheticApiError('2026-10-20T12:00:00.000Z') + '\n'
+        [
+          syntheticApiError('2026-10-20T12:00:00.000Z'),
+          assistantCall('tu9', 'Read', { file_path: '/x' }, '2026-10-20T12:00:01.000Z', true),
+        ].join('\n') + '\n'
+      );
+      // old flat layout (<project>/agent-*.jsonl) duplicates the parent — not scanned
+      fs.writeFileSync(
+        path.join(proj, 'agent-legacy.jsonl'),
+        syntheticApiError('2026-10-20T09:00:00.000Z') + '\n'
       );
       // second project: parent without a subagents dir — error count stays 0
       const emptyProj = path.join(root, '-empty-project');

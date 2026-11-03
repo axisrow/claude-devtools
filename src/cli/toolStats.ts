@@ -242,8 +242,8 @@ export function parseApiErrorKey(text: string): string | null {
     .slice(API_ERROR_PREFIX.length)
     .replace(/^:\s*/, '')
     .replace(/\{[\s\S]*$/, '{…}') // embedded JSON payload, incl. multiline (litellm 400 etc.)
-    .replace(/[0-9a-f]{16,}/gi, '<id>') // per-event hex ids in rate-limit stamps
-    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, '<ts>')
+    .replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, '<id>') // dashed uuid or hex-run event ids
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, '<ts>')
     .trim()
     .slice(0, 120);
 }
@@ -255,6 +255,10 @@ export function mergeApiErrors(target: ApiErrorStats, source: ApiErrorStats): vo
     target.byText[k] = (target.byText[k] ?? 0) + n;
   }
 }
+
+/** Single place for the parent-match key used by the subagent merge in collect(). */
+const sessionKey = (s: { projectId: string; sessionId: string }): string =>
+  `${s.projectId}/${s.sessionId}`;
 
 const emptyAcc = (): ToolAcc => ({ ...emptyToolStat(), durationsMs: [] });
 
@@ -531,7 +535,8 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
   const bands: Record<string, ToolPercentileBands | null> = {};
   for (const [tool, calls] of callsSamples) {
     if (calls.length < MIN_SESSIONS_FOR_OUTLIERS) continue;
-    const p = (m: Map<string, number[]>): Percentiles => percentiles(m.get(tool) ?? [])!;
+    const p = (m: Map<string, number[]>): Percentiles =>
+      percentiles(m.get(tool) ?? []) ?? { p5: 0, p50: 0, p95: 0 };
     bands[tool] = {
       callsPerSession: p(callsSamples),
       errorsPerSession: p(errorsSamples),
@@ -788,8 +793,11 @@ async function listJsonlFiles(dir: string, depth: number): Promise<string[]> {
   let es: fs.Dirent[];
   try {
     es = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
-    return out; // no such dir — fine
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error(`(skipped ${dir}: ${String(err)})`);
+    }
+    return out;
   }
   for (const e of es) {
     if (e.isFile() && e.name.endsWith('.jsonl')) {
@@ -836,9 +844,12 @@ export async function collect(
   const groups = fileGroups.filter(
     (g): g is { sessionFiles: string[]; subagentFiles: string[] } => g !== null
   );
+  // path→(projectId,sessionId) derivation is relative to the scanned root; --project
+  // may point outside projectsRoot, so derive from that dir's parent instead
+  const scanBase = projectArg ? path.dirname(path.resolve(projectArg)) : projectsRoot;
   const files = groups.flatMap((g) => g.sessionFiles);
   const scanned = await mapWithConcurrency(files, 8, (f) =>
-    scanSessionToolStats(f, minCallTs, projectsRoot)
+    scanSessionToolStats(f, minCallTs, scanBase)
   );
   const sessions = scanned.filter((s): s is SessionToolStats => s !== null);
 
@@ -849,11 +860,11 @@ export async function collect(
     groups.flatMap((g) => g.subagentFiles),
     8,
     (f) =>
-      scanSessionToolStats(f, minCallTs, projectsRoot).then(
-        (s) => s && { id: `${s.projectId}/${s.sessionId}`, apiErrors: s.apiErrors }
+      scanSessionToolStats(f, minCallTs, scanBase).then(
+        (s) => s && { id: sessionKey(s), apiErrors: s.apiErrors }
       )
   );
-  const bySession = new Map(sessions.map((s) => [`${s.projectId}/${s.sessionId}`, s]));
+  const bySession = new Map(sessions.map((s) => [sessionKey(s), s]));
   for (const sub of subScanned) {
     const parent = sub && bySession.get(sub.id);
     // ponytail: orphans (parent jsonl gone) are dropped; the parent may mirror some
@@ -1090,9 +1101,12 @@ async function main(): Promise<void> {
   const minCallTs =
     opts.dayWindow !== undefined ? lastDaysSince(opts.dayWindow).getTime() : undefined;
   const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
-  // a call-level slice has no use for sessions without in-window calls
+  // a call-level slice has no use for sessions without in-window calls —
+  // but keep sessions whose only in-window activity is merged subagent errors
   const withCalls =
-    minCallTs !== undefined ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
+    minCallTs !== undefined
+      ? scanned.filter((s) => mergeAll(s).calls > 0 || s.apiErrors.count > 0)
+      : scanned;
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
   // heuristic: a session's date = its LAST activity (same as session-inventory)
   const sessions = withCalls.filter((s) =>
