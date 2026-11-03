@@ -56,15 +56,22 @@ function resultText(content) {
 function parseApiErrorKey(text) {
   const t = text.trim();
   if (!t.startsWith(API_ERROR_PREFIX)) return null;
-  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").trim().slice(0, 120);
+  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").replace(/\{[\s\S]*$/, "{…}").replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>").trim().slice(0, 120);
 }
+function mergeApiErrors(target, source) {
+  target.count += source.count;
+  for (const [k, n] of Object.entries(source.byText)) {
+    target.byText[k] = (target.byText[k] ?? 0) + n;
+  }
+}
+const sessionKey = (s) => `${s.projectId}/${s.sessionId}`;
 const emptyAcc = () => ({ ...emptyToolStat(), durationsMs: [] });
-async function scanSessionToolStats(filePath, minCallTs) {
+async function scanSessionToolStats(filePath, minCallTs, basePath = getProjectsBasePath()) {
   const rl = readline.createInterface({
     input: fs.createReadStream(filePath, { encoding: "utf8" }),
     crlfDelay: Infinity
   });
-  const rel = path.relative(getProjectsBasePath(), path.resolve(filePath));
+  const rel = path.relative(basePath, path.resolve(filePath));
   const [projectDir = "", sessionFile = ""] = rel.split(path.sep);
   const mainTools = /* @__PURE__ */ new Map();
   const subagent = /* @__PURE__ */ new Map();
@@ -259,10 +266,7 @@ function aggregate(sessions) {
     for (const [code, n] of Object.entries(s.bashExitCodes)) {
       bashExitCodes[code] = (bashExitCodes[code] ?? 0) + n;
     }
-    apiErrors.count += s.apiErrors.count;
-    for (const [key, n] of Object.entries(s.apiErrors.byText)) {
-      apiErrors.byText[key] = (apiErrors.byText[key] ?? 0) + n;
-    }
+    mergeApiErrors(apiErrors, s.apiErrors);
     for (const [tool, durations] of Object.entries(s.toolDurationsMs)) {
       if (pooledDurations.has(tool)) pooledDurations.get(tool).push(...durations);
       else pooledDurations.set(tool, [...durations]);
@@ -275,7 +279,7 @@ function aggregate(sessions) {
   const bands = {};
   for (const [tool, calls] of callsSamples) {
     if (calls.length < MIN_SESSIONS_FOR_OUTLIERS) continue;
-    const p = (m) => percentiles(m.get(tool) ?? []);
+    const p = (m) => percentiles(m.get(tool) ?? []) ?? { p5: 0, p50: 0, p95: 0 };
     bands[tool] = {
       callsPerSession: p(callsSamples),
       errorsPerSession: p(errorsSamples),
@@ -487,14 +491,37 @@ function parseToolStatsArgs(argv) {
   }
   return opts;
 }
-async function listSessionFiles(projectDir) {
+async function listJsonlFiles(dir, depth) {
   const out = [];
-  for (const e of await fs.promises.readdir(projectDir, { withFileTypes: true })) {
-    if (e.isFile() && e.name.endsWith(".jsonl") && !e.name.startsWith("agent-")) {
-      out.push(path.join(projectDir, e.name));
+  let es;
+  try {
+    es = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error(`(skipped ${dir}: ${String(err)})`);
+    }
+    return out;
+  }
+  for (const e of es) {
+    if (e.isFile() && e.name.endsWith(".jsonl")) {
+      out.push(path.join(dir, e.name));
+    } else if (e.isDirectory() && depth > 0) {
+      out.push(...await listJsonlFiles(path.join(dir, e.name), depth - 1));
     }
   }
   return out;
+}
+async function listSessionFiles(projectDir) {
+  const sessionFiles = [];
+  const subagentFiles = [];
+  for (const e of await fs.promises.readdir(projectDir, { withFileTypes: true })) {
+    if (e.isFile() && e.name.endsWith(".jsonl") && !e.name.startsWith("agent-")) {
+      sessionFiles.push(path.join(projectDir, e.name));
+    } else if (e.isDirectory()) {
+      subagentFiles.push(...await listJsonlFiles(path.join(projectDir, e.name, "subagents"), 2));
+    }
+  }
+  return { sessionFiles, subagentFiles };
 }
 async function collect(projectsRoot, projectArg, minCallTs) {
   let dirs;
@@ -505,9 +532,30 @@ async function collect(projectsRoot, projectArg, minCallTs) {
     dirs = es.filter((e) => e.isDirectory()).map((e) => path.join(projectsRoot, e.name));
   }
   const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
-  const files = fileGroups.filter((g) => g !== null).flat();
-  const scanned = await mapWithConcurrency(files, 8, (f) => scanSessionToolStats(f, minCallTs));
-  return scanned.filter((s) => s !== null);
+  const groups = fileGroups.filter(
+    (g) => g !== null
+  );
+  const scanBase = projectArg ? path.dirname(path.resolve(projectArg)) : projectsRoot;
+  const files = groups.flatMap((g) => g.sessionFiles);
+  const scanned = await mapWithConcurrency(
+    files,
+    8,
+    (f) => scanSessionToolStats(f, minCallTs, scanBase)
+  );
+  const sessions = scanned.filter((s) => s !== null);
+  const subScanned = await mapWithConcurrency(
+    groups.flatMap((g) => g.subagentFiles),
+    8,
+    (f) => scanSessionToolStats(f, minCallTs, scanBase).then(
+      (s) => s && { id: sessionKey(s), apiErrors: s.apiErrors }
+    )
+  );
+  const bySession = new Map(sessions.map((s) => [sessionKey(s), s]));
+  for (const sub of subScanned) {
+    const parent = sub && bySession.get(sub.id);
+    if (parent) mergeApiErrors(parent.apiErrors, sub.apiErrors);
+  }
+  return sessions;
 }
 function sortSessions(sessions, sort) {
   const total = (s) => mergeAll(s);
@@ -573,11 +621,14 @@ function printHuman(agg, sessions, opts) {
     );
   }
   if (agg.apiErrors.count > 0) {
-    const top = Object.entries(agg.apiErrors.byText).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, n]) => `"${short(t, 60)}" ${formatTokensCompact(n)}`).join(", ");
+    const byText = Object.entries(agg.apiErrors.byText).sort((a, b) => b[1] - a[1]).slice(0, 10);
     console.log();
     console.log(
-      `api errors: ${formatTokensCompact(agg.apiErrors.count)} (${(agg.apiErrors.count / Math.max(agg.sessions, 1)).toFixed(2)}/sess) — top: ${top}`
+      `api errors: ${formatTokensCompact(agg.apiErrors.count)} (${(agg.apiErrors.count / Math.max(agg.sessions, 1)).toFixed(2)}/sess) by type:`
     );
+    for (const [t, n] of byText) {
+      console.log(`  ${padL(formatTokensCompact(n), 6)}  ${short(t, 76)}`);
+    }
   }
   const taskTypes = Object.entries(agg.taskByType).sort((a, b) => b[1].calls - a[1].calls);
   if (taskTypes.length > 0) {
@@ -689,7 +740,7 @@ async function main() {
   }
   const minCallTs = opts.dayWindow !== void 0 ? lastDaysSince(opts.dayWindow).getTime() : void 0;
   const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
-  const withCalls = minCallTs !== void 0 ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
+  const withCalls = minCallTs !== void 0 ? scanned.filter((s) => mergeAll(s).calls > 0 || s.apiErrors.count > 0) : scanned;
   const hasDateFilter = opts.since !== void 0 || opts.until !== void 0;
   const sessions = withCalls.filter(
     (s) => hasDateFilter ? s.lastTs !== null && inDateRange(s.lastTs, opts.since, opts.until) : true
@@ -722,7 +773,9 @@ export {
   MAX_OUTLIERS,
   MIN_SESSIONS_FOR_OUTLIERS,
   aggregate,
+  collect,
   emptyToolStat,
+  mergeApiErrors,
   parseApiErrorKey,
   parseExitCode,
   parseToolStatsArgs,

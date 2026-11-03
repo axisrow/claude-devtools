@@ -230,12 +230,35 @@ function resultText(content: unknown): string {
   return '';
 }
 
-/** "API Error: <text>" → normalized key; null when the line is not an API error. */
+/**
+ * "API Error: <text>" → normalized key; null when the line is not an API error.
+ * Normalization collapses per-event noise (hex ids in 429 stamps, embedded JSON
+ * payloads, ISO timestamps) so one error type lands on one byText key.
+ */
 export function parseApiErrorKey(text: string): string | null {
   const t = text.trim();
   if (!t.startsWith(API_ERROR_PREFIX)) return null;
-  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, '').trim().slice(0, 120);
+  return t
+    .slice(API_ERROR_PREFIX.length)
+    .replace(/^:\s*/, '')
+    .replace(/\{[\s\S]*$/, '{…}') // embedded JSON payload, incl. multiline (litellm 400 etc.)
+    .replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, '<id>') // dashed uuid or hex-run event ids
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, '<ts>')
+    .trim()
+    .slice(0, 120);
 }
+
+/** Merge source api-error counts into target, in place (subagent transcript → parent session). */
+export function mergeApiErrors(target: ApiErrorStats, source: ApiErrorStats): void {
+  target.count += source.count;
+  for (const [k, n] of Object.entries(source.byText)) {
+    target.byText[k] = (target.byText[k] ?? 0) + n;
+  }
+}
+
+/** Single place for the parent-match key used by the subagent merge in collect(). */
+const sessionKey = (s: { projectId: string; sessionId: string }): string =>
+  `${s.projectId}/${s.sessionId}`;
 
 const emptyAcc = (): ToolAcc => ({ ...emptyToolStat(), durationsMs: [] });
 
@@ -245,14 +268,15 @@ const emptyAcc = (): ToolAcc => ({ ...emptyToolStat(), durationsMs: [] });
 
 export async function scanSessionToolStats(
   filePath: string,
-  minCallTs?: number
+  minCallTs?: number,
+  basePath: string = getProjectsBasePath()
 ): Promise<SessionToolStats | null> {
   const rl = readline.createInterface({
     input: fs.createReadStream(filePath, { encoding: 'utf8' }),
     crlfDelay: Infinity,
   });
 
-  const rel = path.relative(getProjectsBasePath(), path.resolve(filePath));
+  const rel = path.relative(basePath, path.resolve(filePath));
   const [projectDir = '', sessionFile = ''] = rel.split(path.sep);
   const mainTools = new Map<string, ToolAcc>();
   const subagent = new Map<string, ToolAcc>();
@@ -497,10 +521,7 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
     for (const [code, n] of Object.entries(s.bashExitCodes)) {
       bashExitCodes[code] = (bashExitCodes[code] ?? 0) + n;
     }
-    apiErrors.count += s.apiErrors.count;
-    for (const [key, n] of Object.entries(s.apiErrors.byText)) {
-      apiErrors.byText[key] = (apiErrors.byText[key] ?? 0) + n;
-    }
+    mergeApiErrors(apiErrors, s.apiErrors);
     for (const [tool, durations] of Object.entries(s.toolDurationsMs)) {
       if (pooledDurations.has(tool)) pooledDurations.get(tool)!.push(...durations);
       else pooledDurations.set(tool, [...durations]);
@@ -514,7 +535,8 @@ export function aggregate(sessions: SessionToolStats[]): ToolStatsAggregate {
   const bands: Record<string, ToolPercentileBands | null> = {};
   for (const [tool, calls] of callsSamples) {
     if (calls.length < MIN_SESSIONS_FOR_OUTLIERS) continue;
-    const p = (m: Map<string, number[]>): Percentiles => percentiles(m.get(tool) ?? [])!;
+    const p = (m: Map<string, number[]>): Percentiles =>
+      percentiles(m.get(tool) ?? []) ?? { p5: 0, p50: 0, p95: 0 };
     bands[tool] = {
       callsPerSession: p(callsSamples),
       errorsPerSession: p(errorsSamples),
@@ -764,17 +786,49 @@ export function parseToolStatsArgs(argv: string[]): ToolStatsOpts {
   return opts;
 }
 
-async function listSessionFiles(projectDir: string): Promise<string[]> {
+/** *.jsonl under dir, up to `depth` nested dirs (subagents/ holds flat agent-* files
+ *  plus workflows nesting: wf_dirs with agent jsonl inside). Missing dir → empty. */
+async function listJsonlFiles(dir: string, depth: number): Promise<string[]> {
   const out: string[] = [];
-  for (const e of await fs.promises.readdir(projectDir, { withFileTypes: true })) {
-    if (e.isFile() && e.name.endsWith('.jsonl') && !e.name.startsWith('agent-')) {
-      out.push(path.join(projectDir, e.name));
+  let es: fs.Dirent[];
+  try {
+    es = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error(`(skipped ${dir}: ${String(err)})`);
+    }
+    return out;
+  }
+  for (const e of es) {
+    if (e.isFile() && e.name.endsWith('.jsonl')) {
+      out.push(path.join(dir, e.name));
+    } else if (e.isDirectory() && depth > 0) {
+      out.push(...(await listJsonlFiles(path.join(dir, e.name), depth - 1)));
     }
   }
   return out;
 }
 
-async function collect(
+async function listSessionFiles(
+  projectDir: string
+): Promise<{ sessionFiles: string[]; subagentFiles: string[] }> {
+  const sessionFiles: string[] = [];
+  const subagentFiles: string[] = [];
+  for (const e of await fs.promises.readdir(projectDir, { withFileTypes: true })) {
+    if (e.isFile() && e.name.endsWith('.jsonl') && !e.name.startsWith('agent-')) {
+      sessionFiles.push(path.join(projectDir, e.name));
+    } else if (e.isDirectory()) {
+      // new layout: <sessionId>/subagents/**.jsonl — the parent mirrors sidechains
+      // incompletely, so synthetic API-error lines can exist only here. Old flat
+      // layout (<project>/agent-*.jsonl) stays excluded: those fully duplicate the
+      // parent's embedded sidechain, scanning them would double-count every error.
+      subagentFiles.push(...(await listJsonlFiles(path.join(projectDir, e.name, 'subagents'), 2)));
+    }
+  }
+  return { sessionFiles, subagentFiles };
+}
+
+export async function collect(
   projectsRoot: string,
   projectArg?: string,
   minCallTs?: number
@@ -787,9 +841,38 @@ async function collect(
     dirs = es.filter((e) => e.isDirectory()).map((e) => path.join(projectsRoot, e.name));
   }
   const fileGroups = await mapWithConcurrency(dirs, 8, listSessionFiles);
-  const files = fileGroups.filter((g): g is string[] => g !== null).flat();
-  const scanned = await mapWithConcurrency(files, 8, (f) => scanSessionToolStats(f, minCallTs));
-  return scanned.filter((s): s is SessionToolStats => s !== null);
+  const groups = fileGroups.filter(
+    (g): g is { sessionFiles: string[]; subagentFiles: string[] } => g !== null
+  );
+  // path→(projectId,sessionId) derivation is relative to the scanned root; --project
+  // may point outside projectsRoot, so derive from that dir's parent instead
+  const scanBase = projectArg ? path.dirname(path.resolve(projectArg)) : projectsRoot;
+  const files = groups.flatMap((g) => g.sessionFiles);
+  const scanned = await mapWithConcurrency(files, 8, (f) =>
+    scanSessionToolStats(f, minCallTs, scanBase)
+  );
+  const sessions = scanned.filter((s): s is SessionToolStats => s !== null);
+
+  // subagent transcripts count toward their parent session — only the parent key
+  // and apiErrors survive the scan; tool maps are dropped (the parent already
+  // embeds the sidechain calls). Projecting here caps retention at a few KB/file.
+  const subScanned = await mapWithConcurrency(
+    groups.flatMap((g) => g.subagentFiles),
+    8,
+    (f) =>
+      scanSessionToolStats(f, minCallTs, scanBase).then(
+        (s) => s && { id: sessionKey(s), apiErrors: s.apiErrors }
+      )
+  );
+  const bySession = new Map(sessions.map((s) => [sessionKey(s), s]));
+  for (const sub of subScanned) {
+    const parent = sub && bySession.get(sub.id);
+    // ponytail: orphans (parent jsonl gone) are dropped; the parent may mirror some
+    // error lines under its own uuid — both records count (~0.5% inflation, verified
+    // on corpus: 4 subagent carriers, 2 mirrored, uuids/timestamps differ)
+    if (parent) mergeApiErrors(parent.apiErrors, sub.apiErrors);
+  }
+  return sessions;
 }
 
 function sortSessions(
@@ -878,15 +961,16 @@ function printHuman(
   }
 
   if (agg.apiErrors.count > 0) {
-    const top = Object.entries(agg.apiErrors.byText)
+    const byText = Object.entries(agg.apiErrors.byText)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([t, n]) => `"${short(t, 60)}" ${formatTokensCompact(n)}`)
-      .join(', ');
+      .slice(0, 10);
     console.log();
     console.log(
-      `api errors: ${formatTokensCompact(agg.apiErrors.count)} (${(agg.apiErrors.count / Math.max(agg.sessions, 1)).toFixed(2)}/sess) — top: ${top}`
+      `api errors: ${formatTokensCompact(agg.apiErrors.count)} (${(agg.apiErrors.count / Math.max(agg.sessions, 1)).toFixed(2)}/sess) by type:`
     );
+    for (const [t, n] of byText) {
+      console.log(`  ${padL(formatTokensCompact(n), 6)}  ${short(t, 76)}`);
+    }
   }
 
   const taskTypes = Object.entries(agg.taskByType).sort((a, b) => b[1].calls - a[1].calls);
@@ -1017,9 +1101,12 @@ async function main(): Promise<void> {
   const minCallTs =
     opts.dayWindow !== undefined ? lastDaysSince(opts.dayWindow).getTime() : undefined;
   const scanned = await collect(getProjectsBasePath(), projectDir, minCallTs);
-  // a call-level slice has no use for sessions without in-window calls
+  // a call-level slice has no use for sessions without in-window calls —
+  // but keep sessions whose only in-window activity is merged subagent errors
   const withCalls =
-    minCallTs !== undefined ? scanned.filter((s) => mergeAll(s).calls > 0) : scanned;
+    minCallTs !== undefined
+      ? scanned.filter((s) => mergeAll(s).calls > 0 || s.apiErrors.count > 0)
+      : scanned;
   const hasDateFilter = opts.since !== undefined || opts.until !== undefined;
   // heuristic: a session's date = its LAST activity (same as session-inventory)
   const sessions = withCalls.filter((s) =>

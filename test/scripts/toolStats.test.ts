@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   aggregate,
+  collect,
+  mergeApiErrors,
   parseApiErrorKey,
   parseExitCode,
   percentiles,
@@ -58,6 +60,122 @@ describe('parseApiErrorKey', () => {
   it('returns null for non-API-error text and truncates long keys', () => {
     expect(parseApiErrorKey('(no content)')).toBeNull();
     expect(parseApiErrorKey(`API Error: ${'x'.repeat(300)}`)).toHaveLength(120);
+  });
+
+  it('collapses per-event noise: hex ids, embedded JSON, timestamps', () => {
+    expect(
+      parseApiErrorKey(
+        'API Error: Request rejected (429) · [1302][Rate limit reached for requests][2026110213571060c9d602c57ab]'
+      )
+    ).toBe('Request rejected (429) · [1302][Rate limit reached for requests][<id>]');
+    expect(
+      parseApiErrorKey(
+        'API Error: 400 litellm.BadRequestError: ChatgptException - {"error":{"msg"}}'
+      )
+    ).toBe('400 litellm.BadRequestError: ChatgptException - {…}');
+    // multiline JSON payloads collapse too
+    expect(
+      parseApiErrorKey('API Error: 400 litellm.BadRequestError: X - {\n"detail": "boom"\n}')
+    ).toBe('400 litellm.BadRequestError: X - {…}');
+    expect(parseApiErrorKey('API Error: paused at 2026-10-05T13:42:54.892Z')).toBe(
+      'paused at <ts>'
+    );
+    // dashed uuid request ids and UTC offsets collapse too
+    expect(
+      parseApiErrorKey(
+        'API Error: 500 Internal error (request id: 97c0d0c6-a4ae-4057-9ecf-00e7452311b9)'
+      )
+    ).toBe('500 Internal error (request id: <id>)');
+    expect(parseApiErrorKey('API Error: 429 limited at 2026-11-02T13:57:10.601+01:00')).toBe(
+      '429 limited at <ts>'
+    );
+  });
+});
+
+describe('mergeApiErrors', () => {
+  it('sums count and byText in place', () => {
+    const target = { count: 2, byText: { a: 1, b: 1 } };
+    mergeApiErrors(target, { count: 3, byText: { b: 2, c: 1 } });
+    expect(target).toEqual({ count: 5, byText: { a: 1, b: 3, c: 1 } });
+  });
+});
+
+// =============================================================================
+// collect: subagent transcript errors merge into the parent session
+// =============================================================================
+
+const SESSION_ID = '11111111-2222-3333-4444-555555555555';
+
+const syntheticApiError = (ts: string): string =>
+  JSON.stringify({
+    type: 'assistant',
+    timestamp: ts,
+    isSidechain: true,
+    message: {
+      model: '<synthetic>',
+      content: [
+        {
+          type: 'text',
+          text: 'API Error: The response stopped arriving. The response above may be incomplete.',
+        },
+      ],
+    },
+  });
+
+describe('collect', () => {
+  it('merges api errors from <sessionId>/subagents (flat + nested) into the parent, tools not duplicated', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-stats-collect-'));
+    try {
+      const proj = path.join(root, '-test-project');
+      const saDir = path.join(proj, SESSION_ID, 'subagents');
+      const wfDir = path.join(saDir, 'workflows', 'wf_1');
+      fs.mkdirSync(wfDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(proj, `${SESSION_ID}.jsonl`),
+        [
+          assistantCall('tu1', 'Bash', { command: 'ls' }, '2026-10-20T10:00:00.000Z'),
+          toolResult('tu1', 'out', '2026-10-20T10:00:01.000Z'),
+        ].join('\n') + '\n'
+      );
+      fs.writeFileSync(
+        path.join(saDir, 'agent-abc.jsonl'),
+        syntheticApiError('2026-10-20T11:00:00.000Z') + '\n'
+      );
+      // workflow transcript also carries tool calls — they must NOT leak into parent
+      fs.writeFileSync(
+        path.join(wfDir, 'agent-def.jsonl'),
+        [
+          syntheticApiError('2026-10-20T12:00:00.000Z'),
+          assistantCall('tu9', 'Read', { file_path: '/x' }, '2026-10-20T12:00:01.000Z', true),
+        ].join('\n') + '\n'
+      );
+      // old flat layout (<project>/agent-*.jsonl) duplicates the parent — not scanned
+      fs.writeFileSync(
+        path.join(proj, 'agent-legacy.jsonl'),
+        syntheticApiError('2026-10-20T09:00:00.000Z') + '\n'
+      );
+      // second project: parent without a subagents dir — error count stays 0
+      const emptyProj = path.join(root, '-empty-project');
+      fs.mkdirSync(emptyProj, { recursive: true });
+      fs.writeFileSync(
+        path.join(emptyProj, '99999999-8888-7777-6666-555555555555.jsonl'),
+        assistantCall('tu2', 'Read', { file_path: '/a' }, '2026-10-20T10:00:00.000Z') + '\n'
+      );
+
+      const sessions = await collect(root);
+      expect(sessions).toHaveLength(2);
+      const s = sessions.find((x) => x.projectId === '-test-project');
+      expect(s?.apiErrors.count).toBe(2);
+      expect(Object.keys(s?.apiErrors.byText ?? {})).toEqual([
+        'The response stopped arriving. The response above may be incomplete.',
+      ]);
+      // parent tool stats must not be double-counted from the subagent transcripts
+      expect(s?.main.Bash?.calls).toBe(1);
+      // parent without subagent transcripts keeps the count at zero
+      expect(sessions.find((x) => x.projectId === '-empty-project')?.apiErrors.count).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -134,19 +252,7 @@ describe('scanSessionToolStats', () => {
       toolResult('tu5', 'explore result', '2026-10-20T10:00:09.000Z'),
       toolResult('tu6', 'file list\nExit code 0', '2026-10-20T10:00:10.000Z'),
       // synthetic API error (no tool blocks)
-      JSON.stringify({
-        type: 'assistant',
-        timestamp: '2026-10-20T10:00:11.000Z',
-        message: {
-          model: '<synthetic>',
-          content: [
-            {
-              type: 'text',
-              text: 'API Error: The response stopped arriving. The response above may be incomplete.',
-            },
-          ],
-        },
-      }),
+      syntheticApiError('2026-10-20T10:00:11.000Z'),
     ]);
 
     const s = await scanSessionToolStats(file);
