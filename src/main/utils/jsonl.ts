@@ -375,18 +375,20 @@ function concatContent(
  *
  * Some backends (OpenAI-compatible proxies) write one JSONL line per content
  * block of a response, each line carrying the same message.id and the same
- * full usage — the lines PARTITION the response. Lines without requestId that
- * share a messageId are therefore concatenated here: one request becomes one
- * message, one accounting round, one stream divider. Lines WITH requestId are
- * merged the same way by deduplicateByRequestId (issue #88): there too one
- * block per line is the current Claude Code format, snapshots are legacy and
- * detected by snapshotPrefix.
+ * full usage — the lines PARTITION the response. Lines that share a messageId
+ * are therefore concatenated here: one request becomes one message, one
+ * accounting round, one stream divider. message.id is the response identity,
+ * so the merge deliberately ignores requestId here: a request whose head line
+ * carries a requestId while its fragments carry only message.id (partial
+ * proxy support) would otherwise survive as two messages and double-bill
+ * everywhere. Requests whose lines share a requestId but NOT a message id
+ * (retry copies, issue #88) still collapse in deduplicateByRequestId.
  */
 export function mergeAssistantFragments(messages: ParsedMessage[]): ParsedMessage[] {
   const firstIndexByMessageId = new Map<string, number>();
   const result: ParsedMessage[] = [];
   for (const msg of messages) {
-    if (msg.type !== 'assistant' || msg.requestId || !msg.messageId) {
+    if (msg.type !== 'assistant' || !msg.messageId) {
       result.push(msg);
       continue;
     }
@@ -398,6 +400,13 @@ export function mergeAssistantFragments(messages: ParsedMessage[]): ParsedMessag
       continue;
     }
     const first = result[firstIdx];
+    if (msg.requestId && first.requestId) {
+      // snapshot family: lines sharing requestId AND message.id overlap
+      // (partial + full copies of one response) instead of partitioning it —
+      // concatenating would duplicate text; deduplicateByRequestId owns them
+      result.push(msg);
+      continue;
+    }
     result[firstIdx] = {
       ...first,
       content: concatContent(first.content, msg.content),

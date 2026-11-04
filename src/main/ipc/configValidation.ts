@@ -3,6 +3,7 @@
  * Prevents invalid/unknown data from mutating persisted config.
  */
 
+import { MIN_TURN_BUDGET } from '@shared/turnAccounting';
 import * as path from 'path';
 
 import type {
@@ -221,7 +222,7 @@ function validateNotificationsSection(
         if (
           !isFiniteNumber(maxInputTokensPerTurn) ||
           !Number.isInteger(maxInputTokensPerTurn) ||
-          maxInputTokensPerTurn < 100_000
+          maxInputTokensPerTurn < MIN_TURN_BUDGET
         ) {
           return {
             valid: false,

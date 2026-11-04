@@ -5,10 +5,13 @@ import {
   analyzeTurn,
   billedRequestKey,
   billedTotalTokens,
+  createRequestLedger,
+  DEFAULT_TURN_BUDGET,
   firstAssistantTotalTokens,
   inputSideTokens,
   isRealUserLine,
   lastAssistantTotalTokens,
+  MIN_TURN_BUDGET,
   readConfig,
 } from '../../scripts/turn-budget-hook.mjs';
 
@@ -157,15 +160,58 @@ describe('hook analyzeTurn', () => {
     const r = analyzeTurn([assistantRaw(50), assistantRaw(60)]);
     expect(r).toEqual({ spent: 110, boundaryFound: false });
   });
+
+  // PR #27 review: a proxy stamping requestId on the head line only used to
+  // fork the request into two keys (requestId vs message.id) and bill twice
+  it('bills a mixed-shape request (head with requestId, bare fragments) once', () => {
+    const head = JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_1',
+      message: { id: 'msg_1', usage: { input_tokens: 5000 } },
+    });
+    const fragment = JSON.stringify({
+      type: 'assistant',
+      message: { id: 'msg_1', usage: { input_tokens: 5000 } },
+    });
+    // newest-first: fragments arrive before the head
+    const r = analyzeTurn([fragment, fragment, head, USER_RAW]);
+    expect(r.spent).toBe(5000);
+    expect(r.boundaryFound).toBe(true);
+  });
+});
+
+describe('request ledger (canonical core)', () => {
+  it('aliases bare message.id lines onto the head requestId, forward order', () => {
+    const ledger = createRequestLedger();
+    const head = { type: 'assistant', requestId: 'r1', message: { id: 'm1', usage: {} } };
+    const frag = { type: 'assistant', message: { id: 'm1', usage: {} } };
+    expect(ledger.bill(head, 1000)).toBe(true);
+    expect(ledger.bill(frag, 1200)).toBe(false); // alias → replace, not add
+    expect(ledger.bill({ type: 'assistant', message: { id: 'm2', usage: {} } }, 700)).toBe(true);
+    expect(ledger.spent).toBe(1900);
+  });
+
+  it('moves a bare-id contribution onto the requestId when the head arrives later', () => {
+    const ledger = createRequestLedger();
+    const head = { type: 'assistant', requestId: 'r1', message: { id: 'm1', usage: {} } };
+    const frag = { type: 'assistant', message: { id: 'm1', usage: {} } };
+    expect(ledger.bill(frag, 800)).toBe(true); // billed under the bare id first
+    expect(ledger.bill(head, 1000)).toBe(true); // head re-points and replaces
+    expect(ledger.spent).toBe(1000);
+    expect(ledger.bill(frag, 1100)).toBe(false); // now keyed by the alias
+    expect(ledger.spent).toBe(1100);
+  });
 });
 
 describe('hook readConfig', () => {
   it('reads the section, defaults when missing, survives garbage', () => {
     expect(
-      readConfig('{"notifications":{"turnBudget":{"enabled":false,"maxInputTokensPerTurn":42}}}')
+      readConfig(
+        '{"notifications":{"turnBudget":{"enabled":false,"maxInputTokensPerTurn":150000}}}'
+      )
     ).toEqual({
       enabled: false,
-      budget: 42,
+      budget: 150000,
       enforce: true,
     });
     expect(
@@ -176,6 +222,23 @@ describe('hook readConfig', () => {
     expect(readConfig('{}').enabled).toBe(true);
     expect(readConfig('not json').budget).toBeGreaterThan(0);
     expect(readConfig().enabled).toBe(true);
+  });
+
+  // the hook reads the config file directly, bypassing IPC validation — a
+  // hand-edited or corrupted 0/negative budget must not become deny-everything
+  it('floors the budget: 0/negative reset to default, below-floor clamps to MIN', () => {
+    expect(readConfig('{"notifications":{"turnBudget":{"maxInputTokensPerTurn":0}}}').budget).toBe(
+      DEFAULT_TURN_BUDGET
+    );
+    expect(readConfig('{"notifications":{"turnBudget":{"maxInputTokensPerTurn":-5}}}').budget).toBe(
+      DEFAULT_TURN_BUDGET
+    );
+    expect(
+      readConfig('{"notifications":{"turnBudget":{"maxInputTokensPerTurn":50000}}}').budget
+    ).toBe(MIN_TURN_BUDGET);
+    expect(
+      readConfig('{"notifications":{"turnBudget":{"maxInputTokensPerTurn":250000}}}').budget
+    ).toBe(250000);
   });
 });
 

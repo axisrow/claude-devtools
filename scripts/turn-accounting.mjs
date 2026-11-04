@@ -26,6 +26,76 @@ export function billedRequestKey(m) {
   return m.requestId ?? m.messageId ?? m.message?.id;
 }
 
+/**
+ * Request ledger: bills each request exactly once (keep-newest), stable across
+ * MIXED shapes — partial proxy support can give the head line of a request a
+ * requestId while its fragment lines carry only message.id, so the plain
+ * billedRequestKey identity forks into two keys and double-bills the request.
+ * The ledger aliases bare message.id lines to the request's requestId once
+ * seen; in newest-first scans fragments arrive BEFORE the head, so registering
+ * the alias also re-points a contribution already made under the bare id.
+ */
+export function createRequestLedger() {
+  const sideByKey = new Map();
+  const aliasByMessageId = new Map();
+  let spent = 0;
+  return {
+    /** Bill one line's usage; returns true when this opened a new request
+     * key (the caller's notion of a round). replace: forward scans keep the
+     * last line's counts (final counts land on the last fragment); backward
+     * scans (newest-first) pass false — the first-seen line IS the newest. */
+    bill(m, side, replace = true) {
+      const mid = m.message?.id ?? m.messageId;
+      let key;
+      if (m.requestId) {
+        key = m.requestId;
+        if (mid !== undefined && mid !== null) {
+          if (!aliasByMessageId.has(mid)) {
+            aliasByMessageId.set(mid, key);
+            // fragments scanned first (newest-first) may already have billed
+            // under the bare message.id — move that contribution onto the key
+            const prior = sideByKey.get(mid);
+            if (prior !== undefined) {
+              sideByKey.delete(mid);
+              spent -= prior;
+            }
+          } else {
+            aliasByMessageId.set(mid, key);
+          }
+        }
+      } else {
+        key = (mid !== undefined && aliasByMessageId.get(mid)) || mid;
+      }
+      if (key === undefined || key === null) {
+        // no request identity at all — every line is its own request
+        sideByKey.set(`#anon-${sideByKey.size + 1}`, side);
+        spent += side;
+        return true;
+      }
+      const prev = sideByKey.get(key);
+      if (prev !== undefined) {
+        if (!replace) return false;
+        if (prev === side) return false;
+        sideByKey.set(key, side);
+        spent += side - prev;
+        return false;
+      }
+      sideByKey.set(key, side);
+      spent += side;
+      return true;
+    },
+    get spent() {
+      return spent;
+    },
+  };
+}
+
+/** Turn-budget policy constants — the hook's defaults and the config floor.
+ * The IPC validation, ConfigManager and the settings UI share them through
+ * src/shared/turnAccounting.ts; the hook imports this file directly. */
+export const DEFAULT_TURN_BUDGET = 8_000_000;
+export const MIN_TURN_BUDGET = 100_000;
+
 /** Input-side usage: the portion a round re-reads from the provider. */
 export function inputSideTokens(u) {
   if (!u) return 0;
@@ -242,12 +312,13 @@ export function isMainChainAssistantLine(m) {
 
 /** Sum input-side tokens of the current turn, scanning lines newest-first. */
 export function analyzeTurn(linesNewestFirst) {
-  let spent = 0;
   let boundaryFound = false;
   // streaming writes several JSONL lines per API request, each carrying usage —
   // billed once per request. Scanning newest-first, the first line seen per
-  // key has the final counts (keep-newest).
-  const billed = new Set();
+  // key has the final counts (keep-newest). The ledger also re-points
+  // mixed-shape requests (head with requestId, fragments with only message.id)
+  // that a bare key map would bill twice.
+  const ledger = createRequestLedger();
   for (const line of linesNewestFirst) {
     let m;
     try {
@@ -260,13 +331,9 @@ export function analyzeTurn(linesNewestFirst) {
       break;
     }
     if (isMainChainAssistantLine(m) && m.message?.usage) {
-      const key = billedRequestKey(m);
-      if (key) {
-        if (billed.has(key)) continue;
-        billed.add(key);
-      }
-      spent += inputSideTokens(m.message.usage);
+      // newest-first scan: the first-seen line per key is the newest — no replace
+      ledger.bill(m, inputSideTokens(m.message.usage), false);
     }
   }
-  return { spent, boundaryFound };
+  return { spent: ledger.spent, boundaryFound };
 }

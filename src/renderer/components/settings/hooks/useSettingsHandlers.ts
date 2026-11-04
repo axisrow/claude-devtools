@@ -7,6 +7,7 @@ import { useCallback, useRef } from 'react';
 
 import { api } from '@renderer/api';
 import { useStore } from '@renderer/store';
+import { DEFAULT_TURN_BUDGET } from '@shared/turnAccounting';
 
 import type { RepositoryDropdownItem } from './useSettingsConfig';
 import type { AppConfig, NotificationTrigger } from '@renderer/types/data';
@@ -303,7 +304,7 @@ export function useSettingsHandlers({
           includeSubagentErrors: true,
           triggers: defaultTriggers,
           loopDetection: { enabled: true, cycleThreshold: 4 },
-          turnBudget: { enabled: true, maxInputTokensPerTurn: 8_000_000 },
+          turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
         },
         general: {
           launchAtLogin: false,

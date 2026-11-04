@@ -149,6 +149,10 @@ export const createRepositorySlice: StateCreator<AppState, [], [], RepositorySli
   selectWorktree: (worktreeId: string) => {
     set({
       selectedWorktreeId: worktreeId,
+      // narrowing to a single worktree exits repo mode: the loaded list is
+      // one worktree's, so a stale repo flag would route later refreshes to
+      // the merged list and flip the sidebar back on every file write
+      selectedRepositoryId: null,
       selectedProjectId: worktreeId,
       activeProjectId: worktreeId,
       ...getSessionResetState(),

@@ -2,10 +2,13 @@
  * NotificationsSection - Notification settings including triggers and ignored repositories.
  */
 
+import { useState } from 'react';
+
 import {
   RepositoryDropdown,
   SelectedRepositoryItem,
 } from '@renderer/components/common/RepositoryDropdown';
+import { MIN_TURN_BUDGET } from '@shared/turnAccounting';
 
 import { SettingRow, SettingsSectionHeader, SettingsSelect, SettingsToggle } from '../components';
 import { NotificationTriggerSettings } from '../NotificationTriggerSettings';
@@ -68,6 +71,8 @@ export const NotificationsSection = ({
   onUpdateTrigger,
   onRemoveTrigger,
 }: NotificationsSectionProps): React.JSX.Element => {
+  // draft state: type freely — commit only valid values, revert on blur
+  const [budgetDraft, setBudgetDraft] = useState<string | null>(null);
   return (
     <div>
       {/* Notification Triggers */}
@@ -178,18 +183,21 @@ export const NotificationsSection = ({
         <div className="flex items-center gap-2">
           <input
             type="number"
-            min={100000}
+            min={MIN_TURN_BUDGET}
             step={500000}
-            value={safeConfig.notifications.turnBudget.maxInputTokensPerTurn}
+            value={budgetDraft ?? safeConfig.notifications.turnBudget.maxInputTokensPerTurn}
             onChange={(e) => {
-              const n = parseInt(e.target.value, 10);
-              if (Number.isInteger(n) && n >= 100000) {
+              const raw = e.target.value;
+              setBudgetDraft(raw);
+              const n = parseInt(raw, 10);
+              if (Number.isInteger(n) && n >= MIN_TURN_BUDGET) {
                 onTurnBudgetChange({
                   ...safeConfig.notifications.turnBudget,
                   maxInputTokensPerTurn: n,
                 });
               }
             }}
+            onBlur={() => setBudgetDraft(null)}
             disabled={saving || !safeConfig.notifications.turnBudget.enabled}
             className="w-32 rounded-md border border-claude-dark-border bg-surface px-2 py-1 text-sm text-claude-dark-text"
           />

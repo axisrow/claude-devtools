@@ -79,16 +79,19 @@ export const WaitLoopSection = ({
               >
                 <span
                   className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium"
-                  style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#f87171' }}
+                  style={{ backgroundColor: 'var(--burn-accent-bg)', color: 'var(--burn-accent)' }}
                 >
                   Wait
                 </span>
-                <span className="min-w-0 flex-1 truncate text-xs" style={{ color: '#f87171' }}>
+                <span
+                  className="min-w-0 flex-1 truncate text-xs"
+                  style={{ color: 'var(--burn-accent)' }}
+                >
                   Turn {injection.turnIndex + 1} · {injection.roundCount} quiet rounds
                 </span>
                 <span
                   className="shrink-0 text-xs font-medium tabular-nums"
-                  style={{ color: '#a1a1aa' }}
+                  style={{ color: 'var(--color-text-secondary)' }}
                 >
                   {injection.estimatedTokens.toLocaleString()} tok
                 </span>
@@ -99,9 +102,9 @@ export const WaitLoopSection = ({
                 <div
                   key={`${injection.id}-${round.uuid}`}
                   className="flex items-center gap-2 py-0.5 pl-8 pr-2 text-[11px] tabular-nums"
-                  style={{ color: '#a1a1aa' }}
+                  style={{ color: 'var(--color-text-secondary)' }}
                 >
-                  <span style={{ color: '#f87171' }}>R{round.index}</span>
+                  <span style={{ color: 'var(--burn-accent)' }}>R{round.index}</span>
                   <span className="flex-1">quiet</span>
                   <span>out {round.outputTokens.toLocaleString()}</span>
                   <span className="w-24 text-right">{round.billed.toLocaleString()} tok</span>

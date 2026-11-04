@@ -51,7 +51,14 @@ export function isQuietTick(
   );
 }
 
-/** Maximum round-to-round context growth for a round to qualify as stalled */
+/** Maximum round-to-round context growth for a round to qualify as stalled.
+ * ponytail: deliberately absolute, not proportional — a growing window IS
+ * work (a round adds whole tool results); the waste-injection harness pins
+ * +400/round as working, and a proportional ceiling (~1% of a 50k window)
+ * reclassifies exactly that as stall (#80 recall gate breaks). The band
+ * "tools + tiny output + growth above the ceiling" stays a documented
+ * detection gap (PR #27 review, finding 9): no consumer sees it, and the
+ * signals available cannot tell it from slow real work. */
 export const STALL_CONTEXT_DELTA_TOKENS = 300;
 
 /**

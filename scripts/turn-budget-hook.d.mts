@@ -60,6 +60,15 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   boundaryFound: boolean;
 };
 
+/** Request ledger: bills each request once (keep-newest), stable across mixed
+ * requestId shapes. bill() returns true when a NEW request key opened (round).
+ * replace: forward scans keep the last counts (default true); backward
+ * (newest-first) scans pass false — first seen is the newest there. */
+export declare function createRequestLedger(): {
+  bill(m: AccountableMessage, side: number, replace?: boolean): boolean;
+  readonly spent: number;
+};
+
 /** Budget deny written back by Claude Code: errored main-chain tool_result with the hook's reason. */
 export declare function isBudgetDenyLine(m: AccountableMessage): boolean;
 

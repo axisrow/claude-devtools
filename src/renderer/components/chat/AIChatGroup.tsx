@@ -380,8 +380,11 @@ const AIChatGroupInner = ({
 
   return (
     <div
-      className={`space-y-3 border-l-2 pl-3 ${isBodyHighlighted ? 'bg-red-500/5' : ''}`}
-      style={{ borderColor: isBodyHighlighted ? '#ef4444' : 'var(--chat-ai-border)' }}
+      className={`space-y-3 border-l-2 pl-3`}
+      style={{
+        borderColor: isBodyHighlighted ? 'var(--burn-accent-strong)' : 'var(--chat-ai-border)',
+        backgroundColor: isBodyHighlighted ? 'var(--burn-accent-wash)' : undefined,
+      }}
     >
       {/* Header Row */}
       {hasToggleContent && (
@@ -563,8 +566,8 @@ const BurnPills = ({ stats }: Readonly<{ stats: ContextStats }>): React.ReactEle
   if (waitTokens === 0 && loopTokens === 0 && !showReread) return null;
 
   const pillStyle: React.CSSProperties = {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    color: '#f87171',
+    backgroundColor: 'var(--burn-accent-bg)',
+    color: 'var(--burn-accent)',
   };
 
   return (

@@ -169,6 +169,13 @@
   --error-highlight-ring: #ef4444;
   --error-highlight-bg: rgba(239, 68, 68, 0.2);
 
+  /* Burn UI (loop/wait/stall waste markers) */
+  --burn-accent: #f87171;
+  --burn-accent-strong: #ef4444;
+  --burn-accent-bg: rgba(239, 68, 68, 0.15);
+  --burn-accent-border: rgba(239, 68, 68, 0.35);
+  --burn-accent-wash: rgba(239, 68, 68, 0.05);
+
   /* Keyboard hints */
   --kbd-bg: #27272a;
   --kbd-border: rgba(255, 255, 255, 0.1);
@@ -358,6 +365,13 @@
   /* Error highlight (pulsing) */
   --error-highlight-ring: #dc2626;
   --error-highlight-bg: rgba(220, 38, 38, 0.15);
+
+  /* Burn UI (loop/wait/stall waste markers) */
+  --burn-accent: #dc2626;
+  --burn-accent-strong: #dc2626;
+  --burn-accent-bg: rgba(220, 38, 38, 0.12);
+  --burn-accent-border: rgba(220, 38, 38, 0.3);
+  --burn-accent-wash: rgba(220, 38, 38, 0.06);
 
   /* Keyboard hints */
   --kbd-bg: #eae9e6;

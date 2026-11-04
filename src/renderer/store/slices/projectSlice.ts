@@ -69,6 +69,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   selectProject: (id: string) => {
     const cached = get()._sessionCache.get(id);
 
+    // a plain project's list is one worktree's — any repo-mode flag must go,
+    // or debounced refreshes keep routing to the merged repo list
+    const exitRepoMode = { selectedRepositoryId: null } as Partial<AppState>;
+
     if (cached) {
       set({
         selectedProjectId: id,
@@ -83,6 +87,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         sessionDetail: null,
         sessionContextStats: null,
         sessionDetailError: null,
+        ...exitRepoMode,
       });
       // Invalidate stale cache so fetchSessionsInitial() overwrites with fresh data
       get()._sessionCache.delete(id);
@@ -90,6 +95,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       set({
         selectedProjectId: id,
         sidebarCollapsed: false,
+        ...exitRepoMode,
         ...getSessionResetState(),
       });
     }

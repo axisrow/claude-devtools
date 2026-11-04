@@ -317,6 +317,9 @@ export const createTabSlice: StateCreator<AppState, [], [], TabSlice> = (set, ge
           set({
             activeProjectId: project.id,
             selectedProjectId: project.id,
+            // flat-project tab: the list shape is single-project, the repo
+            // routing flag must not survive the switch
+            selectedRepositoryId: null,
           });
           if (projectChanged) {
             void get().fetchSessionsInitial(project.id);

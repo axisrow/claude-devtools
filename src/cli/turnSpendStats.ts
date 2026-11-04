@@ -17,7 +17,7 @@ import * as readline from 'readline';
 // same turn-boundary predicate the hook enforces — one definition, no drift
 import {
   analyzeTurn,
-  billedRequestKey,
+  createRequestLedger,
   inputSideTokens,
   isMainChainAssistantLine,
   isTurnBoundary,
@@ -31,8 +31,8 @@ export interface TurnSpend {
   turnIndex: number;
   inputSide: number;
   rounds: number;
-  /** per-request running input side — keep-newest bookkeeping (internal) */
-  usageByRequest?: Map<string, number>;
+  /** shape-stable per-request billing (internal) */
+  ledger?: ReturnType<typeof createRequestLedger>;
 }
 
 /** One JSONL line -> state mutation for the turn-spend walker. */
@@ -66,31 +66,21 @@ export function feedLine(
   // marker, so calibration measures exactly the turns the hook enforces
   if (isTurnBoundary(msg)) {
     if (state.current && state.current.rounds > 0) state.spends.push(state.current);
-    state.current = { file: state.file, turnIndex: state.spends.length, inputSide: 0, rounds: 0 };
+    state.current = {
+      file: state.file,
+      turnIndex: state.spends.length,
+      inputSide: 0,
+      rounds: 0,
+      ledger: createRequestLedger(),
+    };
     return;
   }
 
   if (isMainChainAssistantLine(msg) && inner.usage && state.current) {
     const side = inputSideTokens(inner.usage);
-    const key = billedRequestKey(msg);
-    if (key) {
-      // keep-newest, same as the hook's newest-first scan: the last line of a
-      // streamed request carries the final counts, so it REPLACES the earlier
-      // fragment's contribution instead of adding to it
-      const usageByRequest = (state.current.usageByRequest ??= new Map<string, number>());
-      const prev = usageByRequest.get(key);
-      if (prev === undefined) {
-        state.current.rounds += 1;
-      } else {
-        state.current.inputSide -= prev;
-      }
-      usageByRequest.set(key, side);
-      state.current.inputSide += side;
-    } else {
-      // no request identity — each line is its own request
-      state.current.inputSide += side;
-      state.current.rounds += 1;
-    }
+    const added = state.current.ledger!.bill(msg, side, true);
+    state.current.inputSide = state.current.ledger!.spent;
+    if (added) state.current.rounds += 1;
   }
 }
 
