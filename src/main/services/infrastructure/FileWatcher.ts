@@ -146,6 +146,34 @@ function detectorIncidentToError(args: {
   });
 }
 
+/**
+ * Bell record for time-silence incidents: a watched main session file whose
+ * mtime has not moved for N minutes while the bell only fires for files that
+ * were seen live under this watcher run. Source 'silence' (distinct from the
+ * context-stall 'stall' source, which means something different).
+ */
+function silenceToError(args: {
+  filePath: string;
+  projectId: string;
+  sessionId: string;
+  silentMs: number;
+}): DetectedError {
+  const minutes = Math.max(1, Math.round(args.silentMs / 60000));
+  return createDetectedError({
+    sessionId: args.sessionId,
+    projectId: args.projectId,
+    filePath: args.filePath,
+    projectName: extractProjectName(args.projectId),
+    // no meaningful line for a silence event — deep link falls back to session level
+    lineNumber: 1,
+    timestamp: new Date(),
+    source: 'silence',
+    message: `Silence · no transcript writes for ${minutes} min — session may be wedged or abandoned`,
+    triggerName: 'Silence',
+    triggerColor: '#38bdf8',
+  });
+}
+
 export class FileWatcher extends EventEmitter {
   private projectsWatcher: fs.FSWatcher | null = null;
   private todosWatcher: fs.FSWatcher | null = null;
@@ -188,6 +216,23 @@ export class FileWatcher extends EventEmitter {
   private loopDetector = new LoopDetector();
   private stallDetector = new StallDetector();
   private turnBudgetDetector = new TurnBudgetDetector();
+  /** files whose silence already rang the bell — until writes resume */
+  private silenceNotified = new Set<string>();
+  /** files seen with fresh mtime under this watcher run — arms the silence bell */
+  private silenceSeenLive = new Set<string>();
+
+  /**
+   * Stale age for catch-up tracking and startup seeding: stretched to the
+   * silence threshold when the bell is enabled, otherwise a threshold above
+   * the 1h default could never fire before eviction/seed exclusion.
+   */
+  private catchUpStaleAgeMs(): number {
+    const silence = ConfigManager.getInstance().getConfig().notifications.silenceDetection;
+    if (!silence?.enabled) {
+      return CATCH_UP_MAX_AGE_MS;
+    }
+    return Math.max(CATCH_UP_MAX_AGE_MS, silence.silenceMinutes * 60_000);
+  }
   /** Flag to prevent reuse after disposal */
   private disposed = false;
 
@@ -1137,7 +1182,7 @@ export class FileWatcher extends EventEmitter {
       for (const file of (await this.listSessionFiles({ includeAgentFiles: true })) ?? []) {
         try {
           const stats = await this.fsProvider.stat(file.fullPath);
-          if (now - stats.mtimeMs <= CATCH_UP_MAX_AGE_MS) {
+          if (now - stats.mtimeMs <= this.catchUpStaleAgeMs()) {
             this.activeSessionFiles.set(file.fullPath, {
               projectId: file.projectId,
               sessionId: file.sessionId,
@@ -1192,6 +1237,11 @@ export class FileWatcher extends EventEmitter {
 
     const now = Date.now();
 
+    // Silence bell config — read per tick so settings changes apply live
+    const silenceCfg = ConfigManager.getInstance().getConfig().notifications.silenceDetection;
+    const silenceThresholdMs = silenceCfg.enabled ? silenceCfg.silenceMinutes * 60_000 : 0;
+    const evictAgeMs = this.catchUpStaleAgeMs();
+
     // Discovery sweep: fs.watch can drop events for brand-new files (macOS
     // coalesces directory creation and may deliver a null filename, which is
     // discarded), and only event-seen files ever enter activeSessionFiles.
@@ -1208,10 +1258,15 @@ export class FileWatcher extends EventEmitter {
         // the bell must only ring for calls that happen after discovery.
         // Pin the size cursor; line count is a >0 placeholder — the byte
         // offset is the real cursor for incremental appends.
+        // Never re-pin an existing cursor: eviction keeps the cursors alive,
+        // so a re-discovered file's growth since eviction must still reach the
+        // detectors (loop/stall/turnBudget/triggers and the silence re-arm).
         try {
-          const observed = file.size ?? (await this.fsProvider.stat(file.fullPath)).size;
-          this.lastProcessedSize.set(file.fullPath, observed);
-          this.lastProcessedLineCount.set(file.fullPath, 1);
+          if (!this.lastProcessedSize.has(file.fullPath)) {
+            const observed = file.size ?? (await this.fsProvider.stat(file.fullPath)).size;
+            this.lastProcessedSize.set(file.fullPath, observed);
+            this.lastProcessedLineCount.set(file.fullPath, 1);
+          }
         } catch {
           this.activeSessionFiles.delete(file.fullPath);
         }
@@ -1227,10 +1282,35 @@ export class FileWatcher extends EventEmitter {
     for (const [filePath, info] of this.activeSessionFiles) {
       try {
         const stats = await this.fsProvider.stat(filePath);
+        const age = now - stats.mtimeMs;
 
-        // Skip files not modified recently
-        if (now - stats.mtimeMs > CATCH_UP_MAX_AGE_MS) {
+        // Silence bell (main sessions only): a fresh sighting arms the file and
+        // re-arms the bell; a stale sighting of an armed, not-yet-rung file
+        // rings once per silence episode. Runs before eviction so thresholds
+        // above the default stale age stay reachable. ponytail: subagent
+        // transcripts are exempt — the parent mirrors them.
+        if (silenceCfg.enabled && !info.subagentId) {
+          if (age < silenceThresholdMs) {
+            this.silenceSeenLive.add(filePath);
+            this.silenceNotified.delete(filePath);
+          } else if (this.silenceSeenLive.has(filePath) && !this.silenceNotified.has(filePath)) {
+            this.silenceNotified.add(filePath);
+            await this.notificationManager.addError(
+              silenceToError({
+                filePath,
+                projectId: info.projectId,
+                sessionId: info.sessionId,
+                silentMs: age,
+              })
+            );
+          }
+        }
+
+        // Skip files not modified recently — silence tracking keeps files past
+        // the 1h age alive so thresholds above 60m stay reachable
+        if (age > evictAgeMs) {
           this.activeSessionFiles.delete(filePath);
+          this.silenceSeenLive.delete(filePath);
           continue;
         }
 
@@ -1248,6 +1328,8 @@ export class FileWatcher extends EventEmitter {
         // File may have been deleted between iterations
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           this.activeSessionFiles.delete(filePath);
+          this.silenceNotified.delete(filePath);
+          this.silenceSeenLive.delete(filePath);
           this.clearErrorTracking(filePath);
         } else {
           logger.error(`FileWatcher: Error during catch-up stat for ${filePath}:`, err);

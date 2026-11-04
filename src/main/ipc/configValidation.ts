@@ -113,6 +113,7 @@ function validateNotificationsSection(
     'triggers',
     'loopDetection',
     'turnBudget',
+    'silenceDetection',
   ];
 
   const result: Partial<NotificationConfig> = {};
@@ -238,6 +239,33 @@ function validateNotificationsSection(
           maxInputTokensPerTurn,
           ...(enforce === undefined ? {} : { enforce }),
         };
+        break;
+      }
+      case 'silenceDetection': {
+        if (!isPlainObject(value)) {
+          return { valid: false, error: 'notifications.silenceDetection must be an object' };
+        }
+        const { enabled, silenceMinutes } = value as {
+          enabled?: unknown;
+          silenceMinutes?: unknown;
+        };
+        if (typeof enabled !== 'boolean') {
+          return {
+            valid: false,
+            error: 'notifications.silenceDetection.enabled must be a boolean',
+          };
+        }
+        if (
+          !isFiniteNumber(silenceMinutes) ||
+          !Number.isInteger(silenceMinutes) ||
+          silenceMinutes < 1
+        ) {
+          return {
+            valid: false,
+            error: 'notifications.silenceDetection.silenceMinutes must be an integer >= 1',
+          };
+        }
+        result.silenceDetection = { enabled, silenceMinutes };
         break;
       }
       default:

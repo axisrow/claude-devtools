@@ -37,6 +37,7 @@ const mockConfig = vi.hoisted(() => ({
     triggers: [] as never[],
     loopDetection: { enabled: false, cycleThreshold: 3 },
     turnBudget: { enabled: false, maxInputTokensPerTurn: 0 },
+    silenceDetection: { enabled: false, silenceMinutes: 60 },
   },
 }));
 
@@ -1390,6 +1391,79 @@ describe('FileWatcher', () => {
       watcher.stop();
       fs.rmSync(tempDir, { recursive: true, force: true });
       mockConfig.notifications.turnBudget = { enabled: false, maxInputTokensPerTurn: 0 };
+    });
+  });
+
+  describe('silence detection wiring', () => {
+    afterEach(() => {
+      mockConfig.notifications.silenceDetection = { enabled: false, silenceMinutes: 60 };
+    });
+
+    it('rings once after the silence threshold, re-arms on resume', async () => {
+      vi.useRealTimers();
+      useRealExistsSync();
+      vi.mocked(errorDetector.detectErrors).mockResolvedValue([]);
+      mockConfig.notifications.silenceDetection = { enabled: true, silenceMinutes: 60 };
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'filewatcher-silence-'));
+      const projectsDir = path.join(tempDir, 'projects');
+      const projectDir = path.join(projectsDir, 'quiet-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const filePath = path.join(projectDir, 'session-1.jsonl');
+      fs.writeFileSync(filePath, jsonlLine('u1', 'hello'), 'utf8');
+
+      const dataCache = new DataCache(50, 10, false);
+      const notificationManager = createMockNotificationManager();
+      const watcher = makeWatcher(dataCache, projectsDir, path.join(tempDir, 'todos'));
+      watcher.setNotificationManager(notificationManager);
+
+      const watcherAny = watcher as unknown as {
+        lastProcessedLineCount: Map<string, number>;
+        lastProcessedSize: Map<string, number>;
+        activeSessionFiles: Map<string, { projectId: string; sessionId: string }>;
+        silenceSeenLive: Set<string>;
+        silenceNotified: Set<string>;
+        runCatchUpScan: () => Promise<void>;
+      };
+      watcherAny.lastProcessedLineCount.set(filePath, 1);
+      watcherAny.lastProcessedSize.set(filePath, fs.statSync(filePath).size);
+      watcherAny.activeSessionFiles.set(filePath, {
+        projectId: 'quiet-project',
+        sessionId: 'session-1',
+      });
+
+      // fresh mtime arms the file, no ring
+      await watcherAny.runCatchUpScan();
+      expect(watcherAny.silenceSeenLive.has(filePath)).toBe(true);
+      expect(notificationManager.addError).not.toHaveBeenCalled();
+
+      // mtime backdated past the threshold → exactly one ring
+      const old = new Date(Date.now() - 90 * 60_000);
+      fs.utimesSync(filePath, old, old);
+      await watcherAny.runCatchUpScan();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+      const [silenceError] = vi.mocked(notificationManager.addError).mock.calls[0];
+      expect(silenceError.source).toBe('silence');
+      expect(silenceError.message).toContain('90 min');
+
+      // second tick must not double-ring
+      await watcherAny.runCatchUpScan();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(1);
+
+      // writes resume → re-arm, then silence again → second ring
+      fs.appendFileSync(filePath, jsonlLine('u2', 'world'), 'utf8');
+      await watcherAny.runCatchUpScan();
+      expect(watcherAny.silenceNotified.has(filePath)).toBe(false);
+
+      const old2 = new Date(Date.now() - 75 * 60_000);
+      fs.utimesSync(filePath, old2, old2);
+      await watcherAny.runCatchUpScan();
+      expect(notificationManager.addError).toHaveBeenCalledTimes(2);
+      const [second] = vi.mocked(notificationManager.addError).mock.calls[1];
+      expect(second.message).toContain('75 min');
+
+      watcher.stop();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     });
   });
 });

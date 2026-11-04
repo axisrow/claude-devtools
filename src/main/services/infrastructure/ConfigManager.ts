@@ -48,6 +48,8 @@ export interface NotificationConfig {
   loopDetection: { enabled: boolean; cycleThreshold: number };
   /** Per-turn input-token budget enforced by the PreToolUse hook */
   turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
+  /** Bell when a watched session goes silent (no transcript writes) */
+  silenceDetection: { enabled: boolean; silenceMinutes: number };
 }
 
 /**
@@ -256,6 +258,7 @@ const DEFAULT_CONFIG: AppConfig = {
     // corpus-calibrated with request dedup (pnpm turn-spend:stats,
     // 10 423 turns, 2026-09-27): p95 = 6.66M -> budget = p95 x 1.2 = 8M
     turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
+    silenceDetection: { enabled: true, silenceMinutes: 60 },
   },
   general: {
     launchAtLogin: false,
@@ -453,6 +456,10 @@ export class ConfigManager {
       ...DEFAULT_CONFIG.notifications.turnBudget,
       ...(loadedNotifications.turnBudget ?? {}),
     };
+    const mergedSilenceDetection = {
+      ...DEFAULT_CONFIG.notifications.silenceDetection,
+      ...(loadedNotifications.silenceDetection ?? {}),
+    };
     const mergedGeneral: GeneralConfig = {
       ...DEFAULT_CONFIG.general,
       ...(loaded.general ?? {}),
@@ -469,6 +476,7 @@ export class ConfigManager {
         triggers: mergedTriggers,
         loopDetection: mergedLoopDetection,
         turnBudget: mergedTurnBudget,
+        silenceDetection: mergedSilenceDetection,
       },
       general: mergedGeneral,
       display: {

@@ -45,6 +45,7 @@ export interface SafeConfig {
     triggers: AppConfig['notifications']['triggers'];
     loopDetection: { enabled: boolean; cycleThreshold: number };
     turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
+    silenceDetection: { enabled: boolean; silenceMinutes: number };
   };
   display: {
     showTimestamps: boolean;
@@ -181,6 +182,10 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
           maxInputTokensPerTurn:
             displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? DEFAULT_TURN_BUDGET,
           enforce: displayConfig?.notifications?.turnBudget?.enforce ?? true,
+        },
+        silenceDetection: {
+          enabled: displayConfig?.notifications?.silenceDetection?.enabled ?? true,
+          silenceMinutes: displayConfig?.notifications?.silenceDetection?.silenceMinutes ?? 60,
         },
       },
       display: {
