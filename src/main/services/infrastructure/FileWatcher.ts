@@ -25,6 +25,7 @@ import {
   getProjectsBasePath,
   getTodosBasePath,
 } from '@main/utils/pathDecoder';
+import { SubagentRunwayDetector, type SubagentRunwayIncident } from '@main/utils/subagentWatch';
 import { isTurnBoundary } from '@shared/turnAccounting';
 import { createLogger } from '@shared/utils/logger';
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
@@ -174,6 +175,39 @@ function silenceToError(args: {
   });
 }
 
+/**
+ * Bell record for subagent runaway incidents: a subagent transcript whose
+ * running span or billed burn crossed the subagentWatch thresholds. Source
+ * 'subagent' — distinct from the main-chain 'turn_budget'/'loop'/'stall' and
+ * 'silence'.
+ */
+function subagentRunwayToError(args: {
+  incident: SubagentRunwayIncident;
+  projectId: string;
+  sessionId: string;
+  subagentId: string;
+}): DetectedError {
+  const why =
+    args.incident.triggeredBy === 'minutes'
+      ? `running for ${args.incident.minutes} min`
+      : `burned ${formatTokensCompact(args.incident.inputSide + args.incident.output)} tokens`;
+  return createDetectedError({
+    sessionId: args.sessionId,
+    projectId: args.projectId,
+    filePath: args.incident.filePath,
+    projectName: extractProjectName(args.projectId),
+    // no meaningful line — deep link falls back to session level
+    lineNumber: 1,
+    timestamp: new Date(),
+    source: 'subagent',
+    message:
+      `Subagent runaway · ${args.subagentId} ${why} · ${args.incident.rounds} rounds · ` +
+      `in ${formatTokensCompact(args.incident.inputSide)} / out ${formatTokensCompact(args.incident.output)}`,
+    triggerName: 'Subagent watch',
+    triggerColor: '#f97316',
+  });
+}
+
 export class FileWatcher extends EventEmitter {
   private projectsWatcher: fs.FSWatcher | null = null;
   private todosWatcher: fs.FSWatcher | null = null;
@@ -216,6 +250,8 @@ export class FileWatcher extends EventEmitter {
   private loopDetector = new LoopDetector();
   private stallDetector = new StallDetector();
   private turnBudgetDetector = new TurnBudgetDetector();
+  /** Subagent runaway watch — the only detector fed by subagent transcripts */
+  private subagentRunwayDetector = new SubagentRunwayDetector();
   /** files whose silence already rang the bell — until writes resume */
   private silenceNotified = new Set<string>();
   /** files seen with fresh mtime under this watcher run — arms the silence bell */
@@ -709,8 +745,16 @@ export class FileWatcher extends EventEmitter {
     if (parts.length === 2 && parts[1].endsWith('.jsonl')) {
       sessionId = path.basename(parts[1], '.jsonl');
     }
-    // Subagent file: projectId/sessionId/subagents/agent-hash.jsonl
-    else if (parts.length === 4 && parts[2] === 'subagents' && parts[3].endsWith('.jsonl')) {
+    // Subagent file, nested or wf-nested:
+    // projectId/sessionId/subagents/agent-hash.jsonl
+    // projectId/sessionId/subagents/<wf-dir>/agent-hash.jsonl — the 5-segment
+    // form was dropped entirely before (matched no branch), so cache
+    // invalidation, refresh events and the runway watch never saw these files
+    else if (
+      (parts.length === 4 || parts.length === 5) &&
+      parts[2] === 'subagents' &&
+      parts[parts.length - 1].endsWith('.jsonl')
+    ) {
       sessionId = parts[1];
       isSubagent = true;
     }
@@ -741,18 +785,16 @@ export class FileWatcher extends EventEmitter {
       // Detect errors in changed session files (not deleted files)
       if (changeType !== 'unlink' && this.notificationManager) {
         if (isSubagent) {
-          // Only process subagent files if config allows
-          const config = ConfigManager.getInstance().getConfig();
-          if (config.notifications.includeSubagentErrors) {
-            const subagentFilename = path.basename(parts[3], '.jsonl');
-            const subagentId = subagentFilename.replace(/^agent-/, '');
-            this.activeSessionFiles.set(fullPath, { projectId, sessionId, subagentId });
-            this.detectErrorsInSessionFile(projectId, sessionId, fullPath, subagentId).catch(
-              (err) => {
-                logger.error('Error detecting errors in subagent file:', err);
-              }
-            );
-          }
+          // subagent files always parse (incremental state + the runway watch);
+          // the error-detector pass on them is gated inside detectErrorsInSessionFile
+          const subagentFilename = path.basename(parts[parts.length - 1], '.jsonl');
+          const subagentId = subagentFilename.replace(/^agent-/, '');
+          this.activeSessionFiles.set(fullPath, { projectId, sessionId, subagentId });
+          this.detectErrorsInSessionFile(projectId, sessionId, fullPath, subagentId).catch(
+            (err) => {
+              logger.error('Error detecting errors in subagent file:', err);
+            }
+          );
         } else {
           this.activeSessionFiles.set(fullPath, { projectId, sessionId });
           this.detectErrorsInSessionFile(projectId, sessionId, fullPath).catch((err) => {
@@ -815,6 +857,7 @@ export class FileWatcher extends EventEmitter {
         this.loopDetector.reset(filePath);
         this.stallDetector.reset(filePath);
         this.turnBudgetDetector.reset(filePath);
+        this.subagentRunwayDetector.reset(filePath);
         const appended = await this.parseAppendedMessages(filePath, 0);
         // RAW line count — the unit the incremental path adds to
         // (lastLineCount + parsedLineCount). parseJsonlFile's merged
@@ -857,9 +900,13 @@ export class FileWatcher extends EventEmitter {
         return;
       }
 
-      // Detect errors in new messages
-      // Note: We pass the offset-adjusted line numbers to errorDetector
-      const errors = await errorDetector.detectErrors(newMessages, sessionId, projectId, filePath);
+      // Detect errors in new messages. On subagent files the generic
+      // error-detector pass stays behind includeSubagentErrors (its own
+      // toggle) — the runway watch below has its own subagentWatch gate.
+      const errors =
+        subagentId && !ConfigManager.getInstance().getConfig().notifications.includeSubagentErrors
+          ? []
+          : await errorDetector.detectErrors(newMessages, sessionId, projectId, filePath);
 
       // Adjust line numbers to account for the offset and annotate subagent errors
       for (const error of errors) {
@@ -956,6 +1003,25 @@ export class FileWatcher extends EventEmitter {
               sessionId,
               lineNumberBase: lastLineCount,
               timestamp: new Date(),
+            })
+          );
+        }
+      }
+
+      // Subagent runaway watch — the only detector fed by subagent transcripts
+      // (the liveGate trio above is main-chain only). Edge-latched inside the
+      // detector: one notification per subagent file per app run.
+      const watchCfg = ConfigManager.getInstance().getConfig().notifications.subagentWatch;
+      const isAgentFile = Boolean(subagentId) || path.basename(filePath).startsWith('agent-');
+      if (watchCfg?.enabled && isAgentFile) {
+        const runway = this.subagentRunwayDetector.feed(filePath, newMessages, watchCfg);
+        if (runway) {
+          await this.notificationManager.addError(
+            subagentRunwayToError({
+              incident: runway,
+              projectId,
+              sessionId,
+              subagentId: subagentId ?? path.basename(filePath, '.jsonl').replace(/^agent-/, ''),
             })
           );
         }

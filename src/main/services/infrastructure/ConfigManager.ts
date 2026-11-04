@@ -50,6 +50,8 @@ export interface NotificationConfig {
   turnBudget: { enabled: boolean; maxInputTokensPerTurn: number };
   /** Bell when a watched session goes silent (no transcript writes) */
   silenceDetection: { enabled: boolean; silenceMinutes: number };
+  /** Bell when a subagent transcript keeps running/burning past thresholds */
+  subagentWatch: { enabled: boolean; minutes: number; tokens: number };
 }
 
 /**
@@ -259,6 +261,10 @@ const DEFAULT_CONFIG: AppConfig = {
     // 10 423 turns, 2026-09-27): p95 = 6.66M -> budget = p95 x 1.2 = 8M
     turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
     silenceDetection: { enabled: true, silenceMinutes: 60 },
+    // corpus 2026-11-04 (2432 files): >60m span — 20 files, >10M billed — 29;
+    // the owner's 1–2h runaway profile lands between — 60min / 10M chosen
+    // from the subagent-scan ladders (owner-approved)
+    subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000 },
   },
   general: {
     launchAtLogin: false,
@@ -460,6 +466,10 @@ export class ConfigManager {
       ...DEFAULT_CONFIG.notifications.silenceDetection,
       ...(loadedNotifications.silenceDetection ?? {}),
     };
+    const mergedSubagentWatch = {
+      ...DEFAULT_CONFIG.notifications.subagentWatch,
+      ...(loadedNotifications.subagentWatch ?? {}),
+    };
     const mergedGeneral: GeneralConfig = {
       ...DEFAULT_CONFIG.general,
       ...(loaded.general ?? {}),
@@ -477,6 +487,7 @@ export class ConfigManager {
         loopDetection: mergedLoopDetection,
         turnBudget: mergedTurnBudget,
         silenceDetection: mergedSilenceDetection,
+        subagentWatch: mergedSubagentWatch,
       },
       general: mergedGeneral,
       display: {
