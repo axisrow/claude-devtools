@@ -179,11 +179,17 @@ export async function collectSubagentRuns(
 
   const groups = await mapWithConcurrency(dirs, 8, listSessionFiles);
   const jobs: { file: string; project: string }[] = [];
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
+  for (const g of groups) {
     if (!g) continue;
-    const project = path.basename(dirs[i]);
-    for (const f of g.subagentFiles) jobs.push({ file: f, project });
+    for (const f of g.subagentFiles) {
+      // project from the file's own path — mapWithConcurrency returns group
+      // results in completion order, so indexing groups by dir would
+      // mislabel every row under concurrency
+      jobs.push({
+        file: f,
+        project: path.relative(projectsRoot, f).split(path.sep)[0] ?? '?',
+      });
+    }
   }
 
   const stats = await mapWithConcurrency(jobs, 8, (j) => scanSubagentFile(j.file, opts));
@@ -194,13 +200,15 @@ export async function collectSubagentRuns(
     if (!s || !j) continue;
     const base = path.basename(j.file, '.jsonl');
     // nested layout <proj>/<sess>/subagents/agent-<id>.jsonl — parent from the
-    // path when the transcript lines carry no sessionId
+    // path first: transcript lines may carry a STALE sessionId (session
+    // resumed/moved; the champion file's lines point at another session than
+    // the dir it lives in), while the path is where the app shows it
     const parts = j.file.split(path.sep);
     const parentFromPath =
       parts.length >= 3 && parts[parts.length - 2] === 'subagents' ? parts[parts.length - 3] : null;
     rows.push({
       project: j.project,
-      parent: s.parentSessionId ?? parentFromPath ?? '?',
+      parent: parentFromPath ?? s.parentSessionId ?? '?',
       agent: base,
       filePath: j.file,
       minutes:

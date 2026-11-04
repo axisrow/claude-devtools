@@ -68,11 +68,14 @@ async function collectSubagentRuns(projectsRoot, opts = {}) {
   }
   const groups = await mapWithConcurrency(dirs, 8, listSessionFiles);
   const jobs = [];
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
+  for (const g of groups) {
     if (!g) continue;
-    const project = path.basename(dirs[i]);
-    for (const f of g.subagentFiles) jobs.push({ file: f, project });
+    for (const f of g.subagentFiles) {
+      jobs.push({
+        file: f,
+        project: path.relative(projectsRoot, f).split(path.sep)[0] ?? "?"
+      });
+    }
   }
   const stats = await mapWithConcurrency(jobs, 8, (j) => scanSubagentFile(j.file, opts));
   const rows = [];
@@ -85,7 +88,7 @@ async function collectSubagentRuns(projectsRoot, opts = {}) {
     const parentFromPath = parts.length >= 3 && parts[parts.length - 2] === "subagents" ? parts[parts.length - 3] : null;
     rows.push({
       project: j.project,
-      parent: s.parentSessionId ?? parentFromPath ?? "?",
+      parent: parentFromPath ?? s.parentSessionId ?? "?",
       agent: base,
       filePath: j.file,
       minutes: s.firstTsMs !== null && s.lastTsMs !== null ? Math.round((s.lastTsMs - s.firstTsMs) / 6e4) : 0,
