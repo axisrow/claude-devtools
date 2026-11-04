@@ -70,6 +70,9 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
 export declare function createRequestLedger(): {
   bill(m: AccountableMessage, side: number, replace?: boolean): boolean;
   readonly spent: number;
+  /** Distinct billed requests so far — the round count (bill()'s boolean
+   * fires on the mixed-shape re-point also opens a key). */
+  readonly keys: number;
 };
 
 /** Budget deny written back by Claude Code: errored main-chain tool_result with the hook's reason. */

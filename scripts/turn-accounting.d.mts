@@ -93,6 +93,9 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
 export declare function createRequestLedger(): {
   bill(m: AccountableMessage, side: number, replace?: boolean): boolean;
   readonly spent: number;
+  /** Distinct billed requests so far — the round count (bill()'s boolean
+   * fires on the mixed-shape re-point too). */
+  readonly keys: number;
 };
 
 /** Turn-budget policy constants (hook default, IPC/UI floor). */

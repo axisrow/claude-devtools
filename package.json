@@ -22,7 +22,8 @@
     "session-inventory": "dist-cli/session-inventory.js",
     "bell-stats": "dist-cli/bell-stats.js",
     "tool-stats": "dist-cli/tool-stats.js",
-    "stall-scan": "dist-cli/stall-scan.js"
+    "stall-scan": "dist-cli/stall-scan.js",
+    "subagent-scan": "dist-cli/subagent-scan.js"
   },
   "files": [
     "dist-cli"

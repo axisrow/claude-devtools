@@ -87,6 +87,13 @@ export function createRequestLedger() {
     get spent() {
       return spent;
     },
+    /** Distinct billed requests so far — the correct "rounds" count: bill()'s
+     * boolean fires on the mixed-shape re-point too (a new key opens when the
+     * head re-points a bare-id contribution), which would count one request
+     * as two rounds. */
+    get keys() {
+      return sideByKey.size;
+    },
   };
 }
 
