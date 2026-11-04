@@ -54,6 +54,8 @@ import {
   analyzeTurn,
   billedRequestKey,
   billedTotalTokens,
+  createRequestLedger,
+  DEFAULT_TURN_BUDGET,
   firstAssistantTotalTokens,
   inputSideTokens,
   isMainChainAssistantLine,
@@ -62,12 +64,15 @@ import {
   isTurnNumberLine,
   isUserChunkLine,
   lastAssistantTotalTokens,
+  MIN_TURN_BUDGET,
 } from './turn-accounting.mjs';
 
 export {
   analyzeTurn,
   billedRequestKey,
   billedTotalTokens,
+  createRequestLedger,
+  DEFAULT_TURN_BUDGET,
   firstAssistantTotalTokens,
   inputSideTokens,
   isMainChainAssistantLine,
@@ -75,13 +80,10 @@ export {
   isTurnBoundary,
   isTurnNumberLine,
   lastAssistantTotalTokens,
+  MIN_TURN_BUDGET,
 };
 
 const CONFIG_PATH = join(homedir(), '.claude', 'claude-devtools-config.json');
-// corpus-calibrated with request dedup (pnpm turn-spend:stats, 10 423 turns,
-// 2026-09-27): p95 = 6.66M -> budget = round to 0.5M of p95 x 1.2 = 8M.
-// Same convention as the original 15M (12.56M p95 x 1.2, un-deduped count).
-const DEFAULT_BUDGET = 8_000_000;
 const CHUNK = 1 << 20; // backwards-read window
 
 /** Backwards line generator: yields lines newest-first. */
@@ -105,19 +107,26 @@ export function* linesBackward(fd, size) {
 
 /** Read turnBudget config; defaults when missing.
  * enforce gates only the blocking (deny + stop-crane); false = account and log,
- * never block — the app's bell rings independently of this flag. */
+ * never block — the app's bell rings independently of this flag.
+ * The budget is floored: the hook reads the file directly, bypassing the IPC
+ * validation, so a hand-edited or corrupted 0/negative value must not turn the
+ * fail-open limiter into a deny-everything switch. */
 export function readConfig(raw) {
+  const budgetOf = (v) => {
+    if (!Number.isInteger(v) || v <= 0) return DEFAULT_TURN_BUDGET;
+    return Math.max(v, MIN_TURN_BUDGET);
+  };
   try {
     const cfg = JSON.parse(raw ?? '{}');
     // ConfigManager writes it under notifications.turnBudget, not top level
     const tb = cfg.notifications?.turnBudget ?? {};
     return {
       enabled: tb.enabled !== false,
-      budget: Number.isInteger(tb.maxInputTokensPerTurn) ? tb.maxInputTokensPerTurn : DEFAULT_BUDGET,
+      budget: budgetOf(tb.maxInputTokensPerTurn),
       enforce: tb.enforce !== false,
     };
   } catch {
-    return { enabled: true, budget: DEFAULT_BUDGET, enforce: true };
+    return { enabled: true, budget: DEFAULT_TURN_BUDGET, enforce: true };
   }
 }
 

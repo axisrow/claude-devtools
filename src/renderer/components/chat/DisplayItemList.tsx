@@ -123,20 +123,24 @@ export const DisplayItemList = React.memo(function DisplayItemList({
       <div key={`round-${rid}`} className="flex items-center gap-2 py-1">
         <div
           className="h-px flex-1"
-          style={{ backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.35)' : 'var(--color-border)' }}
+          style={{
+            backgroundColor: isBurn ? 'var(--burn-accent-border)' : 'var(--color-border)',
+          }}
         />
         <span
           className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
           style={{
-            backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.15)' : 'var(--color-surface-overlay)',
-            color: isBurn ? '#f87171' : COLOR_TEXT_MUTED,
+            backgroundColor: isBurn ? 'var(--burn-accent-bg)' : 'var(--color-surface-overlay)',
+            color: isBurn ? 'var(--burn-accent)' : COLOR_TEXT_MUTED,
           }}
         >
           {label}
         </span>
         <div
           className="h-px flex-1"
-          style={{ backgroundColor: isBurn ? 'rgba(239, 68, 68, 0.35)' : 'var(--color-border)' }}
+          style={{
+            backgroundColor: isBurn ? 'var(--burn-accent-border)' : 'var(--color-border)',
+          }}
         />
       </div>
     );
@@ -146,7 +150,12 @@ export const DisplayItemList = React.memo(function DisplayItemList({
     <div className="space-y-2">
       {items.map((item, index) => {
         const rid = 'roundId' in item ? (item.roundId ?? null) : null;
-        const divider = rid ? (roundDividers.get(rid) ?? null) : null;
+        // emit the divider before the FIRST item of the round only — several
+        // items (thinking/tool/output of one response) share a roundId, and
+        // the chip would otherwise repeat before every one of them
+        const prev = index > 0 ? items[index - 1] : null;
+        const prevRid = prev && 'roundId' in prev ? (prev.roundId ?? null) : null;
+        const divider = rid && rid !== prevRid ? (roundDividers.get(rid) ?? null) : null;
         // Shared with conversationSlice search — same keys, same addressing
         const itemKey = displayItemKey(item, index);
         let element: React.ReactNode = null;

@@ -260,6 +260,7 @@ function aggregateToolOutputs(
   loop: LoopInjection | null;
   loopState: LoopStreakState;
   repeatKeys: Map<string, string>;
+  rounds: ClassifiedRound[];
 } {
   const toolBreakdown: ToolTokenBreakdown[] = [];
   const loopBreakdown = new Map<string, LoopTokenBreakdown>();
@@ -345,8 +346,9 @@ function aggregateToolOutputs(
   // Loop tokens = billed usage of rounds carrying repeat calls, each round
   // counted once. A round shared by two different repeat keys bills both
   // breakdowns, but the turn total counts it once.
+  const classified = classifyRounds(responses, keyByToolId);
   const loopRounds: LoopRoundInfo[] = [];
-  for (const round of classifyRounds(responses, keyByToolId)) {
+  for (const round of classified) {
     if (!round.repeat) continue;
     loopTokens += round.billed;
     loopRounds.push({
@@ -375,7 +377,13 @@ function aggregateToolOutputs(
   }
 
   if (totalTokens === 0) {
-    return { toolOutput: null, loop, loopState: state, repeatKeys: keyByToolId };
+    return {
+      toolOutput: null,
+      loop,
+      loopState: state,
+      repeatKeys: keyByToolId,
+      rounds: classified,
+    };
   }
 
   return {
@@ -391,6 +399,7 @@ function aggregateToolOutputs(
     loop,
     loopState: state,
     repeatKeys: keyByToolId,
+    rounds: classified,
   };
 }
 
@@ -501,9 +510,10 @@ function aggregateWaitLoopRounds(
   aiGroup: AIGroup,
   turnIndex: number,
   aiGroupId: string,
-  state: WaitTickState
+  state: WaitTickState,
+  classified: ClassifiedRound[]
 ): { injection: WaitLoopInjection | null; state: WaitTickState } {
-  const quiet: WaitRoundInfo[] = classifyRounds(aiGroup.responses ?? [])
+  const quiet: WaitRoundInfo[] = classified
     .filter((round) => round.quiet)
     .map((round) => ({
       uuid: round.uuid,
@@ -1111,14 +1121,14 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     toolOutput: toolOutputInjection,
     loop: loopInjection,
     loopState: updatedLoopState,
-    repeatKeys,
+    rounds: classifiedRounds,
   } = aggregateToolOutputs(
     linkedTools,
     aiGroup.turnIndex,
     turnGroupId,
     displayItems,
     loopState,
-    aiGroup.responses ?? []
+    aiGroup.responses
   );
   if (toolOutputInjection) {
     newInjections.push(toolOutputInjection);
@@ -1133,7 +1143,8 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
     aiGroup,
     aiGroup.turnIndex,
     turnGroupId,
-    waitTickState
+    waitTickState,
+    classifiedRounds
   );
   if (waitLoopInjection) {
     newInjections.push(waitLoopInjection);
@@ -1323,7 +1334,7 @@ function computeContextStats(params: ComputeContextStatsParams): ComputeContextS
   // Per-round flags for the stream markers (quiet / repeat / billed), same
   // classification the aggregates above use
   const roundFlags = new Map<string, RoundFlag>();
-  for (const round of classifyRounds(aiGroup.responses ?? [], repeatKeys)) {
+  for (const round of classifiedRounds) {
     roundFlags.set(round.uuid, {
       index: round.index,
       quiet: round.quiet,

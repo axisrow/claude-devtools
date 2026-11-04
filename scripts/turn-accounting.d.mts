@@ -82,3 +82,16 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   spent: number;
   boundaryFound: boolean;
 };
+
+/** Request ledger: bills each request once (keep-newest), stable across mixed
+ * requestId shapes. bill() returns true when a NEW request key opened (round).
+ * replace: forward scans keep the last counts (default true); backward
+ * (newest-first) scans pass false — first seen is the newest there. */
+export declare function createRequestLedger(): {
+  bill(m: AccountableMessage, side: number, replace?: boolean): boolean;
+  readonly spent: number;
+};
+
+/** Turn-budget policy constants (hook default, IPC/UI floor). */
+export declare const DEFAULT_TURN_BUDGET: number;
+export declare const MIN_TURN_BUDGET: number;

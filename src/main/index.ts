@@ -34,8 +34,13 @@ app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${heapMB}`);
 
 // Single instance: a dockless (UIElement) app gives no way to discover zombie
 // duplicates — a second launch must summon the existing window instead.
+// The lock result also gates EVERY startup side effect below: module-level
+// code cannot return, so without the gate the loser's whenReady continuation
+// could still run initializeServices()/createWindow() in a quit-vs-ready race
+// (zombie window, second FileWatcher, port conflicts).
 let appReady = false;
-if (!app.requestSingleInstanceLock()) {
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -605,62 +610,66 @@ function createWindow(): void {
 }
 
 /**
- * Application ready handler.
+ * Application ready handler. Gated on the single-instance lock: in the
+ * losing instance module evaluation continues after app.quit() — the
+ * whenReady continuation must not bring up services or a window there.
  */
-void app.whenReady().then(async () => {
-  logger.info('App ready, initializing...');
-  try {
-    // Wait for config to finish loading from disk before using it
-    await configManagerPromise;
+if (gotSingleInstanceLock) {
+  void app.whenReady().then(async () => {
+    logger.info('App ready, initializing...');
+    try {
+      // Wait for config to finish loading from disk before using it
+      await configManagerPromise;
 
-    // Initialize services first
-    initializeServices();
+      // Initialize services first
+      initializeServices();
 
-    // Apply configuration settings
-    const config = configManager.getConfig();
+      // Apply configuration settings
+      const config = configManager.getConfig();
 
-    // Apply launch at login setting
-    app.setLoginItemSettings({
-      openAtLogin: config.general.launchAtLogin,
-    });
+      // Apply launch at login setting
+      app.setLoginItemSettings({
+        openAtLogin: config.general.launchAtLogin,
+      });
 
-    // Apply dock visibility and icon (macOS)
-    if (process.platform === 'darwin') {
-      if (!config.general.showDockIcon) {
-        app.dock?.hide();
+      // Apply dock visibility and icon (macOS)
+      if (process.platform === 'darwin') {
+        if (!config.general.showDockIcon) {
+          app.dock?.hide();
+        }
+        // macOS app icon is already provided by the signed bundle (.icns)
+        // so we avoid runtime setIcon calls that can fail and block startup.
       }
-      // macOS app icon is already provided by the signed bundle (.icns)
-      // so we avoid runtime setIcon calls that can fail and block startup.
+
+      // Then create window
+      createWindow();
+
+      // Listen for notification click events
+      notificationManager.on('notification-clicked', (_error) => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      });
+    } catch (error) {
+      logger.error('Startup initialization failed:', error);
+      if (!mainWindow) {
+        createWindow();
+      }
     }
+    appReady = true;
 
-    // Then create window
-    createWindow();
-
-    // Listen for notification click events
-    notificationManager.on('notification-clicked', (_error) => {
-      if (mainWindow) {
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      } else if (mainWindow && !mainWindow.isDestroyed()) {
+        // reopen (open -a, notification click) with a live window: summon it
         mainWindow.show();
-        mainWindow.focus();
+        app.focus({ steal: true });
       }
     });
-  } catch (error) {
-    logger.error('Startup initialization failed:', error);
-    if (!mainWindow) {
-      createWindow();
-    }
-  }
-  appReady = true;
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    } else if (mainWindow && !mainWindow.isDestroyed()) {
-      // reopen (open -a, notification click) with a live window: summon it
-      mainWindow.show();
-      app.focus({ steal: true });
-    }
   });
-});
+}
 
 /**
  * All windows closed handler.
@@ -672,8 +681,11 @@ app.on('window-all-closed', () => {
 });
 
 /**
- * Before quit handler - cleanup.
+ * Before quit handler - cleanup. The losing single-instance also quits, with
+ * no services to shut down.
  */
 app.on('before-quit', () => {
-  shutdownServices();
+  if (gotSingleInstanceLock) {
+    shutdownServices();
+  }
 });

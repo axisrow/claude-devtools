@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '@renderer/api';
 import { useStore } from '@renderer/store';
+import { DEFAULT_TURN_BUDGET } from '@shared/turnAccounting';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { AppConfig } from '@renderer/types/data';
@@ -178,7 +179,7 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
         turnBudget: {
           enabled: displayConfig?.notifications?.turnBudget?.enabled ?? true,
           maxInputTokensPerTurn:
-            displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? 8_000_000,
+            displayConfig?.notifications?.turnBudget?.maxInputTokensPerTurn ?? DEFAULT_TURN_BUDGET,
           enforce: displayConfig?.notifications?.turnBudget?.enforce ?? true,
         },
       },

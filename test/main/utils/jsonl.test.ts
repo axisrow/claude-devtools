@@ -185,6 +185,26 @@ describe('jsonl', () => {
       expect(merged[0].content).toBe('hello');
     });
 
+    // PR #27 review: a proxy stamping requestId on the head line only must not
+    // fork the request into two billed rounds — message.id is the identity
+    it('mergeAssistantFragments merges a head-with-requestId and its bare-id fragments', () => {
+      const messages = [
+        createMessage({
+          uuid: 'h1',
+          requestId: 'req_1',
+          messageId: 'msg_1',
+          usage: usageA,
+          content: [{ type: 'text', text: 'head' }],
+        }),
+        createMessage({ uuid: 'f1', messageId: 'msg_1', usage: usageA, content: ' tail' }),
+      ];
+
+      const merged = mergeAssistantFragments(messages);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].requestId).toBe('req_1');
+      expect(merged[0].content).toHaveLength(2);
+    });
+
     // GLM proxy shape (#19): subagent transcripts write the first streamed
     // blocks with usage 0/0 and the billed totals only on the final fragment
     it('collapses GLM ghost partials (0/0 first blocks) into the billed fragment', () => {

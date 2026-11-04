@@ -12,6 +12,7 @@
 import { setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import { validateRegexPattern } from '@main/utils/regexValidation';
 import { LOOP_MIN_STREAK } from '@shared/constants/loopPolicy';
+import { DEFAULT_TURN_BUDGET } from '@shared/turnAccounting';
 import { createLogger } from '@shared/utils/logger';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -254,7 +255,7 @@ const DEFAULT_CONFIG: AppConfig = {
     loopDetection: { enabled: true, cycleThreshold: LOOP_MIN_STREAK },
     // corpus-calibrated with request dedup (pnpm turn-spend:stats,
     // 10 423 turns, 2026-09-27): p95 = 6.66M -> budget = p95 x 1.2 = 8M
-    turnBudget: { enabled: true, maxInputTokensPerTurn: 8_000_000 },
+    turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
   },
   general: {
     launchAtLogin: false,

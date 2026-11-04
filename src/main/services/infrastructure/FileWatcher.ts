@@ -11,7 +11,7 @@
  */
 
 import { type FileChangeEvent, type ParsedMessage } from '@main/types';
-import { parseJsonlFile, parseJsonlLine } from '@main/utils/jsonl';
+import { mergeAssistantFragments, parseJsonlLine } from '@main/utils/jsonl';
 import {
   LoopDetector,
   type LoopIncident,
@@ -770,9 +770,17 @@ export class FileWatcher extends EventEmitter {
         this.loopDetector.reset(filePath);
         this.stallDetector.reset(filePath);
         this.turnBudgetDetector.reset(filePath);
-        const messages = await parseJsonlFile(filePath);
-        currentLineCount = messages.length;
-        newMessages = messages.slice(lastLineCount);
+        const appended = await this.parseAppendedMessages(filePath, 0);
+        // RAW line count — the unit the incremental path adds to
+        // (lastLineCount + parsedLineCount). parseJsonlFile's merged
+        // messages.length would undercount fragment-bearing transcripts and
+        // shift every later incremental lineNumber, permanently.
+        currentLineCount = appended.parsedLineCount;
+        const messages = mergeAssistantFragments(appended.messages);
+        // every fallback case starts from zero: first-read has no baseline,
+        // and on a rewritten file the old count means nothing — everything
+        // on disk is new (detectors were reset above)
+        newMessages = messages.slice(0);
         // Re-stat after full parse to capture bytes written during the parse
         const postParseStats = await this.fsProvider.stat(filePath);
         processedSize = postParseStats.size;
