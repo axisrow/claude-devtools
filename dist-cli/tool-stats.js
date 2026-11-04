@@ -56,7 +56,10 @@ function resultText(content) {
 function parseApiErrorKey(text) {
   const t = text.trim();
   if (!t.startsWith(API_ERROR_PREFIX)) return null;
-  return t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "").replace(/\{[\s\S]*$/, "{…}").replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>").trim().slice(0, 120);
+  let key = t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, "");
+  const brace = key.indexOf("{");
+  if (brace !== -1) key = `${key.slice(0, brace)}{…}`;
+  return key.replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>").trim().slice(0, 120);
 }
 function mergeApiErrors(target, source) {
   target.count += source.count;
