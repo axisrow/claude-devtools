@@ -107,7 +107,11 @@ describe('turn accounting — golden parity across consumers', () => {
     // analyzeTurn scanning newest-first must agree with exactly that turn;
     // turn 5 = GLM fragments WITHOUT requestId, one message.id (issue #95):
     // billed once (6.6k), not twice
-    expect(analyzeTurn([...lines].reverse())).toEqual({ spent: 6_600, boundaryFound: true });
+    expect(analyzeTurn([...lines].reverse())).toEqual({
+      spent: 6_600,
+      boundaryFound: true,
+      boundaryId: null,
+    });
     expect(state.current as { inputSide: number } | null).toMatchObject({ inputSide: 6_600 });
     expect(spends[spends.length - 1].inputSide).toBe(110_000);
   });

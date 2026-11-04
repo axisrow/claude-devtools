@@ -193,7 +193,11 @@ describe('cross-surface parity — one edge-case transcript through every consum
     expect(contextByTurn(6)).toBe(61_100);
     expect(hookByTurn.get(6)).toBe(61_100);
     // the newest-first hook scan on the trailing slice agrees with the walk
-    expect(analyzeTurn([...lines].reverse())).toEqual({ spent: 61_100, boundaryFound: true });
+    expect(analyzeTurn([...lines].reverse())).toEqual({
+      spent: 61_100,
+      boundaryFound: true,
+      boundaryId: 'u4',
+    });
   });
 
   it('group-level reread rows — only multi-request groups, phase split at the compact', () => {

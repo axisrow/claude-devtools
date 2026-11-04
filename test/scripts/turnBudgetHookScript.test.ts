@@ -148,17 +148,27 @@ describe('isUserChunkLine — canonical turn-boundary predicate', () => {
 describe('hook analyzeTurn', () => {
   it('sums assistants newest-first and stops at the user boundary', () => {
     const r = analyzeTurn([assistantRaw(300), assistantRaw(200), USER_RAW, assistantRaw(9000)]);
-    expect(r).toEqual({ spent: 500, boundaryFound: true });
+    expect(r).toEqual({ spent: 500, boundaryFound: true, boundaryId: null });
+  });
+
+  it('returns the boundary uuid as boundaryId — the turn identity for the bell edge-trigger', () => {
+    const boundary = JSON.stringify({
+      type: 'user',
+      uuid: 'u-turn-9',
+      message: { role: 'user', content: 'go' },
+    });
+    const r = analyzeTurn([assistantRaw(300), boundary, assistantRaw(9000)]);
+    expect(r).toEqual({ spent: 300, boundaryFound: true, boundaryId: 'u-turn-9' });
   });
 
   it('stops at a compaction marker — pre-compact rounds do not count', () => {
     const r = analyzeTurn([assistantRaw(100), COMPACT_RAW, assistantRaw(777)]);
-    expect(r).toEqual({ spent: 100, boundaryFound: true });
+    expect(r).toEqual({ spent: 100, boundaryFound: true, boundaryId: null });
   });
 
   it('reports boundaryFound=false when no boundary exists', () => {
     const r = analyzeTurn([assistantRaw(50), assistantRaw(60)]);
-    expect(r).toEqual({ spent: 110, boundaryFound: false });
+    expect(r).toEqual({ spent: 110, boundaryFound: false, boundaryId: null });
   });
 
   // PR #27 review: a proxy stamping requestId on the head line only used to

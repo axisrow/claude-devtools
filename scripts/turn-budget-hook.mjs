@@ -235,12 +235,13 @@ export function main() {
   let fd;
   let spent = 0;
   let boundaryFound = false;
+  let boundaryId = null;
   let ignored = 0;
   try {
     fd = openSync(transcript, 'r');
     const size = statSync(transcript).size;
     // Keep the request deduplication set for the whole turn, not one line.
-    ({ spent, boundaryFound } = analyzeTurn(linesBackward(fd, size)));
+    ({ spent, boundaryFound, boundaryId } = analyzeTurn(linesBackward(fd, size)));
     // only an enforcing over-budget call pays for the stop-crane's second scan
     if (boundaryFound && enforce && spent >= budget) {
       ignored = deliveredDenyRounds(linesBackward(fd, size));
@@ -260,8 +261,13 @@ export function main() {
   if (spent >= budget) {
     if (!enforce) {
       // bell/block decoupling: account in the log, block nothing — the app's
-      // bell rings from the transcript on its own
+      // bell rings from the transcript on its own. Edge-triggered once per
+      // turn (boundary uuid = turn identity): #144's per-call deny rows hit
+      // 1300+/day on long sessions. enforce=true stays per-call — those rows
+      // ride on real blocks and must never go quiet.
+      if (boundaryId && readNotifiedBoundary(hook.session_id) === boundaryId) return;
       logDecision(hook.session_id, spent, budget, false, 'deny');
+      markNotifiedBoundary(hook.session_id, boundaryId);
       return;
     }
     if (ignored > CRANE_GRACE_ROUNDS) {
@@ -302,6 +308,40 @@ function offMarker(sessionId) {
 export function isSessionOff(sessionId) {
   const m = offMarker(sessionId);
   return m !== null && existsSync(m);
+}
+
+// Edge-trigger state for the un-enforced bell, one file per session:
+// {"notifiedBoundary": "<boundary uuid>"}. New turn (new uuid) rings again.
+// ponytail: files are ~40 bytes and never cleaned — prune if they ever pile up.
+const STATE_DIR = join(homedir(), '.claude', 'claude-devtools-turnbudget-state');
+
+function statePath(sessionId) {
+  // ponytail: ids are UUIDs; reject anything else rather than sanitise
+  return typeof sessionId === 'string' && /^[\w-]+$/.test(sessionId)
+    ? join(STATE_DIR, `${sessionId}.json`)
+    : null;
+}
+
+function readNotifiedBoundary(sessionId) {
+  const p = statePath(sessionId);
+  if (!p) return null;
+  try {
+    const s = JSON.parse(readFileSync(p, 'utf8'));
+    return typeof s.notifiedBoundary === 'string' ? s.notifiedBoundary : null;
+  } catch {
+    return null;
+  }
+}
+
+function markNotifiedBoundary(sessionId, boundaryId) {
+  const p = statePath(sessionId);
+  if (!p || typeof boundaryId !== 'string') return;
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(p, JSON.stringify({ notifiedBoundary: boundaryId }));
+  } catch {
+    // fail-open: losing the state only means one extra ring on the next call
+  }
 }
 
 /** UserPromptSubmit: `budget on|off` flips the marker and swallows the prompt. */

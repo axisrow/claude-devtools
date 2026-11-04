@@ -354,6 +354,43 @@ describe('turnBudget.enforce — blocking off, accounting on', () => {
   });
 });
 
+describe('turn-budget-hook bell edge-trigger — once per turn when un-enforced', () => {
+  const userTurn = (uuid: string): string =>
+    JSON.stringify({
+      type: 'user',
+      isMeta: false,
+      uuid,
+      message: { role: 'user', content: 'run the tests' },
+    });
+
+  it('enforce:false: one deny row per turn — re-calls stay silent, a new turn rings again', () => {
+    withHome(
+      1_000,
+      (home) => {
+        const turn1 = [userTurn('u-1'), usageLine({ id: 'm1' })];
+        spawnHook(home, turn1);
+        expect(readLog(home).match(/kind=deny/g)?.length).toBe(1);
+        // same turn, another tool call: no new row
+        spawnHook(home, turn1);
+        expect(readLog(home).match(/kind=deny/g)?.length).toBe(1);
+        // a new prompt = a new boundary uuid = the bell rings again
+        spawnHook(home, [...turn1, userTurn('u-2'), usageLine({ id: 'm2' })]);
+        expect(readLog(home).match(/kind=deny/g)?.length).toBe(2);
+      },
+      { enforce: false }
+    );
+  });
+
+  it('enforce:true stays per-call: the signal riding on real blocks never goes quiet', () => {
+    withHome(1_000, (home) => {
+      const turn = [userTurn('u-1'), usageLine({ id: 'm1' })];
+      spawnHook(home, turn);
+      spawnHook(home, turn);
+      expect(readLog(home).match(/kind=/g)?.length).toBe(2);
+    });
+  });
+});
+
 describe('turn-budget-hook entry point', () => {
   it.each(['requestId', 'message.id'])('bills streamed %s usage once when run by Node', (key) => {
     const home = makeHome(15_000_000);
