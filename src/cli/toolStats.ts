@@ -238,10 +238,10 @@ function resultText(content: unknown): string {
 export function parseApiErrorKey(text: string): string | null {
   const t = text.trim();
   if (!t.startsWith(API_ERROR_PREFIX)) return null;
-  return t
-    .slice(API_ERROR_PREFIX.length)
-    .replace(/^:\s*/, '')
-    .replace(/\{[\s\S]*$/, '{…}') // embedded JSON payload, incl. multiline (litellm 400 etc.)
+  let key = t.slice(API_ERROR_PREFIX.length).replace(/^:\s*/, '');
+  const brace = key.indexOf('{'); // embedded JSON payload, incl. multiline (litellm 400 etc.) — collapse at the first opening brace
+  if (brace !== -1) key = `${key.slice(0, brace)}{…}`;
+  return key
     .replace(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[0-9a-f]{16,}/gi, '<id>') // dashed uuid or hex-run event ids
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?/g, '<ts>')
     .trim()
@@ -249,12 +249,14 @@ export function parseApiErrorKey(text: string): string | null {
 }
 
 /** Merge source api-error counts into target, in place (subagent transcript → parent session). */
+/* eslint-disable no-param-reassign -- in-place accumulation is the documented contract (pinned by the mergeApiErrors tests); callers pass their own accumulators */
 export function mergeApiErrors(target: ApiErrorStats, source: ApiErrorStats): void {
   target.count += source.count;
   for (const [k, n] of Object.entries(source.byText)) {
     target.byText[k] = (target.byText[k] ?? 0) + n;
   }
 }
+/* eslint-enable no-param-reassign -- scope of the documented in-place contract above */
 
 /** Single place for the parent-match key used by the subagent merge in collect(). */
 const sessionKey = (s: { projectId: string; sessionId: string }): string =>
