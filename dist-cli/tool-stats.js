@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolveProjectDir, g as getProjectsBasePath, f as formatTokensCompact, pad, padL, short, d as decodePath, n as normalizeDriveLetter, t as translateWslMountPath, e as estimateContentTokens, a as extractSessionId } from "./session-audit.js";
+import { resolveProjectDir, g as getProjectsBasePath, f as formatTokensCompact, pad, padL, short, d as decodePath, n as normalizeDriveLetter, t as translateWslMountPath, b as estimateContentTokens, e as extractSessionId } from "./session-audit.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -775,6 +775,7 @@ export {
   aggregate,
   collect,
   emptyToolStat,
+  listSessionFiles,
   mergeApiErrors,
   parseApiErrorKey,
   parseExitCode,

@@ -809,7 +809,7 @@ async function listJsonlFiles(dir: string, depth: number): Promise<string[]> {
   return out;
 }
 
-async function listSessionFiles(
+export async function listSessionFiles(
   projectDir: string
 ): Promise<{ sessionFiles: string[]; subagentFiles: string[] }> {
   const sessionFiles: string[] = [];

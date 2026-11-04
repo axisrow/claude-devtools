@@ -372,6 +372,27 @@ function isTeammateRelayLine(m) {
 function isTranscriptTurnLine(m) {
   return isUserChunkLine(m) || isTeammateRelayLine(m);
 }
+function isRealUserLine(m) {
+  if (m.type !== "user" || m.isMeta === true) return false;
+  const c = (m.message ?? m).content;
+  if (typeof c === "string") {
+    const t = c.trim();
+    if (t === "" || t.startsWith("[Request interrupted")) return false;
+    return !isTeammateText(t);
+  }
+  if (Array.isArray(c)) {
+    for (const b of c) {
+      if (b && (b.type === "text" || b.type === "image")) {
+        if (b.type === "text" && (isTeammateText(b.text ?? "") || (b.text ?? "").trim() === "" || (b.text ?? "").trim().startsWith("[Request interrupted"))) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
 function isTurnNumberLine(m) {
   if (m.isSidechain === true) return false;
   return isTranscriptTurnLine(m) && m.isCompactSummary !== true;
@@ -1154,7 +1175,7 @@ function mergeAssistantFragments(messages) {
   const firstIndexByMessageId = /* @__PURE__ */ new Map();
   const result = [];
   for (const msg of messages) {
-    if (msg.type !== "assistant" || msg.requestId || !msg.messageId) {
+    if (msg.type !== "assistant" || !msg.messageId) {
       result.push(msg);
       continue;
     }
@@ -1166,6 +1187,10 @@ function mergeAssistantFragments(messages) {
       continue;
     }
     const first = result[firstIdx];
+    if (msg.requestId && first.requestId) {
+      result.push(msg);
+      continue;
+    }
     result[firstIdx] = {
       ...first,
       content: concatContent(first.content, msg.content),
@@ -5765,24 +5790,26 @@ export {
   TURN_IDLE_GAP_CAP_MINUTES,
   WASTE_THRESHOLDS,
   WASTE_TYPE_PRIORITY,
-  extractSessionId as a,
-  billedRequestKey$1 as b,
+  inputSideTokens as a,
+  estimateContentTokens as b,
   bashStem,
   billingFromFlags,
   breakdownFromRounds,
   buildLedger,
+  isTurnNumberLine as c,
   computeFindings,
   contextSpikeSummary,
   decodePath as d,
   detectBillingScheme,
   detectCycleFindings,
   dur,
-  estimateContentTokens as e,
+  extractSessionId as e,
   formatTokensCompact as f,
   filterLedgerByDate,
   getProjectsBasePath as g,
   getRetryCopyMessageIds,
-  isTurnNumberLine as i,
+  billedRequestKey$1 as h,
+  isRealUserLine as i,
   isQuietTick,
   listToolResults,
   normalizeDriveLetter as n,

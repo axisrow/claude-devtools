@@ -81,6 +81,7 @@ export default defineConfig({
         'session-inventory': resolve(__dirname, 'src/cli/sessionInventory.ts'),
         'bell-stats': resolve(__dirname, 'src/cli/bellStats.ts'),
         'tool-stats': resolve(__dirname, 'src/cli/toolStats.ts'),
+        'stall-scan': resolve(__dirname, 'src/cli/stallScan.ts'),
       },
       output: {
         format: 'es',

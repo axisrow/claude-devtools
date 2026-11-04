@@ -41,6 +41,7 @@ interface SettingsHandlers {
     maxInputTokensPerTurn: number;
     enforce?: boolean;
   }) => void;
+  handleSilenceChange: (value: { enabled: boolean; silenceMinutes: number }) => void;
   handleSnooze: (minutes: number) => Promise<void>;
   handleClearSnooze: () => Promise<void>;
   handleAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -115,6 +116,14 @@ export function useSettingsHandlers({
   const handleTurnBudgetChange = useCallback(
     (value: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean }) => {
       void updateConfig('notifications', { turnBudget: value });
+    },
+    [updateConfig]
+  );
+
+  // Silence bell: nested config field, read by the FileWatcher catch-up tick
+  const handleSilenceChange = useCallback(
+    (value: { enabled: boolean; silenceMinutes: number }) => {
+      void updateConfig('notifications', { silenceDetection: value });
     },
     [updateConfig]
   );
@@ -305,6 +314,7 @@ export function useSettingsHandlers({
           triggers: defaultTriggers,
           loopDetection: { enabled: true, cycleThreshold: 4 },
           turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
+          silenceDetection: { enabled: true, silenceMinutes: 60 },
         },
         general: {
           launchAtLogin: false,
@@ -405,6 +415,7 @@ export function useSettingsHandlers({
     handleNotificationToggle,
     handleLoopDetectionChange,
     handleTurnBudgetChange,
+    handleSilenceChange,
     handleSnooze,
     handleClearSnooze,
     handleAddIgnoredRepository,

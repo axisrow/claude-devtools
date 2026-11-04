@@ -26,6 +26,56 @@ const SNOOZE_OPTIONS = [
   { value: -1, label: 'Until tomorrow' },
 ] as const;
 
+/** Toggle-row's numeric sibling: label/description + prefixed number input
+ * (the loop/budget/silence threshold controls differ only in these props). */
+const ThresholdRow = (props: {
+  label: string;
+  description: string;
+  value: number;
+  min: number;
+  step: number;
+  suffix?: string;
+  widthClassName?: string;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}): JSX.Element => {
+  const {
+    label,
+    description,
+    value,
+    min,
+    step,
+    suffix = '',
+    widthClassName = 'w-20',
+    disabled,
+    onChange,
+  } = props;
+  return (
+    <SettingRow label={label} description={description}>
+      <div className="flex items-center gap-2">
+        {suffix !== '' && (
+          <span className="text-sm text-claude-dark-text-secondary">
+            {value}
+            {suffix}
+          </span>
+        )}
+        <input
+          type="number"
+          min={min}
+          step={step}
+          value={value}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (Number.isInteger(n) && n >= min) onChange(n);
+          }}
+          disabled={disabled}
+          className={`${widthClassName} rounded-md border border-claude-dark-border bg-surface px-2 py-1 text-sm text-claude-dark-text`}
+        />
+      </div>
+    </SettingRow>
+  );
+};
+
 interface NotificationsSectionProps {
   readonly safeConfig: SafeConfig;
   readonly saving: boolean;
@@ -42,6 +92,7 @@ interface NotificationsSectionProps {
     maxInputTokensPerTurn: number;
     enforce?: boolean;
   }) => void;
+  readonly onSilenceChange: (value: { enabled: boolean; silenceMinutes: number }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
   readonly onAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -63,6 +114,7 @@ export const NotificationsSection = ({
   onNotificationToggle,
   onLoopDetectionChange,
   onTurnBudgetChange,
+  onSilenceChange,
   onSnooze,
   onClearSnooze,
   onAddIgnoredRepository,
@@ -131,33 +183,18 @@ export const NotificationsSection = ({
           disabled={saving || !safeConfig.notifications.enabled}
         />
       </SettingRow>
-      <SettingRow
+      <ThresholdRow
         label="Loop threshold"
         description="Identical back-to-back calls needed to ring the bell"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-claude-dark-text-secondary">
-            {safeConfig.notifications.loopDetection.cycleThreshold}×
-          </span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={safeConfig.notifications.loopDetection.cycleThreshold}
-            onChange={(e) => {
-              const n = parseInt(e.target.value, 10);
-              if (Number.isInteger(n) && n >= 1) {
-                onLoopDetectionChange({
-                  ...safeConfig.notifications.loopDetection,
-                  cycleThreshold: n,
-                });
-              }
-            }}
-            disabled={saving || !safeConfig.notifications.loopDetection.enabled}
-            className="w-20 rounded-md border border-claude-dark-border bg-surface px-2 py-1 text-sm text-claude-dark-text"
-          />
-        </div>
-      </SettingRow>
+        value={safeConfig.notifications.loopDetection.cycleThreshold}
+        min={1}
+        step={1}
+        suffix="×"
+        disabled={saving || !safeConfig.notifications.loopDetection.enabled}
+        onChange={(n) =>
+          onLoopDetectionChange({ ...safeConfig.notifications.loopDetection, cycleThreshold: n })
+        }
+      />
 
       {/* Per-turn input budget (PreToolUse hook) */}
       <SettingsSectionHeader title="Turn Budget" />
@@ -203,6 +240,36 @@ export const NotificationsSection = ({
           />
         </div>
       </SettingRow>
+
+      {/* Silence bell (FileWatcher catch-up tick) */}
+      <SettingsSectionHeader title="Silence Detection" />
+      <SettingRow
+        label="Ring when a session goes silent"
+        description="No transcript writes for N minutes on a session that was recently active"
+      >
+        <SettingsToggle
+          enabled={safeConfig.notifications.silenceDetection.enabled}
+          onChange={(v) =>
+            onSilenceChange({
+              ...safeConfig.notifications.silenceDetection,
+              enabled: v,
+            })
+          }
+          disabled={saving || !safeConfig.notifications.enabled}
+        />
+      </SettingRow>
+      <ThresholdRow
+        label="Silence threshold"
+        description="Minutes of no writes before the bell rings"
+        value={safeConfig.notifications.silenceDetection.silenceMinutes}
+        min={1}
+        step={5}
+        suffix=" min"
+        disabled={saving || !safeConfig.notifications.silenceDetection.enabled}
+        onChange={(n) =>
+          onSilenceChange({ ...safeConfig.notifications.silenceDetection, silenceMinutes: n })
+        }
+      />
 
       <SettingRow
         label="Snooze notifications"

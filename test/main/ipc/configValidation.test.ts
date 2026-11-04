@@ -134,6 +134,28 @@ describe('configValidation', () => {
     }
   });
 
+  it('accepts a valid silenceDetection update', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      silenceDetection: { enabled: true, silenceMinutes: 60 },
+    });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.data).toEqual({
+        silenceDetection: { enabled: true, silenceMinutes: 60 },
+      });
+    }
+  });
+
+  it('rejects non-integer silenceMinutes', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      silenceDetection: { enabled: true, silenceMinutes: 1.5 },
+    });
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain('integer >= 1');
+    }
+  });
+
   it('accepts valid display updates', () => {
     const result = validateConfigUpdatePayload('display', {
       compactMode: true,

@@ -255,6 +255,8 @@ export interface AppConfig {
      * enforce=false = account and log only, never block — the bell (gated by
      * enabled) keeps ringing while the hook stays passive. Default true. */
     turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
+    /** Bell when a watched session gets no transcript writes for N minutes */
+    silenceDetection: { enabled: boolean; silenceMinutes: number };
   };
   /** General application settings */
   general: {
