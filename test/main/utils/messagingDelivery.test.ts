@@ -48,6 +48,7 @@ describe('messagingDelivery (Фаза 3)', () => {
 
   it('postToSocket delivers the auth+message frame to a fake inbox', async () => {
     const sockPath = inboxPath();
+    let delivery: Promise<boolean> | null = null;
     try {
       const received = await new Promise<string>((resolve) => {
         const timer = setTimeout(() => resolve('<timeout>'), 3000);
@@ -63,9 +64,15 @@ describe('messagingDelivery (Фаза 3)', () => {
           resolve(`<listen-error ${String(e)}>`);
         });
         server.listen(sockPath, () => {
-          void postToSocket({ socket: sockPath, token: 'tok-9' }, 'Stop the runaway subagent');
+          delivery = postToSocket(
+            { socket: sockPath, token: 'tok-9' },
+            'Stop the runaway subagent'
+          );
         });
       });
+      // the fake inbox never closes the connection — true must come from the
+      // write flush, not from waiting for close
+      expect(await delivery).toBe(true);
       expect(received).toContain('"type":"auth"');
       expect(received).toContain('"token":"tok-9"');
       expect(received).toContain('Stop the runaway subagent');
@@ -80,6 +87,7 @@ describe('messagingDelivery (Фаза 3)', () => {
     mkdirSync(dir, { recursive: true });
     const sockPath = inboxPath();
     writeFileSync(join(dir, 's7.json'), JSON.stringify({ socket: sockPath, token: 'tok-7' }));
+    let delivery: Promise<boolean> | null = null;
     try {
       const received = await new Promise<string>((resolve) => {
         const timer = setTimeout(() => resolve('<timeout>'), 3000);
@@ -94,9 +102,10 @@ describe('messagingDelivery (Фаза 3)', () => {
           resolve(`<listen-error ${String(e)}>`);
         });
         server.listen(sockPath, () => {
-          void deliverToSession('s7', 'wrap up the runaway', home);
+          delivery = deliverToSession('s7', 'wrap up the runaway', home);
         });
       });
+      expect(await delivery).toBe(true);
       expect(received).toContain('"token":"tok-7"');
       expect(received).toContain('wrap up the runaway');
     } finally {

@@ -53,7 +53,7 @@ export function readMessagingSnap(sessionId: string, homeOverride?: string): Mes
   }
 }
 
-/** Post one user message into a session inbox; true when the frame was written. */
+/** Post one user message into a session inbox; true when the frame flushed. */
 export function postToSocket(snap: MessagingSnap, text: string): Promise<boolean> {
   return new Promise((resolve) => {
     let done = false;
@@ -65,18 +65,22 @@ export function postToSocket(snap: MessagingSnap, text: string): Promise<boolean
     };
     const s = connect(snap.socket, () => {
       try {
-        const lines = [
-          JSON.stringify({ type: 'auth', token: snap.token }),
-          JSON.stringify({ type: 'user', message: { role: 'user', content: text } }),
-        ];
-        s.write(lines.join('\n') + '\n');
+        const frame =
+          [
+            JSON.stringify({ type: 'auth', token: snap.token }),
+            JSON.stringify({ type: 'user', message: { role: 'user', content: text } }),
+          ].join('\n') + '\n';
+        // resolve on flush — the inbox never closes the connection, so a
+        // close-based success signal would wait out the 5s bound on every
+        // delivered steer and report false
+        s.write(frame, () => finish(true));
         s.end();
       } catch {
         finish(false);
       }
     });
     s.on('error', () => finish(false));
-    s.on('close', () => finish(true));
+    // bound for a peer that never lets the write flush (dead socket)
     setTimeout(() => finish(false), SOCKET_ACK_MS);
   });
 }
