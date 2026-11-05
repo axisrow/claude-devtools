@@ -259,8 +259,10 @@ export interface AppConfig {
     silenceDetection: { enabled: boolean; silenceMinutes: number };
     /** Bell when a subagent transcript keeps running/burning past thresholds
      * (span minutes OR billed tokens — the first one crossed rings). The only
-     * live detector fed by subagent transcripts. */
-    subagentWatch: { enabled: boolean; minutes: number; tokens: number };
+     * live detector fed by subagent transcripts. autoStop: after the bell,
+     * escalate — steer the PARENT session to stop the runaway subagent via
+     * its inbox socket (needs the hook's messaging snapshot; one attempt). */
+    subagentWatch: { enabled: boolean; minutes: number; tokens: number; autoStop?: boolean };
   };
   /** General application settings */
   general: {

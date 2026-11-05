@@ -273,10 +273,11 @@ function validateNotificationsSection(
         if (!isPlainObject(value)) {
           return { valid: false, error: 'notifications.subagentWatch must be an object' };
         }
-        const { enabled, minutes, tokens } = value as {
+        const { enabled, minutes, tokens, autoStop } = value as {
           enabled?: unknown;
           minutes?: unknown;
           tokens?: unknown;
+          autoStop?: unknown;
         };
         if (typeof enabled !== 'boolean') {
           return { valid: false, error: 'notifications.subagentWatch.enabled must be a boolean' };
@@ -293,7 +294,16 @@ function validateNotificationsSection(
             error: 'notifications.subagentWatch.tokens must be an integer >= 1',
           };
         }
-        result.subagentWatch = { enabled, minutes, tokens };
+        if (autoStop !== undefined && typeof autoStop !== 'boolean') {
+          return { valid: false, error: 'notifications.subagentWatch.autoStop must be a boolean' };
+        }
+        // autoStop is optional (default false) — preserve it so UI saves never drop the flag
+        result.subagentWatch = {
+          enabled,
+          minutes,
+          tokens,
+          ...(autoStop === undefined ? {} : { autoStop }),
+        };
         break;
       }
       default:

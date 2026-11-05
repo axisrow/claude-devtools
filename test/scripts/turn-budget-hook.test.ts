@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -420,6 +420,75 @@ describe('turn-budget-hook entry point', () => {
 
       expect(runHook([USER_LINE, ...fragments, USER_LINE, ...fragments.slice(0, 80)])).toBe('');
       expect(runHook(fragments)).toBe(''); // Missing boundary must remain fail-open.
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('turn-budget-hook messaging snapshot (Фаза 3)', () => {
+  it('persists {socket, token} per session even with turnBudget disabled; no env → no file', () => {
+    const home = makeHome(15_000_000, { enforce: false });
+    try {
+      const transcript = join(home, 'session.jsonl');
+      writeFileSync(transcript, USER_LINE + '\n');
+      const stdin = JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        session_id: 'snap1',
+        transcript_path: transcript,
+        tool_name: 'Read',
+        tool_input: {},
+      });
+      const snapPath = join(home, '.claude', 'claude-devtools-messaging', 'snap1.json');
+      const baseEnv = (): NodeJS.ProcessEnv => {
+        const e = { ...process.env, HOME: home, USERPROFILE: home };
+        delete e.CLAUDE_CODE_MESSAGING_SOCKET;
+        delete e.CLAUDE_CODE_MESSAGING_TOKEN;
+        return e;
+      };
+      const run = (extra: NodeJS.ProcessEnv): void => {
+        const r = spawnSync(process.execPath, [resolve('scripts/turn-budget-hook.mjs')], {
+          cwd: home,
+          env: { ...baseEnv(), ...extra },
+          encoding: 'utf8',
+          timeout: 5_000,
+          input: stdin,
+        });
+        expect(r.status).toBe(0);
+      };
+      run({
+        CLAUDE_CODE_MESSAGING_SOCKET: join(home, 's.sock'),
+        CLAUDE_CODE_MESSAGING_TOKEN: 'tok-1',
+      });
+      expect(existsSync(snapPath)).toBe(true);
+      expect(JSON.parse(readFileSync(snapPath, 'utf8'))).toEqual({
+        socket: join(home, 's.sock'),
+        token: 'tok-1',
+      });
+
+      // resume = new socket → snapshot rewritten
+      run({
+        CLAUDE_CODE_MESSAGING_SOCKET: join(home, 's2.sock'),
+        CLAUDE_CODE_MESSAGING_TOKEN: 'tok-2',
+      });
+      expect(JSON.parse(readFileSync(snapPath, 'utf8')).socket).toBe(join(home, 's2.sock'));
+
+      // no env → nothing written (fresh home stays clean)
+      const home2 = makeHome(15_000_000, { enforce: false });
+      try {
+        spawnSync(process.execPath, [resolve('scripts/turn-budget-hook.mjs')], {
+          cwd: home2,
+          env: baseEnv(),
+          encoding: 'utf8',
+          timeout: 5_000,
+          input: stdin,
+        });
+        expect(existsSync(join(home2, '.claude', 'claude-devtools-messaging', 'snap1.json'))).toBe(
+          false
+        );
+      } finally {
+        rmSync(home2, { recursive: true, force: true });
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

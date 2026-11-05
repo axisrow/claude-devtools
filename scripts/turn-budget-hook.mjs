@@ -226,6 +226,9 @@ export function main() {
     handleToggle(hook);
     return;
   }
+  // the messaging snapshot is config-independent: kept fresh even when the
+  // turn budget is off or the session is toggled off
+  snapMessaging(hook);
   const { enabled, budget, enforce } = readConfig(readConfigSafely());
   if (!enabled || isSessionOff(hook.session_id)) return;
 
@@ -341,6 +344,30 @@ function markNotifiedBoundary(sessionId, boundaryId) {
     writeFileSync(p, JSON.stringify({ notifiedBoundary: boundaryId }));
   } catch {
     // fail-open: losing the state only means one extra ring on the next call
+  }
+}
+
+// Messaging snapshot for app-initiated delivery (subagent auto-stop): the
+// inbox-socket env is exported to hooks only, so the hook persists it per
+// session for the app (messagingDelivery.ts reads this map later). Rewritten
+// when CC re-exports a new socket (resume = new pid). 0600: the token is a
+// local session credential.
+function snapMessaging(hook) {
+  const session =
+    typeof hook.session_id === 'string' && /^[\w-]+$/.test(hook.session_id)
+      ? hook.session_id
+      : null;
+  const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+  const token = process.env.CLAUDE_CODE_MESSAGING_TOKEN;
+  if (!session || !sock || !token) return;
+  const file = join(homedir(), '.claude', 'claude-devtools-messaging', `${session}.json`);
+  const snap = JSON.stringify({ socket: sock, token });
+  try {
+    if (existsSync(file) && readFileSync(file, 'utf8') === snap) return;
+    mkdirSync(join(homedir(), '.claude', 'claude-devtools-messaging'), { recursive: true, mode: 0o700 });
+    writeFileSync(file, snap, { mode: 0o600 });
+  } catch {
+    // fail-open: the snapshot only enables the optional auto-stop feature
   }
 }
 

@@ -46,7 +46,7 @@ export interface SafeConfig {
     loopDetection: { enabled: boolean; cycleThreshold: number };
     turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
     silenceDetection: { enabled: boolean; silenceMinutes: number };
-    subagentWatch: { enabled: boolean; minutes: number; tokens: number };
+    subagentWatch: { enabled: boolean; minutes: number; tokens: number; autoStop?: boolean };
   };
   display: {
     showTimestamps: boolean;
@@ -192,6 +192,7 @@ export function useSettingsConfig(): UseSettingsConfigReturn {
           enabled: displayConfig?.notifications?.subagentWatch?.enabled ?? true,
           minutes: displayConfig?.notifications?.subagentWatch?.minutes ?? 60,
           tokens: displayConfig?.notifications?.subagentWatch?.tokens ?? 10_000_000,
+          autoStop: displayConfig?.notifications?.subagentWatch?.autoStop ?? false,
         },
       },
       display: {

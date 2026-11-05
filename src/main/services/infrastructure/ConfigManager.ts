@@ -51,7 +51,7 @@ export interface NotificationConfig {
   /** Bell when a watched session goes silent (no transcript writes) */
   silenceDetection: { enabled: boolean; silenceMinutes: number };
   /** Bell when a subagent transcript keeps running/burning past thresholds */
-  subagentWatch: { enabled: boolean; minutes: number; tokens: number };
+  subagentWatch: { enabled: boolean; minutes: number; tokens: number; autoStop?: boolean };
 }
 
 /**
@@ -264,7 +264,11 @@ const DEFAULT_CONFIG: AppConfig = {
     // corpus 2026-11-04 (2432 files): >60m span — 20 files, >10M billed — 29;
     // the owner's 1–2h runaway profile lands between — 60min / 10M chosen
     // from the subagent-scan ladders (owner-approved)
-    subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000 },
+    // corpus 2026-11-04 (2432 files): >60m span — 20 files, >10M billed — 29;
+    // the owner's 1–2h runaway profile lands between — 60min / 10M chosen
+    // from the subagent-scan ladders (owner-approved). autoStop off by
+    // default: escalation steers the parent session — owner's explicit opt-in
+    subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000, autoStop: false },
   },
   general: {
     launchAtLogin: false,

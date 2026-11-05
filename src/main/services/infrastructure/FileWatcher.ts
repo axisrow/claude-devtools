@@ -19,6 +19,7 @@ import {
   TurnBudgetDetector,
   type TurnBudgetIncident,
 } from '@main/utils/loopDetection';
+import { deliverToSession } from '@main/utils/messagingDelivery';
 import {
   extractProjectName,
   getClaudeBasePath,
@@ -66,6 +67,10 @@ const CATCHUP_CURSOR_WRITE_MS = 120_000;
  * re-scan free of double bells; loop/stall keep the exact cursor because
  * their dedup exempts them and would re-fire. */
 const CATCHUP_RESCAN_MS = 60 * 60 * 1000; // 1 hour
+/** Escalation grace: after the runway bell, this much CONTINUED transcript
+ * growth before auto-stop delivery to the parent session.
+ * ponytail: calibration knob, not config — revisit after live incidents. */
+const ESCALATE_AFTER_MS = 5 * 60_000;
 
 interface AppendedParseResult {
   messages: ParsedMessage[];
@@ -208,6 +213,35 @@ function subagentRunwayToError(args: {
   });
 }
 
+/**
+ * Bell record for the auto-stop escalation (Фаза 3): the parent session was
+ * (or wasn't — socket dead → session is gone, nothing to stop) steered via
+ * its inbox socket to stop the runaway subagent. Source 'subagent_stop'.
+ */
+function subagentStopToError(args: {
+  filePath: string;
+  projectId: string;
+  sessionId: string;
+  subagentId: string;
+  delivered: boolean;
+}): DetectedError {
+  const outcome = args.delivered
+    ? 'steered: stop requested via inbox socket'
+    : 'steer failed (no messaging snapshot or dead socket — parent gone, nothing to stop)';
+  return createDetectedError({
+    sessionId: args.sessionId,
+    projectId: args.projectId,
+    filePath: args.filePath,
+    projectName: extractProjectName(args.projectId),
+    lineNumber: 1,
+    timestamp: new Date(),
+    source: 'subagent_stop',
+    message: `Subagent auto-stop · ${args.subagentId} — ${outcome}`,
+    triggerName: 'Subagent watch',
+    triggerColor: '#f97316',
+  });
+}
+
 export class FileWatcher extends EventEmitter {
   private projectsWatcher: fs.FSWatcher | null = null;
   private todosWatcher: fs.FSWatcher | null = null;
@@ -252,6 +286,19 @@ export class FileWatcher extends EventEmitter {
   private turnBudgetDetector = new TurnBudgetDetector();
   /** Subagent runaway watch — the only detector fed by subagent transcripts */
   private subagentRunwayDetector = new SubagentRunwayDetector();
+  /** Runway escalations: files that rang and may be auto-stopped. sizeAtBell
+   * distinguishes "still growing" (escalate) from "finished" (drop). */
+  private runwayEscalations = new Map<
+    string,
+    {
+      notifiedAt: number;
+      sizeAtBell: number;
+      projectId: string;
+      sessionId: string;
+      subagentId: string;
+      attempted: boolean;
+    }
+  >();
   /** files whose silence already rang the bell — until writes resume */
   private silenceNotified = new Set<string>();
   /** files seen with fresh mtime under this watcher run — arms the silence bell */
@@ -1024,6 +1071,17 @@ export class FileWatcher extends EventEmitter {
               subagentId: subagentId ?? path.basename(filePath, '.jsonl').replace(/^agent-/, ''),
             })
           );
+          // arm the escalation: auto-stop if the transcript KEEPS growing for
+          // ESCALATE_AFTER_MS after the bell (a stopped-growth subagent is
+          // finished — the tick drops the entry without steering)
+          this.runwayEscalations.set(filePath, {
+            notifiedAt: Date.now(),
+            sizeAtBell: currentSize,
+            projectId,
+            sessionId,
+            subagentId: subagentId ?? path.basename(filePath, '.jsonl').replace(/^agent-/, ''),
+            attempted: false,
+          });
         }
       }
 
@@ -1306,6 +1364,7 @@ export class FileWatcher extends EventEmitter {
     // Silence bell config — read per tick so settings changes apply live
     const silenceCfg = ConfigManager.getInstance().getConfig().notifications.silenceDetection;
     const silenceThresholdMs = silenceCfg.enabled ? silenceCfg.silenceMinutes * 60_000 : 0;
+    const subagentWatchCfg = ConfigManager.getInstance().getConfig().notifications.subagentWatch;
     const evictAgeMs = this.catchUpStaleAgeMs();
 
     // Discovery sweep: fs.watch can drop events for brand-new files (macOS
@@ -1367,6 +1426,36 @@ export class FileWatcher extends EventEmitter {
                 projectId: info.projectId,
                 sessionId: info.sessionId,
                 silentMs: age,
+              })
+            );
+          }
+        }
+
+        // Subagent auto-stop escalation (Фаза 3): a file that rang and KEEPS
+        // growing past the grace window gets ONE steer to its parent session
+        // via the hook-persisted messaging snapshot. No growth since the bell
+        // = finished — the tick drops the entry without steering.
+        const esc = this.runwayEscalations.get(filePath);
+        if (esc) {
+          if (stats.size <= esc.sizeAtBell) {
+            this.runwayEscalations.delete(filePath);
+          } else if (
+            esc.attempted === false &&
+            subagentWatchCfg?.autoStop === true &&
+            now - esc.notifiedAt >= ESCALATE_AFTER_MS
+          ) {
+            esc.attempted = true;
+            const delivered = await deliverToSession(
+              esc.sessionId,
+              `Stop the runaway subagent ${esc.subagentId} (Task tool) — kept growing past the runaway thresholds after the bell. Stop it now and wrap up.`
+            );
+            await this.notificationManager.addError(
+              subagentStopToError({
+                filePath,
+                projectId: esc.projectId,
+                sessionId: esc.sessionId,
+                subagentId: esc.subagentId,
+                delivered,
               })
             );
           }
