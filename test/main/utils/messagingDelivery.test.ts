@@ -70,7 +70,8 @@ describe('messagingDelivery (Фаза 3)', () => {
       expect(received).toContain('"token":"tok-9"');
       expect(received).toContain('Stop the runaway subagent');
     } finally {
-      rmSync(sockPath, { force: true });
+      // a named pipe is not a filesystem entry — unlinking it throws EINVAL
+      if (process.platform !== 'win32') rmSync(sockPath, { force: true });
     }
   });
 
@@ -99,7 +100,8 @@ describe('messagingDelivery (Фаза 3)', () => {
       expect(received).toContain('"token":"tok-7"');
       expect(received).toContain('wrap up the runaway');
     } finally {
-      rmSync(sockPath, { force: true });
+      // a named pipe is not a filesystem entry — unlinking it throws EINVAL
+      if (process.platform !== 'win32') rmSync(sockPath, { force: true });
     }
     expect(await deliverToSession('no-such-session', 'x', home)).toBe(false);
   });
