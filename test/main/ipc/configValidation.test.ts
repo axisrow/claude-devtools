@@ -185,6 +185,25 @@ describe('configValidation', () => {
     }
   });
 
+  it('preserves optional subagentWatch.autoStop; rejects a non-boolean', () => {
+    const withFlag = validateConfigUpdatePayload('notifications', {
+      subagentWatch: { enabled: true, minutes: 60, tokens: 1000, autoStop: true },
+    });
+    expect(withFlag.valid).toBe(true);
+    if (withFlag.valid) {
+      expect(withFlag.data).toEqual({
+        subagentWatch: { enabled: true, minutes: 60, tokens: 1000, autoStop: true },
+      });
+    }
+    const bad = validateConfigUpdatePayload('notifications', {
+      subagentWatch: { enabled: true, minutes: 60, tokens: 1000, autoStop: 'yes' },
+    });
+    expect(bad.valid).toBe(false);
+    if (!bad.valid) {
+      expect(bad.error).toContain('autoStop must be a boolean');
+    }
+  });
+
   it('accepts valid display updates', () => {
     const result = validateConfigUpdatePayload('display', {
       compactMode: true,

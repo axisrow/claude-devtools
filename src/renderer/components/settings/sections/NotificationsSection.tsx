@@ -97,6 +97,7 @@ interface NotificationsSectionProps {
     enabled: boolean;
     minutes: number;
     tokens: number;
+    autoStop?: boolean;
   }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
@@ -318,6 +319,21 @@ export const NotificationsSection = ({
           onSubagentWatchChange({ ...safeConfig.notifications.subagentWatch, tokens: n })
         }
       />
+      <SettingRow
+        label="Auto-stop runaway subagents"
+        description="After the bell, steer the parent session (via its inbox socket) to stop the subagent if it keeps growing. Needs the session to run this project's hooks."
+      >
+        <SettingsToggle
+          enabled={safeConfig.notifications.subagentWatch.autoStop === true}
+          onChange={(v) =>
+            onSubagentWatchChange({
+              ...safeConfig.notifications.subagentWatch,
+              autoStop: v,
+            })
+          }
+          disabled={saving || !safeConfig.notifications.subagentWatch.enabled}
+        />
+      </SettingRow>
 
       <SettingRow
         label="Snooze notifications"
