@@ -77,12 +77,14 @@ async function collectSubagentRuns(projectsRoot, opts = {}) {
       });
     }
   }
-  const stats = await mapWithConcurrency(jobs, 8, (j) => scanSubagentFile(j.file, opts));
+  const pairs = await mapWithConcurrency(jobs, 8, async (j) => ({
+    j,
+    s: await scanSubagentFile(j.file, opts)
+  }));
   const rows = [];
-  for (let i = 0; i < stats.length; i++) {
-    const s = stats[i];
-    const j = jobs[i];
-    if (!s || !j) continue;
+  for (const p of pairs) {
+    if (!p?.s) continue;
+    const { j, s } = p;
     const base = path.basename(j.file, ".jsonl");
     const parts = j.file.split(path.sep);
     const parentFromPath = parts.length >= 3 && parts[parts.length - 2] === "subagents" ? parts[parts.length - 3] : null;

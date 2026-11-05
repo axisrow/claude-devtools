@@ -139,6 +139,39 @@ describe('scanSubagentFile', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('pairs each row with its own scan when files finish out of order (completion-order trap)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'subagent-scan-'));
+    try {
+      const proj = join(home, '-Users-x-proj');
+      const mk = (agent: string, sess: string, rounds: number, fillLines = 0): void => {
+        const dir = join(proj, sess, 'subagents');
+        mkdirSync(dir, { recursive: true });
+        const lines: string[] = [line({ ts: TS1, sessionId: sess })];
+        // heavy filler keeps this scan in flight while the tiny ones complete
+        for (let i = 0; i < fillLines; i++) lines.push(line({ ts: TS1 }));
+        for (let r = 0; r < rounds; r++) lines.push(line({ ts: TS2, id: `m${r}`, input: 10 + r }));
+        writeFileSync(join(dir, `${agent}.jsonl`), lines.join('\n') + '\n');
+      };
+      // jobs[0] is the slow one: with 8 workers the tiny scans finish first,
+      // so completion order != input order and i-based pairing mismatches rows
+      mk('agent-big', 'sess-BIG', 7, 100_000);
+      for (let i = 0; i < 7; i++) mk(`agent-t${i}`, `sess-t${i}`, 1);
+
+      const { rows } = await collectSubagentRuns(home, { nowMs: Date.parse(TS2) + 30_000 });
+      expect(rows).toHaveLength(8);
+      const big = rows.find((r) => r.agent === 'agent-big');
+      expect(big?.parent).toBe('sess-BIG');
+      expect(big?.rounds).toBe(7);
+      for (let i = 0; i < 7; i++) {
+        const tiny = rows.find((r) => r.agent === `agent-t${i}`);
+        expect(tiny?.parent).toBe(`sess-t${i}`);
+        expect(tiny?.rounds).toBe(1);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('parseSubagentScanArgs', () => {

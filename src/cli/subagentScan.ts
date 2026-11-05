@@ -192,12 +192,17 @@ export async function collectSubagentRuns(
     }
   }
 
-  const stats = await mapWithConcurrency(jobs, 8, (j) => scanSubagentFile(j.file, opts));
+  // carry the job through the task: mapWithConcurrency returns results in
+  // completion order, so stats[i] would pair with a foreign job once scans
+  // finish out of order (same trap the groups walk above already avoids)
+  const pairs = await mapWithConcurrency(jobs, 8, async (j) => ({
+    j,
+    s: await scanSubagentFile(j.file, opts),
+  }));
   const rows: SubagentRow[] = [];
-  for (let i = 0; i < stats.length; i++) {
-    const s = stats[i];
-    const j = jobs[i];
-    if (!s || !j) continue;
+  for (const p of pairs) {
+    if (!p?.s) continue;
+    const { j, s } = p;
     const base = path.basename(j.file, '.jsonl');
     // nested layout <proj>/<sess>/subagents/agent-<id>.jsonl — parent from the
     // path first: transcript lines may carry a STALE sessionId (session
