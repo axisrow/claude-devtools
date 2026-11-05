@@ -82,6 +82,7 @@ export default defineConfig({
         'bell-stats': resolve(__dirname, 'src/cli/bellStats.ts'),
         'tool-stats': resolve(__dirname, 'src/cli/toolStats.ts'),
         'stall-scan': resolve(__dirname, 'src/cli/stallScan.ts'),
+        'subagent-scan': resolve(__dirname, 'src/cli/subagentScan.ts'),
       },
       output: {
         format: 'es',

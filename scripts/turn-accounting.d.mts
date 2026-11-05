@@ -77,10 +77,13 @@ export declare function isTurnNumberLine(m: AccountableMessage): boolean;
  * (sidechain/synthetic excluded; detector and panel see the same set). */
 export declare function isMainChainAssistantLine(m: AccountableMessage): boolean;
 
-/** Sum input-side spend of the current turn, scanning lines newest-first. */
+/** Sum input-side spend of the current turn, scanning lines newest-first.
+ * boundaryId = uuid of the boundary line (the turn's identity for the hook's
+ * edge-triggered un-enforced bell; null when the line carries no uuid). */
 export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
   spent: number;
   boundaryFound: boolean;
+  boundaryId: string | null;
 };
 
 /** Request ledger: bills each request once (keep-newest), stable across mixed
@@ -90,6 +93,9 @@ export declare function analyzeTurn(linesNewestFirst: Iterable<string>): {
 export declare function createRequestLedger(): {
   bill(m: AccountableMessage, side: number, replace?: boolean): boolean;
   readonly spent: number;
+  /** Distinct billed requests so far — the round count (bill()'s boolean
+   * fires on the mixed-shape re-point too). */
+  readonly keys: number;
 };
 
 /** Turn-budget policy constants (hook default, IPC/UI floor). */

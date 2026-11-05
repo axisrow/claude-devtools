@@ -87,6 +87,13 @@ export function createRequestLedger() {
     get spent() {
       return spent;
     },
+    /** Distinct billed requests so far — the correct "rounds" count: bill()'s
+     * boolean fires on the mixed-shape re-point too (a new key opens when the
+     * head re-points a bare-id contribution), which would count one request
+     * as two rounds. */
+    get keys() {
+      return sideByKey.size;
+    },
   };
 }
 
@@ -310,9 +317,12 @@ export function isMainChainAssistantLine(m) {
   );
 }
 
-/** Sum input-side tokens of the current turn, scanning lines newest-first. */
+/** Sum input-side tokens of the current turn, scanning lines newest-first.
+ * boundaryId = uuid of the boundary line — the turn's identity; the hook's
+ * un-enforced bell is edge-triggered on it (one ring per turn, not per call). */
 export function analyzeTurn(linesNewestFirst) {
   let boundaryFound = false;
+  let boundaryId = null;
   // streaming writes several JSONL lines per API request, each carrying usage —
   // billed once per request. Scanning newest-first, the first line seen per
   // key has the final counts (keep-newest). The ledger also re-points
@@ -328,6 +338,7 @@ export function analyzeTurn(linesNewestFirst) {
     }
     if (isTurnBoundary(m)) {
       boundaryFound = true;
+      boundaryId = typeof m.uuid === 'string' ? m.uuid : null;
       break;
     }
     if (isMainChainAssistantLine(m) && m.message?.usage) {
@@ -335,5 +346,5 @@ export function analyzeTurn(linesNewestFirst) {
       ledger.bill(m, inputSideTokens(m.message.usage), false);
     }
   }
-  return { spent: ledger.spent, boundaryFound };
+  return { spent: ledger.spent, boundaryFound, boundaryId };
 }

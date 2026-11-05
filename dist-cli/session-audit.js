@@ -308,6 +308,64 @@ new MemoryReader();
 function billedRequestKey$1(m) {
   return m.requestId ?? m.messageId ?? m.message?.id;
 }
+function createRequestLedger() {
+  const sideByKey = /* @__PURE__ */ new Map();
+  const aliasByMessageId = /* @__PURE__ */ new Map();
+  let spent = 0;
+  return {
+    /** Bill one line's usage; returns true when this opened a new request
+     * key (the caller's notion of a round). replace: forward scans keep the
+     * last line's counts (final counts land on the last fragment); backward
+     * scans (newest-first) pass false — the first-seen line IS the newest. */
+    bill(m, side, replace = true) {
+      const mid = m.message?.id ?? m.messageId;
+      let key;
+      if (m.requestId) {
+        key = m.requestId;
+        if (mid !== void 0 && mid !== null) {
+          if (!aliasByMessageId.has(mid)) {
+            aliasByMessageId.set(mid, key);
+            const prior = sideByKey.get(mid);
+            if (prior !== void 0) {
+              sideByKey.delete(mid);
+              spent -= prior;
+            }
+          } else {
+            aliasByMessageId.set(mid, key);
+          }
+        }
+      } else {
+        key = mid !== void 0 && aliasByMessageId.get(mid) || mid;
+      }
+      if (key === void 0 || key === null) {
+        sideByKey.set(`#anon-${sideByKey.size + 1}`, side);
+        spent += side;
+        return true;
+      }
+      const prev = sideByKey.get(key);
+      if (prev !== void 0) {
+        if (!replace) return false;
+        if (prev === side) return false;
+        sideByKey.set(key, side);
+        spent += side - prev;
+        return false;
+      }
+      sideByKey.set(key, side);
+      spent += side;
+      return true;
+    },
+    get spent() {
+      return spent;
+    },
+    /** Distinct billed requests so far — the correct "rounds" count: bill()'s
+     * boolean fires on the mixed-shape re-point too (a new key opens when the
+     * head re-points a bare-id contribution), which would count one request
+     * as two rounds. */
+    get keys() {
+      return sideByKey.size;
+    }
+  };
+}
 function inputSideTokens(u) {
   if (!u) return 0;
   return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
@@ -5796,7 +5854,7 @@ export {
   billingFromFlags,
   breakdownFromRounds,
   buildLedger,
-  isTurnNumberLine as c,
+  createRequestLedger as c,
   computeFindings,
   contextSpikeSummary,
   decodePath as d,
@@ -5808,9 +5866,10 @@ export {
   filterLedgerByDate,
   getProjectsBasePath as g,
   getRetryCopyMessageIds,
-  billedRequestKey$1 as h,
+  isTurnNumberLine as h,
   isRealUserLine as i,
   isQuietTick,
+  billedRequestKey$1 as j,
   listToolResults,
   normalizeDriveLetter as n,
   normalizeCallKey,
