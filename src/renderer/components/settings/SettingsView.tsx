@@ -147,6 +147,7 @@ export const SettingsView = (): React.JSX.Element | null => {
               onLoopDetectionChange={handlers.handleLoopDetectionChange}
               onTurnBudgetChange={handlers.handleTurnBudgetChange}
               onSilenceChange={handlers.handleSilenceChange}
+              onSubagentWatchChange={handlers.handleSubagentWatchChange}
               onSnooze={handlers.handleSnooze}
               onClearSnooze={handlers.handleClearSnooze}
               onAddIgnoredRepository={handlers.handleAddIgnoredRepository}

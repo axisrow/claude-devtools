@@ -257,6 +257,10 @@ export interface AppConfig {
     turnBudget: { enabled: boolean; maxInputTokensPerTurn: number; enforce?: boolean };
     /** Bell when a watched session gets no transcript writes for N minutes */
     silenceDetection: { enabled: boolean; silenceMinutes: number };
+    /** Bell when a subagent transcript keeps running/burning past thresholds
+     * (span minutes OR billed tokens — the first one crossed rings). The only
+     * live detector fed by subagent transcripts. */
+    subagentWatch: { enabled: boolean; minutes: number; tokens: number };
   };
   /** General application settings */
   general: {

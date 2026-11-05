@@ -42,6 +42,7 @@ interface SettingsHandlers {
     enforce?: boolean;
   }) => void;
   handleSilenceChange: (value: { enabled: boolean; silenceMinutes: number }) => void;
+  handleSubagentWatchChange: (value: { enabled: boolean; minutes: number; tokens: number }) => void;
   handleSnooze: (minutes: number) => Promise<void>;
   handleClearSnooze: () => Promise<void>;
   handleAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -124,6 +125,14 @@ export function useSettingsHandlers({
   const handleSilenceChange = useCallback(
     (value: { enabled: boolean; silenceMinutes: number }) => {
       void updateConfig('notifications', { silenceDetection: value });
+    },
+    [updateConfig]
+  );
+
+  // Subagent runaway watch: nested config field, read by the FileWatcher feeds
+  const handleSubagentWatchChange = useCallback(
+    (value: { enabled: boolean; minutes: number; tokens: number }) => {
+      void updateConfig('notifications', { subagentWatch: value });
     },
     [updateConfig]
   );
@@ -315,6 +324,7 @@ export function useSettingsHandlers({
           loopDetection: { enabled: true, cycleThreshold: 4 },
           turnBudget: { enabled: true, maxInputTokensPerTurn: DEFAULT_TURN_BUDGET },
           silenceDetection: { enabled: true, silenceMinutes: 60 },
+          subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000 },
         },
         general: {
           launchAtLogin: false,
@@ -416,6 +426,7 @@ export function useSettingsHandlers({
     handleLoopDetectionChange,
     handleTurnBudgetChange,
     handleSilenceChange,
+    handleSubagentWatchChange,
     handleSnooze,
     handleClearSnooze,
     handleAddIgnoredRepository,

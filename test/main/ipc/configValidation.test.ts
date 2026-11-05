@@ -156,6 +156,35 @@ describe('configValidation', () => {
     }
   });
 
+  it('accepts a valid subagentWatch update', () => {
+    const result = validateConfigUpdatePayload('notifications', {
+      subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000 },
+    });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.data).toEqual({
+        subagentWatch: { enabled: true, minutes: 60, tokens: 10_000_000 },
+      });
+    }
+  });
+
+  it('rejects subagentWatch with bad thresholds', () => {
+    const badMinutes = validateConfigUpdatePayload('notifications', {
+      subagentWatch: { enabled: true, minutes: 0.5, tokens: 1000 },
+    });
+    expect(badMinutes.valid).toBe(false);
+    if (!badMinutes.valid) {
+      expect(badMinutes.error).toContain('minutes must be an integer >= 1');
+    }
+    const badTokens = validateConfigUpdatePayload('notifications', {
+      subagentWatch: { enabled: true, minutes: 60, tokens: -1 },
+    });
+    expect(badTokens.valid).toBe(false);
+    if (!badTokens.valid) {
+      expect(badTokens.error).toContain('tokens must be an integer >= 1');
+    }
+  });
+
   it('accepts valid display updates', () => {
     const result = validateConfigUpdatePayload('display', {
       compactMode: true,

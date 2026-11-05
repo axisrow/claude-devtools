@@ -93,6 +93,11 @@ interface NotificationsSectionProps {
     enforce?: boolean;
   }) => void;
   readonly onSilenceChange: (value: { enabled: boolean; silenceMinutes: number }) => void;
+  readonly onSubagentWatchChange: (value: {
+    enabled: boolean;
+    minutes: number;
+    tokens: number;
+  }) => void;
   readonly onSnooze: (minutes: number) => Promise<void>;
   readonly onClearSnooze: () => Promise<void>;
   readonly onAddIgnoredRepository: (item: RepositoryDropdownItem) => Promise<void>;
@@ -115,6 +120,7 @@ export const NotificationsSection = ({
   onLoopDetectionChange,
   onTurnBudgetChange,
   onSilenceChange,
+  onSubagentWatchChange,
   onSnooze,
   onClearSnooze,
   onAddIgnoredRepository,
@@ -268,6 +274,48 @@ export const NotificationsSection = ({
         disabled={saving || !safeConfig.notifications.silenceDetection.enabled}
         onChange={(n) =>
           onSilenceChange({ ...safeConfig.notifications.silenceDetection, silenceMinutes: n })
+        }
+      />
+
+      {/* Subagent runaway watch (FileWatcher subagent feeds) */}
+      <SettingsSectionHeader title="Subagent Watch" />
+      <SettingRow
+        label="Ring when a subagent runs away"
+        description="Subagent transcript running past the span or burning past the token threshold"
+      >
+        <SettingsToggle
+          enabled={safeConfig.notifications.subagentWatch.enabled}
+          onChange={(v) =>
+            onSubagentWatchChange({
+              ...safeConfig.notifications.subagentWatch,
+              enabled: v,
+            })
+          }
+          disabled={saving || !safeConfig.notifications.enabled}
+        />
+      </SettingRow>
+      <ThresholdRow
+        label="Span threshold"
+        description="Minutes a subagent transcript keeps growing before the bell"
+        value={safeConfig.notifications.subagentWatch.minutes}
+        min={1}
+        step={5}
+        suffix=" min"
+        disabled={saving || !safeConfig.notifications.subagentWatch.enabled}
+        onChange={(n) =>
+          onSubagentWatchChange({ ...safeConfig.notifications.subagentWatch, minutes: n })
+        }
+      />
+      <ThresholdRow
+        label="Burn threshold"
+        description="Billed tokens (in+out) before the bell"
+        value={safeConfig.notifications.subagentWatch.tokens}
+        min={100000}
+        step={1000000}
+        suffix=" tokens"
+        disabled={saving || !safeConfig.notifications.subagentWatch.enabled}
+        onChange={(n) =>
+          onSubagentWatchChange({ ...safeConfig.notifications.subagentWatch, tokens: n })
         }
       />
 

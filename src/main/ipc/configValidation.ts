@@ -114,6 +114,7 @@ function validateNotificationsSection(
     'loopDetection',
     'turnBudget',
     'silenceDetection',
+    'subagentWatch',
   ];
 
   const result: Partial<NotificationConfig> = {};
@@ -266,6 +267,33 @@ function validateNotificationsSection(
           };
         }
         result.silenceDetection = { enabled, silenceMinutes };
+        break;
+      }
+      case 'subagentWatch': {
+        if (!isPlainObject(value)) {
+          return { valid: false, error: 'notifications.subagentWatch must be an object' };
+        }
+        const { enabled, minutes, tokens } = value as {
+          enabled?: unknown;
+          minutes?: unknown;
+          tokens?: unknown;
+        };
+        if (typeof enabled !== 'boolean') {
+          return { valid: false, error: 'notifications.subagentWatch.enabled must be a boolean' };
+        }
+        if (!isFiniteNumber(minutes) || !Number.isInteger(minutes) || minutes < 1) {
+          return {
+            valid: false,
+            error: 'notifications.subagentWatch.minutes must be an integer >= 1',
+          };
+        }
+        if (!isFiniteNumber(tokens) || !Number.isInteger(tokens) || tokens < 1) {
+          return {
+            valid: false,
+            error: 'notifications.subagentWatch.tokens must be an integer >= 1',
+          };
+        }
+        result.subagentWatch = { enabled, minutes, tokens };
         break;
       }
       default:
